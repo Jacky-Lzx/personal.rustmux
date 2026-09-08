@@ -42,7 +42,7 @@ impl Drop for TerminalGuard {
         // are not nestable, so an inner program leaving one would also eject
         // rustmux from its own buffer.
         let _ = io::stdout().write_all(
-            b"\x1b[?2026l\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b>",
+            b"\x1b[?2026l\x1b[0 q\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b>",
         );
         let _ = execute!(io::stdout(), Show);
         let _ = disable_raw_mode();
@@ -55,6 +55,73 @@ struct Window {
     master: OwnedFd,
     child: Pid,
     terminal: vt100::Parser,
+    cursor_style: CursorStyleTracker,
+}
+
+#[derive(Default)]
+struct CursorStyleTracker {
+    state: CursorSequenceState,
+    style: u8,
+}
+
+#[derive(Default)]
+enum CursorSequenceState {
+    #[default]
+    Ground,
+    Escape,
+    Csi(Vec<u8>),
+}
+
+impl CursorStyleTracker {
+    fn process(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            let state = std::mem::take(&mut self.state);
+            self.state = match state {
+                CursorSequenceState::Ground => match byte {
+                    0x1b => CursorSequenceState::Escape,
+                    0x9b => CursorSequenceState::Csi(Vec::new()),
+                    _ => CursorSequenceState::Ground,
+                },
+                CursorSequenceState::Escape => match byte {
+                    b'[' => CursorSequenceState::Csi(Vec::new()),
+                    0x1b => CursorSequenceState::Escape,
+                    _ => CursorSequenceState::Ground,
+                },
+                CursorSequenceState::Csi(mut parameters) => {
+                    if byte == 0x1b {
+                        CursorSequenceState::Escape
+                    } else if (0x40..=0x7e).contains(&byte) {
+                        if byte == b'q' {
+                            self.apply_decscusr(&parameters);
+                        }
+                        CursorSequenceState::Ground
+                    } else if parameters.len() < 16 {
+                        parameters.push(byte);
+                        CursorSequenceState::Csi(parameters)
+                    } else {
+                        CursorSequenceState::Ground
+                    }
+                }
+            };
+        }
+    }
+
+    fn apply_decscusr(&mut self, parameters: &[u8]) {
+        let Some(digits) = parameters.strip_suffix(b" ") else {
+            return;
+        };
+        if !digits.iter().all(u8::is_ascii_digit) {
+            return;
+        }
+        let style = digits.iter().fold(0_u16, |value, digit| {
+            value
+                .saturating_mul(10)
+                .saturating_add(u16::from(digit - b'0'))
+        });
+        if style <= 6 {
+            self.style = style as u8;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -168,6 +235,7 @@ impl App {
                     master,
                     child,
                     terminal: vt100::Parser::new(rows, columns, SCROLLBACK_LINES),
+                    cursor_style: CursorStyleTracker::default(),
                 });
                 self.active = self.windows.len() - 1;
                 self.renderer.invalidate();
@@ -225,6 +293,7 @@ impl App {
                     match read(&self.windows[index].master, &mut output) {
                         Ok(0) | Err(Errno::EIO) => {}
                         Ok(count) => {
+                            self.windows[index].cursor_style.process(&output[..count]);
                             self.windows[index].terminal.process(&output[..count]);
                             let responses = terminal_responses(&output[..count]);
                             if !responses.is_empty() {
@@ -564,7 +633,7 @@ impl FrameSnapshot {
                 .map(|window| (window.id, window.name.clone()))
                 .collect(),
             cells,
-            terminal_state: TerminalState::capture(screen),
+            terminal_state: TerminalState::capture(screen, windows[active].cursor_style.style),
         }
     }
 }
@@ -582,15 +651,17 @@ struct TerminalState {
     application_cursor: bool,
     bracketed_paste: bool,
     hide_cursor: bool,
+    cursor_style: u8,
 }
 
 impl TerminalState {
-    fn capture(screen: &vt100::Screen) -> Self {
+    fn capture(screen: &vt100::Screen, cursor_style: u8) -> Self {
         Self {
             cursor: screen.cursor_position(),
             application_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
             hide_cursor: screen.hide_cursor(),
+            cursor_style,
         }
     }
 }
@@ -661,7 +732,7 @@ fn render_frame(windows: &[Window], active: usize, terminal_size: (u16, u16)) ->
         }
     }
 
-    let state = TerminalState::capture(screen);
+    let state = TerminalState::capture(screen, windows[active].cursor_style.style);
     append_terminal_state(&mut output, &state, windows[active].id);
     output
 }
@@ -670,10 +741,11 @@ fn append_terminal_state(output: &mut Vec<u8>, state: &TerminalState, active_id:
     let (cursor_row, cursor_column) = state.cursor;
     let _ = write!(
         output,
-        "\x1b[0m\x1b]0;rustmux:{}\x07\x1b[?1{}\x1b[?2004{}\x1b[{};{}H\x1b[?25{}",
+        "\x1b[0m\x1b]0;rustmux:{}\x07\x1b[?1{}\x1b[?2004{}\x1b[{} q\x1b[{};{}H\x1b[?25{}",
         active_id,
         if state.application_cursor { 'h' } else { 'l' },
         if state.bracketed_paste { 'h' } else { 'l' },
+        state.cursor_style,
         cursor_row + 2,
         cursor_column + 2,
         if state.hide_cursor { 'l' } else { 'h' },
@@ -700,6 +772,9 @@ fn append_terminal_state_diff(
             "\x1b[?2004{}",
             if current.bracketed_paste { 'h' } else { 'l' }
         );
+    }
+    if previous.cursor_style != current.cursor_style {
+        let _ = write!(output, "\x1b[{} q", current.cursor_style);
     }
     if cells_changed || previous.cursor != current.cursor {
         let (row, column) = current.cursor;
@@ -867,6 +942,7 @@ mod tests {
             master,
             child: Pid::from_raw(1),
             terminal: vt100::Parser::new(rows, columns, SCROLLBACK_LINES),
+            cursor_style: CursorStyleTracker::default(),
         }
     }
 
@@ -928,6 +1004,34 @@ mod tests {
         // One CUP starts the changed run and one restores the application cursor.
         assert_eq!(update.iter().filter(|&&byte| byte == b'H').count(), 2);
         assert!(update.windows(6).any(|part| part == b"abcdef"));
+    }
+
+    #[test]
+    fn cursor_style_tracker_handles_split_decscusr_sequences() {
+        let mut tracker = CursorStyleTracker::default();
+
+        tracker.process(b"ignored\x1b[5");
+        assert_eq!(tracker.style, 0);
+        tracker.process(b" q");
+        assert_eq!(tracker.style, 5);
+
+        tracker.process(b"\x1b[2 q");
+        assert_eq!(tracker.style, 2);
+        tracker.process(b"\x1b[99 q");
+        assert_eq!(tracker.style, 2);
+    }
+
+    #[test]
+    fn renderer_forwards_cursor_style_changes() {
+        let window = test_window(1, "fish", 3, 18);
+        let mut windows = vec![window];
+        let mut renderer = Renderer::default();
+        renderer.render(&windows, 0, (20, 5));
+
+        windows[0].cursor_style.process(b"\x1b[6 q");
+        let update = renderer.render(&windows, 0, (20, 5));
+
+        assert!(update.windows(5).any(|part| part == b"\x1b[6 q"));
     }
 
     #[test]
