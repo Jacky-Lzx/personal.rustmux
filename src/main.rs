@@ -1299,7 +1299,7 @@ fn draw_window_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, widt
     let inner_width = usize::from(width);
     let mut used = 0;
     for (index, window) in windows.iter().enumerate() {
-        if used + 2 > inner_width {
+        if used >= inner_width {
             break;
         }
         let label = if index == active && window.history_mode {
@@ -1312,25 +1312,16 @@ fn draw_window_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, widt
         } else {
             format!(" {} {} ", window.id, window.name)
         };
-        let available = inner_width.saturating_sub(used).saturating_sub(2);
+        let available = inner_width.saturating_sub(used).saturating_sub(1);
         let label: String = label.chars().take(available).collect();
         if index == active {
-            // Use the matching left-facing cap instead of Zellij's reversed
-            // right separator: a default background can remain transparent,
-            // while a default foreground cannot be made transparent.
-            output.extend_from_slice("\x1b[0;32;49m".as_bytes());
             output.extend_from_slice(b"\x1b[1;30;42m");
         } else {
-            output.extend_from_slice("\x1b[0;38;2;205;214;244;49m".as_bytes());
             output.extend_from_slice(b"\x1b[1;30;48;2;205;214;244m");
         }
         output.extend_from_slice(label.as_bytes());
-        if index == active {
-            output.extend_from_slice("\x1b[0;32;49m".as_bytes());
-        } else {
-            output.extend_from_slice("\x1b[0;38;2;205;214;244;49m".as_bytes());
-        }
-        used += label.chars().count() + 2;
+        output.extend_from_slice(b"\x1b[0;49m ");
+        used += label.chars().count() + 1;
     }
     output.extend_from_slice(b"\x1b[0m");
 }
@@ -1705,10 +1696,10 @@ mod tests {
         assert!(frame.contains('┘'));
         assert!(frame.contains(" 1 fish "));
         assert!(frame.contains(" 2 fish "));
-        assert!(frame.contains("\x1b[0;32;49m\x1b[1;30;42m 1 fish \x1b[0;32;49m"));
-        assert!(frame.contains(
-            "\x1b[0;38;2;205;214;244;49m\x1b[1;30;48;2;205;214;244m 2 fish \x1b[0;38;2;205;214;244;49m"
-        ));
+        assert!(frame.contains("\x1b[1;30;42m 1 fish \x1b[0;49m "));
+        assert!(frame.contains("\x1b[1;30;48;2;205;214;244m 2 fish \x1b[0;49m "));
+        assert!(!frame.contains(''));
+        assert!(!frame.contains(''));
         assert!(frame.contains("─ nvim project "));
         assert!(frame.contains("hello"));
         assert!(frame.contains("\x1b[38;2;1;2;3m"));
