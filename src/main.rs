@@ -61,6 +61,17 @@ struct Window {
     cursor_style: CursorStyleTracker,
     kitty_graphics: KittyGraphicsParser,
     pending_graphics: Vec<Vec<u8>>,
+    history_mode: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HistoryAction {
+    Up(usize),
+    Down(usize),
+    Top,
+    Bottom,
+    Exit,
+    Ignore,
 }
 
 #[derive(Default)]
@@ -353,6 +364,14 @@ impl InputDecoder {
             {
                 break;
             }
+            if self.pending == [0x1b]
+                || (self.pending.starts_with(b"\x1b[")
+                    && !self.pending[2..]
+                        .iter()
+                        .any(|byte| (0x40..=0x7e).contains(byte)))
+            {
+                break;
+            }
             decoded.push(self.pending.remove(0));
         }
         decoded
@@ -417,6 +436,7 @@ impl App {
                     cursor_style: CursorStyleTracker::default(),
                     kitty_graphics: KittyGraphicsParser::default(),
                     pending_graphics: Vec::new(),
+                    history_mode: false,
                 });
                 self.active = self.windows.len() - 1;
                 self.renderer.invalidate();
@@ -500,7 +520,9 @@ impl App {
 
     fn handle_decoded_input(&mut self, bytes: &[u8]) -> Result<bool> {
         let mut passthrough = Vec::with_capacity(bytes.len());
-        for &byte in bytes {
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
             if self.prefix_pending {
                 self.prefix_pending = false;
                 if !passthrough.is_empty() {
@@ -511,6 +533,7 @@ impl App {
                     b'c' => self.create_window()?,
                     b'n' => self.select_relative(1)?,
                     b'p' => self.select_relative(-1)?,
+                    b'[' => self.enter_history_mode()?,
                     b'&' => self.close_active()?,
                     b'd' => return Ok(false),
                     b'?' => self.show_help()?,
@@ -523,14 +546,64 @@ impl App {
                     passthrough.clear();
                 }
                 self.prefix_pending = true;
+            } else if self.windows[self.active].history_mode {
+                if !passthrough.is_empty() {
+                    self.write_active(&passthrough)?;
+                    passthrough.clear();
+                }
+                let (action, consumed) =
+                    decode_history_action(&bytes[index..], self.history_page_rows());
+                self.apply_history_action(action)?;
+                index += consumed;
+                continue;
             } else {
                 passthrough.push(byte);
             }
+            index += 1;
         }
         if !passthrough.is_empty() && !self.windows.is_empty() {
             self.write_active(&passthrough)?;
         }
         Ok(true)
+    }
+
+    fn history_page_rows(&self) -> usize {
+        usize::from(content_size(self.terminal_size).1.saturating_sub(1).max(1))
+    }
+
+    fn enter_history_mode(&mut self) -> Result<()> {
+        let window = &mut self.windows[self.active];
+        if !window.history_mode {
+            window.history_mode = true;
+            self.redraw()?;
+        }
+        Ok(())
+    }
+
+    fn apply_history_action(&mut self, action: HistoryAction) -> Result<()> {
+        let window = &mut self.windows[self.active];
+        let current = window.terminal.screen().scrollback();
+        let mut exit = false;
+        let requested = match action {
+            HistoryAction::Up(rows) => current.saturating_add(rows),
+            HistoryAction::Down(rows) => current.saturating_sub(rows),
+            HistoryAction::Top => usize::MAX,
+            HistoryAction::Bottom => 0,
+            HistoryAction::Exit => {
+                exit = true;
+                0
+            }
+            HistoryAction::Ignore => return Ok(()),
+        };
+        window.terminal.screen_mut().set_scrollback(requested);
+        let changed = current != window.terminal.screen().scrollback() || exit;
+        if exit {
+            window.history_mode = false;
+        }
+        if changed {
+            self.redraw()?;
+        }
+        Ok(())
     }
 
     fn process_pty_output(&mut self, index: usize, output: &[u8]) -> Result<()> {
@@ -651,7 +724,7 @@ impl App {
         let mut stdout = io::stdout();
         write!(
             stdout,
-            "\r\n\x1b[1m[rustmux] Ctrl-b commands:\x1b[0m c=new  n=next  p=previous  &=close  d=detach/quit  Ctrl-b=send prefix\r\n"
+            "\r\n\x1b[1m[rustmux] Ctrl-b commands:\x1b[0m c=new  n=next  p=previous  [=history  &=close  d=detach/quit  Ctrl-b=send prefix\r\n"
         )?;
         stdout.flush()?;
         Ok(())
@@ -718,6 +791,45 @@ impl App {
     }
 }
 
+fn decode_history_action(bytes: &[u8], page_rows: usize) -> (HistoryAction, usize) {
+    match bytes[0] {
+        b'k' | 0x10 => (HistoryAction::Up(1), 1),
+        b'j' | 0x0e => (HistoryAction::Down(1), 1),
+        b'u' | 0x15 => (HistoryAction::Up(page_rows), 1),
+        b'd' | 0x04 => (HistoryAction::Down(page_rows), 1),
+        b'g' => (HistoryAction::Top, 1),
+        b'G' => (HistoryAction::Bottom, 1),
+        b'q' => (HistoryAction::Exit, 1),
+        0x1b if bytes.len() == 1 || bytes.get(1) != Some(&b'[') => (HistoryAction::Exit, 1),
+        0x1b => {
+            let Some(final_offset) = bytes[2..]
+                .iter()
+                .position(|byte| (0x40..=0x7e).contains(byte))
+            else {
+                return (HistoryAction::Ignore, bytes.len());
+            };
+            let final_index = final_offset + 2;
+            let consumed = final_index + 1;
+            let action = match bytes[final_index] {
+                b'A' => HistoryAction::Up(1),
+                b'B' => HistoryAction::Down(1),
+                b'H' => HistoryAction::Top,
+                b'F' => HistoryAction::Bottom,
+                b'~' => match bytes[2..final_index].split(|byte| *byte == b';').next() {
+                    Some(b"5") => HistoryAction::Up(page_rows),
+                    Some(b"6") => HistoryAction::Down(page_rows),
+                    Some(b"1" | b"7") => HistoryAction::Top,
+                    Some(b"4" | b"8") => HistoryAction::Bottom,
+                    _ => HistoryAction::Ignore,
+                },
+                _ => HistoryAction::Ignore,
+            };
+            (action, consumed)
+        }
+        _ => (HistoryAction::Ignore, 1),
+    }
+}
+
 #[derive(Default)]
 struct Renderer {
     previous: Option<FrameSnapshot>,
@@ -776,6 +888,8 @@ impl Renderer {
         let cells_changed = !changes.is_empty();
         let state_changed = previous.terminal_state != current.terminal_state;
         let graphics_changed = !graphics.is_empty();
+        let history_changed = previous.history_mode != current.history_mode
+            || previous.history_offset != current.history_offset;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
         // text updates. Some terminals cap or time out synchronized buffers;
@@ -785,14 +899,21 @@ impl Renderer {
             output.extend_from_slice(b"\x1b[?25l");
         }
         append_graphics(&mut output, graphics, &current.terminal_state);
-        if cells_changed || state_changed || graphics_changed {
+        if cells_changed || state_changed || graphics_changed || history_changed {
             // DEC synchronized output makes the terminal display this diff as one
             // frame. Unknown DEC private modes are safely ignored by terminals
             // which do not implement mode 2026.
             output.extend_from_slice(b"\x1b[?2026h");
         }
-        if cells_changed && !graphics_changed && !previous.terminal_state.hide_cursor {
+        if (cells_changed || history_changed)
+            && !graphics_changed
+            && !previous.terminal_state.hide_cursor
+        {
             output.extend_from_slice(b"\x1b[?25l");
+        }
+        if history_changed {
+            let _ = write!(output, "\x1b[1;1H\x1b[32m");
+            draw_top_bar(&mut output, windows, active, terminal_size.0);
         }
         for (row, first, last) in changes {
             let _ = write!(output, "\x1b[{};{}H", row + 2, first + 2);
@@ -813,12 +934,12 @@ impl Renderer {
             }
         }
 
-        if cells_changed || state_changed || graphics_changed {
+        if cells_changed || state_changed || graphics_changed || history_changed {
             append_terminal_state_diff(
                 &mut output,
                 &previous.terminal_state,
                 &current.terminal_state,
-                cells_changed || graphics_changed,
+                cells_changed || graphics_changed || history_changed,
             );
             output.extend_from_slice(b"\x1b[?2026l");
         }
@@ -832,6 +953,8 @@ struct FrameSnapshot {
     terminal_size: (u16, u16),
     active_id: usize,
     tabs: Vec<(usize, String)>,
+    history_mode: bool,
+    history_offset: usize,
     cells: Vec<CellSnapshot>,
     terminal_state: TerminalState,
 }
@@ -858,8 +981,14 @@ impl FrameSnapshot {
                 .iter()
                 .map(|window| (window.id, window.name.clone()))
                 .collect(),
+            history_mode: windows[active].history_mode,
+            history_offset: screen.scrollback(),
             cells,
-            terminal_state: TerminalState::capture(screen, windows[active].cursor_style.style),
+            terminal_state: TerminalState::capture(
+                screen,
+                windows[active].cursor_style.style,
+                windows[active].history_mode,
+            ),
         }
     }
 }
@@ -881,12 +1010,12 @@ struct TerminalState {
 }
 
 impl TerminalState {
-    fn capture(screen: &vt100::Screen, cursor_style: u8) -> Self {
+    fn capture(screen: &vt100::Screen, cursor_style: u8, force_hide_cursor: bool) -> Self {
         Self {
             cursor: screen.cursor_position(),
             application_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
-            hide_cursor: screen.hide_cursor(),
+            hide_cursor: force_hide_cursor || screen.hide_cursor(),
             cursor_style,
         }
     }
@@ -929,7 +1058,11 @@ fn render_frame(
     let mut output = Vec::with_capacity(usize::from(width) * usize::from(height) * 2);
 
     output.extend_from_slice(b"\x1b[?25l\x1b[2J");
-    let state = TerminalState::capture(screen, windows[active].cursor_style.style);
+    let state = TerminalState::capture(
+        screen,
+        windows[active].cursor_style.style,
+        windows[active].history_mode,
+    );
     append_graphics(&mut output, graphics, &state);
     output.extend_from_slice(b"\x1b[H\x1b[32m");
     draw_top_bar(&mut output, windows, active, width);
@@ -1049,7 +1182,16 @@ fn draw_top_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, width: 
             output.extend_from_slice("─".as_bytes());
             used += 1;
         }
-        let label = format!(" {}:{} ", window.id, window.name);
+        let label = if index == active && window.history_mode {
+            format!(
+                " {}:{} [history {}] ",
+                window.id,
+                window.name,
+                window.terminal.screen().scrollback()
+            )
+        } else {
+            format!(" {}:{} ", window.id, window.name)
+        };
         let available = inner_width.saturating_sub(used);
         let label: String = label.chars().take(available).collect();
         if index == active {
@@ -1307,6 +1449,7 @@ mod tests {
             cursor_style: CursorStyleTracker::default(),
             kitty_graphics: KittyGraphicsParser::default(),
             pending_graphics: Vec::new(),
+            history_mode: false,
         }
     }
 
@@ -1317,6 +1460,50 @@ mod tests {
         assert_eq!(value.ws_row, 40);
         assert_eq!(value.ws_xpixel, 0);
         assert_eq!(value.ws_ypixel, 0);
+    }
+
+    #[test]
+    fn history_keys_support_lines_pages_and_boundaries() {
+        assert_eq!(decode_history_action(b"k", 20), (HistoryAction::Up(1), 1));
+        assert_eq!(
+            decode_history_action(b"\x1b[B", 20),
+            (HistoryAction::Down(1), 3)
+        );
+        assert_eq!(
+            decode_history_action(b"\x1b[5~", 20),
+            (HistoryAction::Up(20), 4)
+        );
+        assert_eq!(
+            decode_history_action(b"\x1b[6~", 20),
+            (HistoryAction::Down(20), 4)
+        );
+        assert_eq!(decode_history_action(b"g", 20), (HistoryAction::Top, 1));
+        assert_eq!(decode_history_action(b"\x1b", 20), (HistoryAction::Exit, 1));
+    }
+
+    #[test]
+    fn history_mode_renders_offset_without_clearing_the_screen() {
+        let mut window = test_window(1, "fish", 3, 18);
+        window.terminal.process(b"one\r\ntwo\r\nthree\r\nfour");
+        let mut windows = vec![window];
+        let mut renderer = Renderer::default();
+        renderer.render(&windows, 0, (20, 5), &[]);
+
+        windows[0].history_mode = true;
+        windows[0].terminal.screen_mut().set_scrollback(1);
+        let history = renderer.render(&windows, 0, (20, 5), &[]);
+        let history_text = String::from_utf8_lossy(&history);
+        assert!(history_text.contains("[history 1"));
+        assert!(history_text.contains("\x1b[?25l"));
+        assert!(!history.windows(4).any(|part| part == b"\x1b[2J"));
+
+        windows[0].history_mode = false;
+        windows[0].terminal.screen_mut().set_scrollback(0);
+        let live = renderer.render(&windows, 0, (20, 5), &[]);
+        let live_text = String::from_utf8_lossy(&live);
+        assert!(!live_text.contains("[history"));
+        assert!(live_text.contains("\x1b[?25h"));
+        assert!(!live.windows(4).any(|part| part == b"\x1b[2J"));
     }
 
     #[test]
@@ -1585,5 +1772,13 @@ mod tests {
 
         assert_eq!(decoder.push(b"\x1b[A"), b"\x1b[A");
         assert!(decoder.flush().is_empty());
+    }
+
+    #[test]
+    fn decoder_keeps_split_arrow_sequence_together() {
+        let mut decoder = InputDecoder::default();
+
+        assert!(decoder.push(b"\x1b[").is_empty());
+        assert_eq!(decoder.push(b"A"), b"\x1b[A");
     }
 }
