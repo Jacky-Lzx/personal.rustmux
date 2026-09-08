@@ -4,6 +4,8 @@
 
 支持 macOS 和 Linux 等 Unix 终端；Windows 暂不支持。
 
+界面使用绿色边框，顶部标签栏列出所有窗口，并高亮当前窗口。
+
 ## 快捷键
 
 所有命令均以 `Ctrl-b` 为前缀：
@@ -38,4 +40,4 @@ RUSTMUX_SHELL=zsh rustmux
 
 ## MVP 边界
 
-当前版本是单进程复用器，窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持终端尺寸同步，并为每个窗口保留最多 1 MiB 输出用于切换时重放。rustmux 不占用 alternate screen，因此 fish、Vim 等内部程序可以自行安全地切换屏幕缓冲区。退出 rustmux 会结束其 shell。尚未实现 tmux 的后台 server/session 持久化、分屏、鼠标、配置文件和完整终端状态模拟。
+当前版本是单进程复用器，窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持终端尺寸同步，并为每个窗口维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。fish、Vim 等内部程序可以安全地使用 alternate screen，边框和标签栏不会被覆盖。退出 rustmux 会结束其 shell。尚未实现 tmux 的后台 server/session 持久化、分屏、鼠标和配置文件。

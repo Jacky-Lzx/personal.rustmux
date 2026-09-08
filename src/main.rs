@@ -3,6 +3,7 @@ use std::error::Error;
 use std::ffi::CString;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -18,7 +19,7 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{Pid, execvp, read, write};
 
 const PREFIX: u8 = 0x02; // Ctrl-b
-const HISTORY_LIMIT: usize = 1024 * 1024;
+const SCROLLBACK_LINES: usize = 1_000;
 const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(50);
 const ENCODED_PREFIXES: [&[u8]; 2] = [b"\x1b[98;5u", b"\x1b[27;5;98~"];
 
@@ -39,6 +40,9 @@ impl Drop for TerminalGuard {
         // Do not manage the alternate screen here: terminal alternate buffers
         // are not nestable, so an inner program leaving one would also eject
         // rustmux from its own buffer.
+        let _ = io::stdout().write_all(
+            b"\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b>",
+        );
         let _ = execute!(io::stdout(), Show);
         let _ = disable_raw_mode();
     }
@@ -46,19 +50,10 @@ impl Drop for TerminalGuard {
 
 struct Window {
     id: usize,
+    name: String,
     master: OwnedFd,
     child: Pid,
-    history: Vec<u8>,
-}
-
-impl Window {
-    fn push_history(&mut self, bytes: &[u8]) {
-        self.history.extend_from_slice(bytes);
-        if self.history.len() > HISTORY_LIMIT {
-            let excess = self.history.len() - HISTORY_LIMIT;
-            self.history.drain(..excess);
-        }
-    }
+    terminal: vt100::Parser,
 }
 
 #[derive(Default)]
@@ -147,8 +142,14 @@ impl App {
 
     fn create_window(&mut self) -> Result<()> {
         let shell = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
+        let name = Path::new(&shell)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&shell)
+            .to_owned();
         let shell = CString::new(shell)?;
-        let winsize = winsize(self.terminal_size);
+        let (columns, rows) = content_size(self.terminal_size);
+        let winsize = winsize((columns, rows));
 
         // SAFETY: the child immediately calls execvp and _exit, both of which are
         // async-signal-safe; all application bookkeeping remains in the parent.
@@ -158,9 +159,10 @@ impl App {
                 self.next_id += 1;
                 self.windows.push(Window {
                     id,
+                    name,
                     master,
                     child,
-                    history: Vec::new(),
+                    terminal: vt100::Parser::new(rows, columns, SCROLLBACK_LINES),
                 });
                 self.active = self.windows.len() - 1;
                 self.redraw()?;
@@ -216,10 +218,13 @@ impl App {
                     match read(&self.windows[index].master, &mut output) {
                         Ok(0) | Err(Errno::EIO) => {}
                         Ok(count) => {
-                            self.windows[index].push_history(&output[..count]);
+                            self.windows[index].terminal.process(&output[..count]);
+                            let responses = terminal_responses(&output[..count]);
+                            if !responses.is_empty() {
+                                write_fd(&self.windows[index].master, &responses)?;
+                            }
                             if index == self.active {
-                                io::stdout().write_all(&output[..count])?;
-                                io::stdout().flush()?;
+                                self.redraw()?;
                             }
                         }
                         Err(Errno::EAGAIN) => {}
@@ -279,15 +284,11 @@ impl App {
         Ok(true)
     }
 
-    fn write_active(&self, mut bytes: &[u8]) -> Result<()> {
+    fn write_active(&self, bytes: &[u8]) -> Result<()> {
         if self.windows.is_empty() {
             return Ok(());
         }
-        while !bytes.is_empty() {
-            let count = write(&self.windows[self.active].master, bytes)?;
-            bytes = &bytes[count..];
-        }
-        Ok(())
+        write_fd(&self.windows[self.active].master, bytes)
     }
 
     fn select_relative(&mut self, offset: isize) -> Result<()> {
@@ -317,14 +318,9 @@ impl App {
         if self.windows.is_empty() {
             return Ok(());
         }
-        let window = &self.windows[self.active];
-        let mut stdout = io::stdout();
-        write!(
-            stdout,
-            "\x1b[2J\x1b[H\x1b]0;rustmux:{}\x07\x1b[2m[rustmux window {} | Ctrl-b ?]\x1b[0m\r\n",
-            window.id, window.id
-        )?;
-        stdout.write_all(&window.history)?;
+        let frame = render_frame(&self.windows, self.active, self.terminal_size);
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(&frame)?;
         stdout.flush()?;
         Ok(())
     }
@@ -345,7 +341,8 @@ impl App {
             return Ok(());
         }
         self.terminal_size = new_size;
-        let winsize = winsize(new_size);
+        let (columns, rows) = content_size(new_size);
+        let winsize = winsize((columns, rows));
         for window in &self.windows {
             // SAFETY: master is an open PTY descriptor and winsize is valid.
             let result = unsafe {
@@ -355,6 +352,10 @@ impl App {
                 return Err(io::Error::last_os_error().into());
             }
         }
+        for window in &mut self.windows {
+            window.terminal.screen_mut().set_size(rows, columns);
+        }
+        self.redraw()?;
         Ok(())
     }
 
@@ -392,6 +393,191 @@ impl App {
             let _ = waitpid(window.child, None);
         }
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct CellStyle {
+    foreground: vt100::Color,
+    background: vt100::Color,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+    inverse: bool,
+}
+
+impl From<&vt100::Cell> for CellStyle {
+    fn from(cell: &vt100::Cell) -> Self {
+        Self {
+            foreground: cell.fgcolor(),
+            background: cell.bgcolor(),
+            bold: cell.bold(),
+            dim: cell.dim(),
+            italic: cell.italic(),
+            underline: cell.underline(),
+            inverse: cell.inverse(),
+        }
+    }
+}
+
+fn render_frame(windows: &[Window], active: usize, terminal_size: (u16, u16)) -> Vec<u8> {
+    let (width, height) = terminal_size;
+    let (content_columns, content_rows) = content_size(terminal_size);
+    let screen = windows[active].terminal.screen();
+    let mut output = Vec::with_capacity(usize::from(width) * usize::from(height) * 2);
+
+    output.extend_from_slice(b"\x1b[?25l\x1b[2J\x1b[H\x1b[32m");
+    draw_top_bar(&mut output, windows, active, width);
+
+    for row in 0..content_rows {
+        let _ = write!(output, "\x1b[{};1H\x1b[32m│\x1b[0m", row + 2);
+        let mut previous_style = None;
+        for column in 0..content_columns {
+            let cell = screen.cell(row, column).expect("cell is within screen");
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let style = CellStyle::from(cell);
+            if previous_style != Some(style) {
+                write_cell_style(&mut output, style);
+                previous_style = Some(style);
+            }
+            if cell.has_contents() {
+                output.extend_from_slice(cell.contents().as_bytes());
+            } else {
+                output.push(b' ');
+            }
+        }
+        output.extend_from_slice("\x1b[0;32m│".as_bytes());
+    }
+
+    if height > 1 {
+        let _ = write!(output, "\x1b[{height};1H\x1b[32m╰");
+        for _ in 0..width.saturating_sub(2) {
+            output.extend_from_slice("─".as_bytes());
+        }
+        if width > 1 {
+            output.extend_from_slice("╯".as_bytes());
+        }
+    }
+
+    let (cursor_row, cursor_column) = screen.cursor_position();
+    let _ = write!(
+        output,
+        "\x1b[0m\x1b]0;rustmux:{}\x07\x1b[?1{}\x1b[?2004{}\x1b[{};{}H\x1b[?25{}",
+        windows[active].id,
+        if screen.application_cursor() {
+            'h'
+        } else {
+            'l'
+        },
+        if screen.bracketed_paste() { 'h' } else { 'l' },
+        cursor_row + 2,
+        cursor_column + 2,
+        if screen.hide_cursor() { 'l' } else { 'h' },
+    );
+    output
+}
+
+fn draw_top_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, width: u16) {
+    if width == 0 {
+        return;
+    }
+    output.extend_from_slice("╭".as_bytes());
+    let inner_width = usize::from(width.saturating_sub(2));
+    let mut used = 0;
+    for (index, window) in windows.iter().enumerate() {
+        if used >= inner_width {
+            break;
+        }
+        if used > 0 {
+            output.extend_from_slice("─".as_bytes());
+            used += 1;
+        }
+        let label = format!(" {}:{} ", window.id, window.name);
+        let available = inner_width.saturating_sub(used);
+        let label: String = label.chars().take(available).collect();
+        if index == active {
+            output.extend_from_slice(b"\x1b[1;30;42m");
+        } else {
+            output.extend_from_slice(b"\x1b[0;32m");
+        }
+        output.extend_from_slice(label.as_bytes());
+        output.extend_from_slice(b"\x1b[0;32m");
+        used += label.chars().count();
+    }
+    for _ in used..inner_width {
+        output.extend_from_slice("─".as_bytes());
+    }
+    if width > 1 {
+        output.extend_from_slice("╮".as_bytes());
+    }
+}
+
+fn write_cell_style(output: &mut Vec<u8>, style: CellStyle) {
+    output.extend_from_slice(b"\x1b[0m");
+    if style.bold {
+        output.extend_from_slice(b"\x1b[1m");
+    }
+    if style.dim {
+        output.extend_from_slice(b"\x1b[2m");
+    }
+    if style.italic {
+        output.extend_from_slice(b"\x1b[3m");
+    }
+    if style.underline {
+        output.extend_from_slice(b"\x1b[4m");
+    }
+    if style.inverse {
+        output.extend_from_slice(b"\x1b[7m");
+    }
+    write_color(output, style.foreground, true);
+    write_color(output, style.background, false);
+}
+
+fn write_color(output: &mut Vec<u8>, color: vt100::Color, foreground: bool) {
+    let base = if foreground { 38 } else { 48 };
+    match color {
+        vt100::Color::Default => {}
+        vt100::Color::Idx(index) => {
+            let _ = write!(output, "\x1b[{base};5;{index}m");
+        }
+        vt100::Color::Rgb(red, green, blue) => {
+            let _ = write!(output, "\x1b[{base};2;{red};{green};{blue}m");
+        }
+    }
+}
+
+fn terminal_responses(output: &[u8]) -> Vec<u8> {
+    let mut responses = Vec::new();
+    if output.windows(4).any(|window| window == b"\x1b[0c") {
+        responses.extend_from_slice(b"\x1b[?1;2c");
+    }
+    if output.windows(4).any(|window| window == b"\x1b[?u") {
+        responses.extend_from_slice(b"\x1b[?0u");
+    }
+    if output.windows(5).any(|window| window == b"\x1b[>0q") {
+        responses.extend_from_slice(b"\x1bP>|rustmux 0.1.0\x1b\\");
+    }
+    if output.windows(8).any(|window| window == b"\x1b]11;?\x1b\\") {
+        responses.extend_from_slice(b"\x1b]11;rgb:0000/0000/0000\x1b\\");
+    }
+    responses
+}
+
+fn write_fd(fd: &OwnedFd, mut bytes: &[u8]) -> Result<()> {
+    while !bytes.is_empty() {
+        let count = write(fd, bytes)?;
+        bytes = &bytes[count..];
+    }
+    Ok(())
+}
+
+fn content_size((columns, rows): (u16, u16)) -> (u16, u16) {
+    (
+        columns.saturating_sub(2).max(1),
+        rows.saturating_sub(2).max(1),
+    )
 }
 
 fn winsize((columns, rows): (u16, u16)) -> Winsize {
@@ -434,25 +620,19 @@ mod tests {
     use super::*;
     use std::os::fd::FromRawFd;
 
-    #[test]
-    fn history_is_bounded() {
+    fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         // SAFETY: dup returns a new descriptor owned solely by this test.
         let fd = unsafe { nix::libc::dup(nix::libc::STDOUT_FILENO) };
         assert!(fd >= 0);
         // SAFETY: fd is a valid, newly duplicated descriptor.
         let master = unsafe { OwnedFd::from_raw_fd(fd) };
-        let mut window = Window {
-            id: 1,
+        Window {
+            id,
+            name: name.to_owned(),
             master,
             child: Pid::from_raw(1),
-            history: Vec::new(),
-        };
-
-        window.push_history(&vec![b'a'; HISTORY_LIMIT]);
-        window.push_history(b"tail");
-
-        assert_eq!(window.history.len(), HISTORY_LIMIT);
-        assert_eq!(&window.history[HISTORY_LIMIT - 4..], b"tail");
+            terminal: vt100::Parser::new(rows, columns, SCROLLBACK_LINES),
+        }
     }
 
     #[test]
@@ -460,6 +640,38 @@ mod tests {
         let value = winsize((120, 40));
         assert_eq!(value.ws_col, 120);
         assert_eq!(value.ws_row, 40);
+    }
+
+    #[test]
+    fn frame_has_green_border_tabs_and_terminal_contents() {
+        let mut first = test_window(1, "fish", 3, 18);
+        first.terminal.process(b"hello \x1b[38;2;1;2;3mcolor");
+        let second = test_window(2, "fish", 3, 18);
+
+        let frame = render_frame(&[first, second], 0, (20, 5));
+        let frame = String::from_utf8(frame).expect("rendered frame is UTF-8");
+
+        assert!(frame.contains("\x1b[32m"));
+        assert!(frame.contains('╭'));
+        assert!(frame.contains('╯'));
+        assert!(frame.contains(" 1:fish "));
+        assert!(frame.contains(" 2:fish "));
+        assert!(frame.contains("hello"));
+        assert!(frame.contains("\x1b[38;2;1;2;3m"));
+    }
+
+    #[test]
+    fn terminal_queries_receive_local_responses() {
+        let responses = terminal_responses(b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[0c");
+
+        assert!(responses.windows(7).any(|part| part == b"\x1b[?1;2c"));
+        assert!(responses.windows(5).any(|part| part == b"\x1b[?0u"));
+        let background = b"\x1b]11;rgb:0000/0000/0000\x1b\\";
+        assert!(
+            responses
+                .windows(background.len())
+                .any(|part| part == background)
+        );
     }
 
     #[test]

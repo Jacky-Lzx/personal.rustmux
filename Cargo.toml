@@ -8,4 +8,4 @@ license = "MIT"
 [dependencies]
 crossterm = "0.29"
 nix = { version = "0.31", features = ["fs", "poll", "process", "signal", "term"] }
-
+vt100 = "0.16.2"
