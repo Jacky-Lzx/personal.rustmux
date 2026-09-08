@@ -3,6 +3,7 @@ use std::error::Error;
 use std::ffi::CString;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::time::{Duration, Instant};
 
 use crossterm::{
     cursor::Show,
@@ -18,6 +19,8 @@ use nix::unistd::{Pid, execvp, read, write};
 
 const PREFIX: u8 = 0x02; // Ctrl-b
 const HISTORY_LIMIT: usize = 1024 * 1024;
+const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(50);
+const ENCODED_PREFIXES: [&[u8]; 2] = [b"\x1b[98;5u", b"\x1b[27;5;98~"];
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -58,11 +61,72 @@ impl Window {
     }
 }
 
+#[derive(Default)]
+struct InputDecoder {
+    pending: Vec<u8>,
+    pending_since: Option<Instant>,
+}
+
+impl InputDecoder {
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.pending.extend_from_slice(bytes);
+        let decoded = self.decode_complete();
+        if self.pending.is_empty() {
+            self.pending_since = None;
+        } else if self.pending_since.is_none() {
+            self.pending_since = Some(Instant::now());
+        }
+        decoded
+    }
+
+    fn flush_if_expired(&mut self) -> Vec<u8> {
+        if self
+            .pending_since
+            .is_some_and(|since| since.elapsed() >= ESCAPE_SEQUENCE_TIMEOUT)
+        {
+            self.flush()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn flush(&mut self) -> Vec<u8> {
+        self.pending_since = None;
+        std::mem::take(&mut self.pending)
+    }
+
+    fn decode_complete(&mut self) -> Vec<u8> {
+        let mut decoded = Vec::with_capacity(self.pending.len());
+        loop {
+            if self.pending.is_empty() {
+                break;
+            }
+            if let Some(sequence) = ENCODED_PREFIXES
+                .iter()
+                .find(|sequence| self.pending.starts_with(sequence))
+            {
+                decoded.push(PREFIX);
+                self.pending.drain(..sequence.len());
+                continue;
+            }
+            if ENCODED_PREFIXES
+                .iter()
+                .any(|sequence| sequence.starts_with(&self.pending))
+            {
+                break;
+            }
+            decoded.push(self.pending.remove(0));
+        }
+        decoded
+    }
+}
+
 struct App {
     windows: Vec<Window>,
     active: usize,
     next_id: usize,
     prefix_pending: bool,
+    input_decoder: InputDecoder,
     terminal_size: (u16, u16),
 }
 
@@ -74,6 +138,7 @@ impl App {
             active: 0,
             next_id: 1,
             prefix_pending: false,
+            input_decoder: InputDecoder::default(),
             terminal_size,
         };
         app.create_window()?;
@@ -117,6 +182,10 @@ impl App {
 
         while !self.windows.is_empty() {
             self.update_size()?;
+            let expired_input = self.input_decoder.flush_if_expired();
+            if !expired_input.is_empty() && !self.handle_decoded_input(&expired_input)? {
+                break;
+            }
 
             let mut poll_fds = Vec::with_capacity(self.windows.len() + 1);
             poll_fds.push(PollFd::new(stdin.as_fd(), PollFlags::POLLIN));
@@ -171,6 +240,11 @@ impl App {
     }
 
     fn handle_input(&mut self, bytes: &[u8]) -> Result<bool> {
+        let decoded = self.input_decoder.push(bytes);
+        self.handle_decoded_input(&decoded)
+    }
+
+    fn handle_decoded_input(&mut self, bytes: &[u8]) -> Result<bool> {
         let mut passthrough = Vec::with_capacity(bytes.len());
         for &byte in bytes {
             if self.prefix_pending {
@@ -386,5 +460,30 @@ mod tests {
         let value = winsize((120, 40));
         assert_eq!(value.ws_col, 120);
         assert_eq!(value.ws_row, 40);
+    }
+
+    #[test]
+    fn decoder_accepts_all_prefix_encodings() {
+        let mut decoder = InputDecoder::default();
+        let input = b"a\x02b\x1b[98;5uc\x1b[27;5;98~d";
+
+        assert_eq!(decoder.push(input), b"a\x02b\x02c\x02d");
+        assert!(decoder.flush().is_empty());
+    }
+
+    #[test]
+    fn decoder_handles_split_kitty_sequence() {
+        let mut decoder = InputDecoder::default();
+
+        assert!(decoder.push(b"\x1b[98;").is_empty());
+        assert_eq!(decoder.push(b"5u"), b"\x02");
+    }
+
+    #[test]
+    fn decoder_preserves_unrecognized_escape_sequences() {
+        let mut decoder = InputDecoder::default();
+
+        assert_eq!(decoder.push(b"\x1b[A"), b"\x1b[A");
+        assert!(decoder.flush().is_empty());
     }
 }

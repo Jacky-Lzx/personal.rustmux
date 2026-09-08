@@ -8,6 +8,8 @@
 
 所有命令均以 `Ctrl-b` 为前缀：
 
+前缀兼容传统控制字符、Kitty keyboard protocol 和 xterm modified-key 编码，因此在 fish 启用扩展键盘模式后仍然有效。
+
 - `c`：创建窗口
 - `n`：下一个窗口
 - `p`：上一个窗口
