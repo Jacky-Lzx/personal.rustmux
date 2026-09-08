@@ -1292,7 +1292,10 @@ fn draw_window_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, widt
     if width == 0 {
         return;
     }
-    output.extend_from_slice(b"\x1b[2K\x1b[0m");
+    // Reset to the outer terminal's default background before erasing. EL
+    // paints with the current background, which may otherwise leak a child
+    // application's grey background into the transparent tab-bar cells.
+    output.extend_from_slice(b"\x1b[0;49m\x1b[2K");
     let inner_width = usize::from(width);
     let mut used = 0;
     for (index, window) in windows.iter().enumerate() {
@@ -1323,9 +1326,9 @@ fn draw_window_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, widt
         }
         output.extend_from_slice(label.as_bytes());
         if index == active {
-            output.extend_from_slice("\x1b[0;32m".as_bytes());
+            output.extend_from_slice("\x1b[0;32;49m".as_bytes());
         } else {
-            output.extend_from_slice("\x1b[0;38;2;205;214;244m".as_bytes());
+            output.extend_from_slice("\x1b[0;38;2;205;214;244;49m".as_bytes());
         }
         used += label.chars().count() + 2;
     }
@@ -1336,7 +1339,7 @@ fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
     if width == 0 {
         return;
     }
-    output.extend_from_slice("\x1b[2K\x1b[32m┌".as_bytes());
+    output.extend_from_slice("\x1b[0;49m\x1b[2K\x1b[32m┌".as_bytes());
     let inner_width = usize::from(width.saturating_sub(2));
     let decorated = format!("─ {title} ");
     let title: String = decorated.chars().take(inner_width).collect();
@@ -1702,9 +1705,9 @@ mod tests {
         assert!(frame.contains('┘'));
         assert!(frame.contains(" 1 fish "));
         assert!(frame.contains(" 2 fish "));
-        assert!(frame.contains("\x1b[30;42m\x1b[1;30;42m 1 fish \x1b[0;32m"));
+        assert!(frame.contains("\x1b[30;42m\x1b[1;30;42m 1 fish \x1b[0;32;49m"));
         assert!(frame.contains(
-            "\x1b[30;48;2;205;214;244m\x1b[1;30;48;2;205;214;244m 2 fish \x1b[0;38;2;205;214;244m"
+            "\x1b[30;48;2;205;214;244m\x1b[1;30;48;2;205;214;244m 2 fish \x1b[0;38;2;205;214;244;49m"
         ));
         assert!(frame.contains("─ nvim project "));
         assert!(frame.contains("hello"));
