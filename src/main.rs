@@ -12,6 +12,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, size},
 };
 use nix::errno::Errno;
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::poll::{PollFd, PollFlags, poll};
 use nix::pty::{ForkptyResult, Winsize, forkpty};
 use nix::sys::signal::{Signal, kill};
@@ -22,7 +23,8 @@ const PREFIX: u8 = 0x02; // Ctrl-b
 const SCROLLBACK_LINES: usize = 1_000;
 const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(50);
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
-const MAX_KITTY_COMMAND_BYTES: usize = 8 * 1024 * 1024;
+const MAX_KITTY_COMMAND_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PTY_READS_PER_TICK: usize = 32;
 const ENCODED_PREFIXES: [&[u8]; 2] = [b"\x1b[98;5u", b"\x1b[27;5;98~"];
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -58,12 +60,13 @@ struct Window {
     terminal: vt100::Parser,
     cursor_style: CursorStyleTracker,
     kitty_graphics: KittyGraphicsParser,
-    pending_graphics: Vec<u8>,
+    pending_graphics: Vec<Vec<u8>>,
 }
 
 #[derive(Default)]
 struct KittyGraphicsParser {
     state: KittyGraphicsState,
+    utf8_continuations: u8,
 }
 
 #[derive(Default)]
@@ -84,26 +87,78 @@ enum KittyGraphicsState {
         escape: bool,
         c1: bool,
     },
+    PassthroughApc {
+        escape: bool,
+        c1: bool,
+    },
+}
+
+#[derive(Default)]
+struct KittyGraphicsOutput {
+    commands: Vec<Vec<u8>>,
+    terminal: Vec<u8>,
 }
 
 impl KittyGraphicsParser {
-    fn process(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
-        let mut complete = Vec::new();
+    fn process(&mut self, bytes: &[u8]) -> KittyGraphicsOutput {
+        let mut output = KittyGraphicsOutput {
+            commands: Vec::new(),
+            terminal: Vec::with_capacity(bytes.len().min(4096)),
+        };
         for &byte in bytes {
+            if matches!(self.state, KittyGraphicsState::Ground) {
+                if self.utf8_continuations > 0 {
+                    if byte & 0xc0 == 0x80 {
+                        output.terminal.push(byte);
+                        self.utf8_continuations -= 1;
+                        continue;
+                    }
+                    self.utf8_continuations = 0;
+                }
+                self.utf8_continuations = match byte {
+                    0xc2..=0xdf => 1,
+                    0xe0..=0xef => 2,
+                    0xf0..=0xf4 => 3,
+                    _ => 0,
+                };
+                if self.utf8_continuations > 0 {
+                    output.terminal.push(byte);
+                    continue;
+                }
+            }
             let state = std::mem::take(&mut self.state);
             self.state = match state {
-                KittyGraphicsState::Ground => Self::ground(byte),
-                KittyGraphicsState::Escape => match byte {
-                    b'_' => KittyGraphicsState::ApcPrefix {
-                        command: vec![0x1b, b'_'],
-                        c1: false,
-                    },
+                KittyGraphicsState::Ground => match byte {
                     0x1b => KittyGraphicsState::Escape,
                     0x9f => KittyGraphicsState::ApcPrefix {
                         command: vec![0x9f],
                         c1: true,
                     },
-                    _ => KittyGraphicsState::Ground,
+                    _ => {
+                        output.terminal.push(byte);
+                        KittyGraphicsState::Ground
+                    }
+                },
+                KittyGraphicsState::Escape => match byte {
+                    b'_' => KittyGraphicsState::ApcPrefix {
+                        command: vec![0x1b, b'_'],
+                        c1: false,
+                    },
+                    0x1b => {
+                        output.terminal.push(0x1b);
+                        KittyGraphicsState::Escape
+                    }
+                    0x9f => {
+                        output.terminal.push(0x1b);
+                        KittyGraphicsState::ApcPrefix {
+                            command: vec![0x9f],
+                            c1: true,
+                        }
+                    }
+                    _ => {
+                        output.terminal.extend_from_slice(&[0x1b, byte]);
+                        KittyGraphicsState::Ground
+                    }
                 },
                 KittyGraphicsState::ApcPrefix { mut command, c1 } => {
                     if byte == b'G' {
@@ -114,7 +169,16 @@ impl KittyGraphicsParser {
                             c1,
                         }
                     } else {
-                        Self::ground(byte)
+                        output.terminal.extend_from_slice(&command);
+                        output.terminal.push(byte);
+                        if c1 && byte == 0x9c {
+                            KittyGraphicsState::Ground
+                        } else {
+                            KittyGraphicsState::PassthroughApc {
+                                escape: byte == 0x1b,
+                                c1,
+                            }
+                        }
                     }
                 }
                 KittyGraphicsState::Graphics {
@@ -125,7 +189,7 @@ impl KittyGraphicsParser {
                     command.push(byte);
                     let terminated = (c1 && byte == 0x9c) || (!c1 && escape && byte == b'\\');
                     if terminated {
-                        complete.push(command);
+                        output.commands.push(command);
                         KittyGraphicsState::Ground
                     } else if command.len() >= MAX_KITTY_COMMAND_BYTES {
                         KittyGraphicsState::Discard {
@@ -151,20 +215,21 @@ impl KittyGraphicsParser {
                         }
                     }
                 }
+                KittyGraphicsState::PassthroughApc { escape, c1 } => {
+                    output.terminal.push(byte);
+                    let terminated = (c1 && byte == 0x9c) || (!c1 && escape && byte == b'\\');
+                    if terminated {
+                        KittyGraphicsState::Ground
+                    } else {
+                        KittyGraphicsState::PassthroughApc {
+                            escape: byte == 0x1b,
+                            c1,
+                        }
+                    }
+                }
             };
         }
-        complete
-    }
-
-    fn ground(byte: u8) -> KittyGraphicsState {
-        match byte {
-            0x1b => KittyGraphicsState::Escape,
-            0x9f => KittyGraphicsState::ApcPrefix {
-                command: vec![0x9f],
-                c1: true,
-            },
-            _ => KittyGraphicsState::Ground,
-        }
+        output
     }
 }
 
@@ -302,6 +367,7 @@ struct App {
     input_decoder: InputDecoder,
     renderer: Renderer,
     terminal_size: (u16, u16),
+    terminal_identity: String,
     redraw_deadline: Option<Instant>,
 }
 
@@ -316,6 +382,7 @@ impl App {
             input_decoder: InputDecoder::default(),
             renderer: Renderer::default(),
             terminal_size,
+            terminal_identity: outer_terminal_identity(),
             redraw_deadline: None,
         };
         app.create_window()?;
@@ -330,13 +397,15 @@ impl App {
             .unwrap_or(&shell)
             .to_owned();
         let shell = CString::new(shell)?;
-        let (columns, rows) = content_size(self.terminal_size);
-        let winsize = winsize((columns, rows));
+        let winsize = content_winsize(self.terminal_size);
+        let (columns, rows) = (winsize.ws_col, winsize.ws_row);
 
         // SAFETY: the child immediately calls execvp and _exit, both of which are
         // async-signal-safe; all application bookkeeping remains in the parent.
         match unsafe { forkpty(&winsize, None) }? {
             ForkptyResult::Parent { child, master } => {
+                let flags = OFlag::from_bits_truncate(fcntl(&master, FcntlArg::F_GETFL)?);
+                fcntl(&master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
                 let id = self.next_id;
                 self.next_id += 1;
                 self.windows.push(Window {
@@ -366,7 +435,7 @@ impl App {
     fn run(&mut self) -> Result<()> {
         let stdin = io::stdin();
         let mut input = [0_u8; 4096];
-        let mut output = [0_u8; 16 * 1024];
+        let mut output = [0_u8; 64 * 1024];
 
         while !self.windows.is_empty() {
             self.update_size()?;
@@ -402,34 +471,12 @@ impl App {
 
             for (index, event) in pty_events.into_iter().enumerate() {
                 if event.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
-                    match read(&self.windows[index].master, &mut output) {
-                        Ok(0) | Err(Errno::EIO) => {}
-                        Ok(count) => {
-                            self.windows[index].cursor_style.process(&output[..count]);
-                            let graphics =
-                                self.windows[index].kitty_graphics.process(&output[..count]);
-                            let mut graphics_responses = Vec::new();
-                            for command in graphics {
-                                if let Some(response) = kitty_graphics_query_response(&command) {
-                                    graphics_responses.extend_from_slice(&response);
-                                } else {
-                                    self.windows[index]
-                                        .pending_graphics
-                                        .extend_from_slice(&command);
-                                }
-                            }
-                            self.windows[index].terminal.process(&output[..count]);
-                            graphics_responses
-                                .extend_from_slice(&terminal_responses(&output[..count]));
-                            if !graphics_responses.is_empty() {
-                                write_fd(&self.windows[index].master, &graphics_responses)?;
-                            }
-                            if index == self.active {
-                                self.schedule_redraw();
-                            }
+                    for _ in 0..MAX_PTY_READS_PER_TICK {
+                        match read(&self.windows[index].master, &mut output) {
+                            Ok(0) | Err(Errno::EIO) | Err(Errno::EAGAIN) => break,
+                            Ok(count) => self.process_pty_output(index, &output[..count])?,
+                            Err(error) => return Err(error.into()),
                         }
-                        Err(Errno::EAGAIN) => {}
-                        Err(error) => return Err(error.into()),
                     }
                 }
             }
@@ -484,6 +531,44 @@ impl App {
             self.write_active(&passthrough)?;
         }
         Ok(true)
+    }
+
+    fn process_pty_output(&mut self, index: usize, output: &[u8]) -> Result<()> {
+        let parsed = self.windows[index].kitty_graphics.process(output);
+        let terminal_changed = !parsed.terminal.is_empty();
+        self.windows[index].cursor_style.process(&parsed.terminal);
+        let mut graphics_responses = Vec::new();
+        let mut graphics_changed = false;
+        let mut flush_graphics_immediately = false;
+        for command in parsed.commands {
+            if let Some(response) = kitty_graphics_query_response(&command) {
+                graphics_responses.extend_from_slice(&response);
+            } else {
+                flush_graphics_immediately |= kitty_graphics_uses_shared_memory(&command);
+                self.windows[index].pending_graphics.push(command);
+                graphics_changed = true;
+            }
+        }
+        self.windows[index].terminal.process(&parsed.terminal);
+        graphics_responses.extend_from_slice(&terminal_responses(
+            &parsed.terminal,
+            content_winsize(self.terminal_size),
+            &self.terminal_identity,
+        ));
+        if !graphics_responses.is_empty() {
+            write_fd(&self.windows[index].master, &graphics_responses)?;
+        }
+        if index == self.active && (terminal_changed || graphics_changed) {
+            if flush_graphics_immediately {
+                // A shared-memory object must be opened by the outer terminal
+                // promptly. Flush every older graphics command with it so a
+                // queued delete cannot overtake and erase the new upload.
+                self.redraw()?;
+            } else {
+                self.schedule_redraw();
+            }
+        }
+        Ok(())
     }
 
     fn write_active(&self, bytes: &[u8]) -> Result<()> {
@@ -578,8 +663,8 @@ impl App {
             return Ok(());
         }
         self.terminal_size = new_size;
-        let (columns, rows) = content_size(new_size);
-        let winsize = winsize((columns, rows));
+        let winsize = content_winsize(new_size);
+        let (columns, rows) = (winsize.ws_col, winsize.ws_row);
         for window in &self.windows {
             // SAFETY: master is an open PTY descriptor and winsize is valid.
             let result = unsafe {
@@ -648,7 +733,7 @@ impl Renderer {
         windows: &[Window],
         active: usize,
         terminal_size: (u16, u16),
-        graphics: &[u8],
+        graphics: &[Vec<u8>],
     ) -> Vec<u8> {
         let current = FrameSnapshot::capture(windows, active, terminal_size);
         let Some(previous) = &self.previous else {
@@ -692,16 +777,23 @@ impl Renderer {
         let state_changed = previous.terminal_state != current.terminal_state;
         let graphics_changed = !graphics.is_empty();
         let mut output = Vec::new();
+        // Keep potentially multi-megabyte image uploads outside synchronized
+        // text updates. Some terminals cap or time out synchronized buffers;
+        // the following text frame will expose the uploaded image atomically
+        // when it paints the Unicode placeholders.
+        if graphics_changed && !previous.terminal_state.hide_cursor {
+            output.extend_from_slice(b"\x1b[?25l");
+        }
+        append_graphics(&mut output, graphics, &current.terminal_state);
         if cells_changed || state_changed || graphics_changed {
             // DEC synchronized output makes the terminal display this diff as one
             // frame. Unknown DEC private modes are safely ignored by terminals
             // which do not implement mode 2026.
             output.extend_from_slice(b"\x1b[?2026h");
         }
-        if (cells_changed || graphics_changed) && !previous.terminal_state.hide_cursor {
+        if cells_changed && !graphics_changed && !previous.terminal_state.hide_cursor {
             output.extend_from_slice(b"\x1b[?25l");
         }
-        append_graphics(&mut output, graphics, &current.terminal_state);
         for (row, first, last) in changes {
             let _ = write!(output, "\x1b[{};{}H", row + 2, first + 2);
             let mut previous_style = None;
@@ -829,7 +921,7 @@ fn render_frame(
     windows: &[Window],
     active: usize,
     terminal_size: (u16, u16),
-    graphics: &[u8],
+    graphics: &[Vec<u8>],
 ) -> Vec<u8> {
     let (width, height) = terminal_size;
     let (content_columns, content_rows) = content_size(terminal_size);
@@ -878,13 +970,16 @@ fn render_frame(
     output
 }
 
-fn append_graphics(output: &mut Vec<u8>, graphics: &[u8], state: &TerminalState) {
+fn append_graphics(output: &mut Vec<u8>, graphics: &[Vec<u8>], state: &TerminalState) {
     if graphics.is_empty() {
         return;
     }
+    output.reserve(graphics.iter().map(Vec::len).sum());
     let (row, column) = state.cursor;
     let _ = write!(output, "\x1b[{};{}H", row + 2, column + 2);
-    output.extend_from_slice(graphics);
+    for command in graphics {
+        output.extend_from_slice(command);
+    }
 }
 
 fn append_terminal_state(output: &mut Vec<u8>, state: &TerminalState, active_id: usize) {
@@ -1008,23 +1103,77 @@ fn write_color(output: &mut Vec<u8>, color: vt100::Color, foreground: bool) {
     }
 }
 
-fn terminal_responses(output: &[u8]) -> Vec<u8> {
+fn terminal_responses(output: &[u8], window: Winsize, terminal_identity: &str) -> Vec<u8> {
+    const MODE_QUERIES: &[(&[u8], u16)] = &[
+        (b"\x1b[?69$p", 69),
+        (b"\x1b[?2026$p", 2026),
+        (b"\x1b[?2027$p", 2027),
+        (b"\x1b[?2031$p", 2031),
+        (b"\x1b[?2048$p", 2048),
+    ];
     let mut responses = Vec::new();
-    if output.windows(4).any(|window| window == b"\x1b[0c")
-        || output.windows(3).any(|window| window == b"\x1b[c")
+    for position in output
+        .iter()
+        .enumerate()
+        .filter_map(|(position, byte)| (*byte == 0x1b).then_some(position))
     {
-        responses.extend_from_slice(b"\x1b[?1;2c");
-    }
-    if output.windows(4).any(|window| window == b"\x1b[?u") {
-        responses.extend_from_slice(b"\x1b[?0u");
-    }
-    if output.windows(5).any(|window| window == b"\x1b[>0q") {
-        responses.extend_from_slice(b"\x1bP>|rustmux 0.1.0\x1b\\");
-    }
-    if output.windows(8).any(|window| window == b"\x1b]11;?\x1b\\") {
-        responses.extend_from_slice(b"\x1b]11;rgb:0000/0000/0000\x1b\\");
+        let query = &output[position..];
+        let mode = MODE_QUERIES
+            .iter()
+            .find_map(|(request, mode)| query.starts_with(request).then_some(*mode));
+        if let Some(mode) = mode {
+            let status = if mode == 2026 { 2 } else { 0 };
+            let _ = write!(responses, "\x1b[?{mode};{status}$y");
+        } else if query.starts_with(b"\x1bP$qm\x1b\\") {
+            responses.extend_from_slice(b"\x1bP1$r0m\x1b\\");
+        } else if query.starts_with(b"\x1b[0c") || query.starts_with(b"\x1b[c") {
+            responses.extend_from_slice(b"\x1b[?1;2c");
+        } else if query.starts_with(b"\x1b[?u") {
+            responses.extend_from_slice(b"\x1b[?0u");
+        } else if query.starts_with(b"\x1b[5n") {
+            responses.extend_from_slice(b"\x1b[0n");
+        } else if query.starts_with(b"\x1b[>0q") || query.starts_with(b"\x1b[>q") {
+            let _ = write!(responses, "\x1bP>|{terminal_identity}\x1b\\");
+        } else if query.starts_with(b"\x1b]11;?\x1b\\") || query.starts_with(b"\x1b]11;?\x07") {
+            responses.extend_from_slice(b"\x1b]11;rgb:0000/0000/0000\x1b\\");
+        } else if window.ws_xpixel > 0 && window.ws_ypixel > 0 && query.starts_with(b"\x1b[14t") {
+            let _ = write!(
+                responses,
+                "\x1b[4;{};{}t",
+                window.ws_ypixel, window.ws_xpixel
+            );
+        } else if window.ws_xpixel > 0 && window.ws_ypixel > 0 && query.starts_with(b"\x1b[16t") {
+            let cell_width = window.ws_xpixel / window.ws_col.max(1);
+            let cell_height = window.ws_ypixel / window.ws_row.max(1);
+            let _ = write!(responses, "\x1b[6;{cell_height};{cell_width}t");
+        }
     }
     responses
+}
+
+fn outer_terminal_identity() -> String {
+    let term_program = env::var("TERM_PROGRAM").unwrap_or_default();
+    let term = env::var("TERM").unwrap_or_default();
+    let fingerprint = format!("{term_program} {term}").to_ascii_lowercase();
+    let name = if env::var_os("KITTY_WINDOW_ID").is_some() || fingerprint.contains("kitty") {
+        "kitty"
+    } else if fingerprint.contains("ghostty") {
+        "ghostty"
+    } else if fingerprint.contains("wezterm") {
+        "wezterm"
+    } else {
+        "rustmux"
+    };
+    let version = env::var("TERM_PROGRAM_VERSION")
+        .ok()
+        .filter(|version| {
+            !version.is_empty()
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b".-_".contains(&byte))
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+    format!("{name} {version}")
 }
 
 fn kitty_graphics_query_response(command: &[u8]) -> Option<Vec<u8>> {
@@ -1062,10 +1211,35 @@ fn kitty_graphics_query_response(command: &[u8]) -> Option<Vec<u8>> {
     Some(response)
 }
 
+fn kitty_graphics_uses_shared_memory(command: &[u8]) -> bool {
+    let control_start = if command.starts_with(b"\x1b_G") {
+        3
+    } else if command.starts_with(b"\x9fG") {
+        2
+    } else {
+        return false;
+    };
+    let control_end = command[control_start..]
+        .iter()
+        .position(|&byte| byte == b';')
+        .map_or(command.len(), |end| control_start + end);
+    command[control_start..control_end]
+        .split(|&byte| byte == b',')
+        .any(|field| field == b"t=s")
+}
+
 fn write_fd(fd: &OwnedFd, mut bytes: &[u8]) -> Result<()> {
     while !bytes.is_empty() {
-        let count = write(fd, bytes)?;
-        bytes = &bytes[count..];
+        match write(fd, bytes) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero).into()),
+            Ok(count) => bytes = &bytes[count..],
+            Err(Errno::EINTR) => {}
+            Err(Errno::EAGAIN) => {
+                let mut poll_fd = [PollFd::new(fd.as_fd(), PollFlags::POLLOUT)];
+                poll(&mut poll_fd, 100_u16)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(())
 }
@@ -1077,7 +1251,8 @@ fn content_size((columns, rows): (u16, u16)) -> (u16, u16) {
     )
 }
 
-fn winsize((columns, rows): (u16, u16)) -> Winsize {
+fn content_winsize(terminal_size: (u16, u16)) -> Winsize {
+    let (columns, rows) = content_size(terminal_size);
     Winsize {
         ws_row: rows,
         ws_col: columns,
@@ -1136,10 +1311,12 @@ mod tests {
     }
 
     #[test]
-    fn winsize_maps_columns_and_rows() {
-        let value = winsize((120, 40));
+    fn content_winsize_excludes_border_cells_and_leaves_pixels_unknown() {
+        let value = content_winsize((122, 42));
         assert_eq!(value.ws_col, 120);
         assert_eq!(value.ws_row, 40);
+        assert_eq!(value.ws_xpixel, 0);
+        assert_eq!(value.ws_ypixel, 0);
     }
 
     #[test]
@@ -1228,29 +1405,80 @@ mod tests {
         let mut parser = KittyGraphicsParser::default();
         let command = b"\x1b_Ga=T,f=100,m=0;YWJj\x1b\\";
 
-        assert!(parser.process(b"text\x1b_Ga=T,f=100,").is_empty());
-        assert!(parser.process(b"m=0;YWJj\x1b").is_empty());
-        assert_eq!(parser.process(b"\\tail"), vec![command.to_vec()]);
+        let first = parser.process(b"text\x1b_Ga=T,f=100,");
+        assert!(first.commands.is_empty());
+        assert_eq!(first.terminal, b"text");
+        let middle = parser.process(b"m=0;YWJj\x1b");
+        assert!(middle.commands.is_empty());
+        assert!(middle.terminal.is_empty());
+        let last = parser.process(b"\\tail");
+        assert_eq!(last.commands, vec![command.to_vec()]);
+        assert_eq!(last.terminal, b"tail");
 
-        assert!(parser.process(b"\x1b_not-kitty\x1b\\").is_empty());
-        assert_eq!(
-            parser.process(b"\x9fGa=d,d=A\x9c"),
-            vec![b"\x9fGa=d,d=A\x9c".to_vec()]
-        );
+        let passthrough = parser.process(b"\x1b_not-kitty\x1b\\");
+        assert!(passthrough.commands.is_empty());
+        assert_eq!(passthrough.terminal, b"\x1b_not-kitty\x1b\\");
+        let c1 = parser.process(b"\x9fGa=d,d=A\x9c");
+        assert_eq!(c1.commands, vec![b"\x9fGa=d,d=A\x9c".to_vec()]);
+        assert!(c1.terminal.is_empty());
+    }
+
+    #[test]
+    fn kitty_graphics_parser_does_not_treat_utf8_continuations_as_c1_controls() {
+        let mut parser = KittyGraphicsParser::default();
+        let command = b"\x1b_Gq=2,a=T,t=s,i=42;/yazi-image\x1b\\";
+
+        let first = parser.process(&[0xf0]);
+        assert_eq!(first.terminal, [0xf0]);
+        assert!(first.commands.is_empty());
+
+        let mut remainder = vec![0x9f, 0x93, 0x84]; // U+1F4C4 PAGE FACING UP
+        remainder.extend_from_slice(command);
+        let second = parser.process(&remainder);
+        assert_eq!(second.terminal, [0x9f, 0x93, 0x84]);
+        assert_eq!(second.commands, vec![command.to_vec()]);
     }
 
     #[test]
     fn kitty_graphics_query_is_acknowledged_before_device_attributes() {
         let query = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
         let mut responses = kitty_graphics_query_response(query).expect("query response");
-        responses.extend_from_slice(&terminal_responses(b"\x1b[c"));
+        responses.extend_from_slice(&terminal_responses(
+            b"\x1b[c",
+            content_winsize((80, 24)),
+            "kitty 0.40.0",
+        ));
 
         assert_eq!(responses, b"\x1b_Gi=31;OK\x1b\\\x1b[?1;2c");
         assert!(kitty_graphics_query_response(b"\x1b_Ga=p,i=31;\x1b\\").is_none());
     }
 
     #[test]
-    fn renderer_combines_kitty_upload_with_unicode_placeholder() {
+    fn kitty_shared_memory_uploads_are_detected_for_immediate_forwarding() {
+        assert!(kitty_graphics_uses_shared_memory(
+            b"\x1b_Gq=2,a=T,t=s,S=534240,i=31;L3lhemktaW1hZ2U=\x1b\\"
+        ));
+        assert!(!kitty_graphics_uses_shared_memory(
+            b"\x1b_Gq=2,a=T,t=d,f=24,i=31;AAAA\x1b\\"
+        ));
+    }
+
+    #[test]
+    fn large_kitty_payload_is_forwarded_without_text_parsing() {
+        let payload = vec![b'A'; 9 * 1024 * 1024];
+        let mut command = b"\x1b_Ga=T,f=100,m=0;".to_vec();
+        command.extend_from_slice(&payload);
+        command.extend_from_slice(b"\x1b\\");
+
+        let mut parser = KittyGraphicsParser::default();
+        let parsed = parser.process(&command);
+
+        assert_eq!(parsed.commands, vec![command]);
+        assert!(parsed.terminal.is_empty());
+    }
+
+    #[test]
+    fn renderer_preserves_kitty_delete_upload_and_placeholder_order() {
         let window = test_window(1, "fish", 3, 18);
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
@@ -1259,19 +1487,31 @@ mod tests {
         let placeholder = "\u{10eeee}\u{0305}\u{0305}";
         let contents = format!("\x1b[38;2;0;0;42m{placeholder}");
         windows[0].terminal.process(contents.as_bytes());
-        let graphics = b"\x1b_Ga=T,f=100,U=1,i=42,c=1,r=1;YWJj\x1b\\";
-        let update = renderer.render(&windows, 0, (20, 5), graphics);
+        let delete = b"\x1b_Gq=2,a=d,d=A;\x1b\\";
+        let graphics = b"\x1b_Ga=T,t=s,U=1,i=42,c=1,r=1;/rustmux-image\x1b\\";
+        let graphics_commands = vec![delete.to_vec(), graphics.to_vec()];
+        let update = renderer.render(&windows, 0, (20, 5), &graphics_commands);
 
+        let delete_at = update
+            .windows(delete.len())
+            .position(|part| part == delete)
+            .expect("graphics deletion is forwarded");
         let graphics_at = update
             .windows(graphics.len())
             .position(|part| part == graphics)
             .expect("graphics command is forwarded");
+        let synchronized_update_at = update
+            .windows(b"\x1b[?2026h".len())
+            .position(|part| part == b"\x1b[?2026h")
+            .expect("text update is synchronized");
         let placeholder = placeholder.as_bytes();
         let placeholder_at = update
             .windows(placeholder.len())
             .position(|part| part == placeholder)
             .expect("unicode placeholder is rendered");
-        assert!(graphics_at < placeholder_at);
+        assert!(delete_at < graphics_at);
+        assert!(graphics_at < synchronized_update_at);
+        assert!(synchronized_update_at < placeholder_at);
         let image_id_color = b"\x1b[38;2;0;0;42m";
         assert!(
             update
@@ -1282,16 +1522,44 @@ mod tests {
 
     #[test]
     fn terminal_queries_receive_local_responses() {
-        let responses = terminal_responses(b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[0c");
+        let responses = terminal_responses(
+            b"\x1b[?2026$p\x1bP$qm\x1b\\\x1b[?u\x1b[5n\x1b[>q\x1b]11;?\x1b\\\x1b[0c\x1b[14t\x1b[16t",
+            content_winsize((80, 24)),
+            "kitty 0.40.0",
+        );
 
         assert!(responses.windows(7).any(|part| part == b"\x1b[?1;2c"));
         assert!(responses.windows(5).any(|part| part == b"\x1b[?0u"));
+        assert!(responses.windows(4).any(|part| part == b"\x1b[0n"));
+        let sync_mode = b"\x1b[?2026;2$y";
+        assert!(
+            responses
+                .windows(sync_mode.len())
+                .any(|part| part == sync_mode)
+        );
+        let sgr_status = b"\x1bP1$r0m\x1b\\";
+        assert!(
+            responses
+                .windows(sgr_status.len())
+                .any(|part| part == sgr_status)
+        );
+        let terminal_identity = b"\x1bP>|kitty 0.40.0\x1b\\";
+        assert!(
+            responses
+                .windows(terminal_identity.len())
+                .any(|part| part == terminal_identity)
+        );
         let background = b"\x1b]11;rgb:0000/0000/0000\x1b\\";
         assert!(
             responses
                 .windows(background.len())
                 .any(|part| part == background)
         );
+        let bell_background =
+            terminal_responses(b"\x1b]11;?\x07", content_winsize((80, 24)), "kitty 0.40.0");
+        assert_eq!(bell_background, background);
+        assert!(!responses.windows(4).any(|part| part == b"\x1b[4;"));
+        assert!(!responses.windows(4).any(|part| part == b"\x1b[6;"));
     }
 
     #[test]
