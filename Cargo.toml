@@ -1,0 +1,11 @@
+[package]
+name = "rustmux"
+version = "0.1.0"
+edition = "2024"
+description = "A small tmux-like terminal multiplexer written in Rust"
+license = "MIT"
+
+[dependencies]
+crossterm = "0.29"
+nix = { version = "0.31", features = ["fs", "poll", "process", "signal", "term"] }
+
