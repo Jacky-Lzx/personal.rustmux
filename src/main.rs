@@ -703,10 +703,13 @@ impl App {
             }
         }
         self.windows[index].terminal.process(&parsed.terminal);
+        let screen = self.windows[index].terminal.screen();
         graphics_responses.extend_from_slice(&terminal_responses(
             &parsed.terminal,
             content_winsize(self.terminal_size, self.terminal_pixels),
             &self.terminal_identity,
+            screen.cursor_position(),
+            screen.bracketed_paste(),
         ));
         if !graphics_responses.is_empty() {
             write_fd(&self.windows[index].master, &graphics_responses)?;
@@ -1380,9 +1383,16 @@ fn write_color(output: &mut Vec<u8>, color: vt100::Color, foreground: bool) {
     }
 }
 
-fn terminal_responses(output: &[u8], window: Winsize, terminal_identity: &str) -> Vec<u8> {
+fn terminal_responses(
+    output: &[u8],
+    window: Winsize,
+    terminal_identity: &str,
+    cursor: (u16, u16),
+    bracketed_paste: bool,
+) -> Vec<u8> {
     const MODE_QUERIES: &[(&[u8], u16)] = &[
         (b"\x1b[?69$p", 69),
+        (b"\x1b[?2004$p", 2004),
         (b"\x1b[?2026$p", 2026),
         (b"\x1b[?2027$p", 2027),
         (b"\x1b[?2031$p", 2031),
@@ -1399,7 +1409,11 @@ fn terminal_responses(output: &[u8], window: Winsize, terminal_identity: &str) -
             .iter()
             .find_map(|(request, mode)| query.starts_with(request).then_some(*mode));
         if let Some(mode) = mode {
-            let status = if mode == 2026 { 2 } else { 0 };
+            let status = match mode {
+                2004 if bracketed_paste => 1,
+                2004 | 2026 => 2,
+                _ => 0,
+            };
             let _ = write!(responses, "\x1b[?{mode};{status}$y");
         } else if query.starts_with(b"\x1bP$qm\x1b\\") {
             responses.extend_from_slice(b"\x1bP1$r0m\x1b\\");
@@ -1409,6 +1423,8 @@ fn terminal_responses(output: &[u8], window: Winsize, terminal_identity: &str) -
             responses.extend_from_slice(b"\x1b[?0u");
         } else if query.starts_with(b"\x1b[5n") {
             responses.extend_from_slice(b"\x1b[0n");
+        } else if query.starts_with(b"\x1b[6n") {
+            let _ = write!(responses, "\x1b[{};{}R", cursor.0 + 1, cursor.1 + 1);
         } else if query.starts_with(b"\x1b[>0q") || query.starts_with(b"\x1b[>q") {
             let _ = write!(responses, "\x1bP>|{terminal_identity}\x1b\\");
         } else if query.starts_with(b"\x1b]11;?\x1b\\") || query.starts_with(b"\x1b]11;?\x07") {
@@ -1812,6 +1828,8 @@ mod tests {
             b"\x1b[c",
             content_winsize((80, 24), (1360, 792)),
             "kitty 0.40.0",
+            (0, 0),
+            false,
         ));
 
         assert_eq!(responses, b"\x1b_Gi=31;OK\x1b\\\x1b[?1;2c");
@@ -1888,14 +1906,23 @@ mod tests {
     #[test]
     fn terminal_queries_receive_local_responses() {
         let responses = terminal_responses(
-            b"\x1b[?2026$p\x1bP$qm\x1b\\\x1b[?u\x1b[5n\x1b[>q\x1b]11;?\x1b\\\x1b[0c\x1b[14t\x1b[16t",
+            b"\x1b[?2004$p\x1b[?2026$p\x1bP$qm\x1b\\\x1b[?u\x1b[5n\x1b[6n\x1b[>q\x1b]11;?\x1b\\\x1b[0c\x1b[14t\x1b[16t",
             content_winsize((80, 24), (1360, 792)),
             "kitty 0.40.0",
+            (7, 11),
+            false,
         );
 
         assert!(responses.windows(7).any(|part| part == b"\x1b[?1;2c"));
         assert!(responses.windows(5).any(|part| part == b"\x1b[?0u"));
         assert!(responses.windows(4).any(|part| part == b"\x1b[0n"));
+        assert!(responses.windows(7).any(|part| part == b"\x1b[8;12R"));
+        let paste_mode = b"\x1b[?2004;2$y";
+        assert!(
+            responses
+                .windows(paste_mode.len())
+                .any(|part| part == paste_mode)
+        );
         let sync_mode = b"\x1b[?2026;2$y";
         assert!(
             responses
@@ -1924,6 +1951,8 @@ mod tests {
             b"\x1b]11;?\x07",
             content_winsize((80, 24), (1360, 792)),
             "kitty 0.40.0",
+            (0, 0),
+            false,
         );
         assert_eq!(bell_background, background);
         assert!(
