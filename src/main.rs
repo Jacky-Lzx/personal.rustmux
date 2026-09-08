@@ -5,11 +5,9 @@ use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
 use crossterm::{
-    cursor::{Hide, Show},
+    cursor::Show,
     execute,
-    terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode, size,
-    },
+    terminal::{disable_raw_mode, enable_raw_mode, size},
 };
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, poll};
@@ -28,17 +26,17 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, Hide) {
-            let _ = disable_raw_mode();
-            return Err(error.into());
-        }
         Ok(Self)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
+        // Inner programs such as fish and Vim may change cursor visibility.
+        // Do not manage the alternate screen here: terminal alternate buffers
+        // are not nestable, so an inner program leaving one would also eject
+        // rustmux from its own buffer.
+        let _ = execute!(io::stdout(), Show);
         let _ = disable_raw_mode();
     }
 }
@@ -129,7 +127,11 @@ impl App {
                 ));
             }
 
-            poll(&mut poll_fds, 100_u16)?;
+            match poll(&mut poll_fds, 100_u16) {
+                Ok(_) => {}
+                Err(Errno::EINTR) => continue,
+                Err(error) => return Err(error.into()),
+            }
             let stdin_ready = poll_fds[0]
                 .revents()
                 .unwrap_or_else(PollFlags::empty)

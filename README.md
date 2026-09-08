@@ -30,4 +30,4 @@ rustmux
 
 ## MVP 边界
 
-当前版本是单进程复用器，窗口内运行 `$SHELL`，支持终端尺寸同步，并为每个窗口保留最多 1 MiB 输出用于切换时重放。退出 rustmux 会结束其 shell。尚未实现 tmux 的后台 server/session 持久化、分屏、鼠标、配置文件和完整终端状态模拟。
+当前版本是单进程复用器，窗口内运行 `$SHELL`，支持终端尺寸同步，并为每个窗口保留最多 1 MiB 输出用于切换时重放。rustmux 不占用 alternate screen，因此 fish、Vim 等内部程序可以自行安全地切换屏幕缓冲区。退出 rustmux 会结束其 shell。尚未实现 tmux 的后台 server/session 持久化、分屏、鼠标、配置文件和完整终端状态模拟。
