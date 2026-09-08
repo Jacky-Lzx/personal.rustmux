@@ -25,6 +25,7 @@ const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(50);
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const MAX_KITTY_COMMAND_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PTY_READS_PER_TICK: usize = 32;
+const MOUSE_SCROLL_LINES: usize = 3;
 const ENCODED_PREFIXES: [&[u8]; 2] = [b"\x1b[98;5u", b"\x1b[27;5;98~"];
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -34,6 +35,9 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        stdout.flush()?;
         Ok(Self)
     }
 }
@@ -72,6 +76,13 @@ enum HistoryAction {
     Bottom,
     Exit,
     Ignore,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MouseAction {
+    ScrollUp,
+    ScrollDown,
+    Other,
 }
 
 #[derive(Default)]
@@ -523,7 +534,16 @@ impl App {
         let mut index = 0;
         while index < bytes.len() {
             let byte = bytes[index];
-            if self.prefix_pending {
+            if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
+                if !passthrough.is_empty() {
+                    self.write_active(&passthrough)?;
+                    passthrough.clear();
+                }
+                self.prefix_pending = false;
+                self.apply_mouse_action(mouse)?;
+                index += consumed;
+                continue;
+            } else if self.prefix_pending {
                 self.prefix_pending = false;
                 if !passthrough.is_empty() {
                     self.write_active(&passthrough)?;
@@ -601,6 +621,37 @@ impl App {
             window.history_mode = false;
         }
         if changed {
+            self.redraw()?;
+        }
+        Ok(())
+    }
+
+    fn apply_mouse_action(&mut self, action: MouseAction) -> Result<()> {
+        let window = &mut self.windows[self.active];
+        let current = window.terminal.screen().scrollback();
+        let was_history_mode = window.history_mode;
+        match action {
+            MouseAction::ScrollUp => {
+                window.history_mode = true;
+                window
+                    .terminal
+                    .screen_mut()
+                    .set_scrollback(current.saturating_add(MOUSE_SCROLL_LINES));
+            }
+            MouseAction::ScrollDown if window.history_mode => {
+                window
+                    .terminal
+                    .screen_mut()
+                    .set_scrollback(current.saturating_sub(MOUSE_SCROLL_LINES));
+                if window.terminal.screen().scrollback() == 0 {
+                    window.history_mode = false;
+                }
+            }
+            MouseAction::ScrollDown | MouseAction::Other => return Ok(()),
+        }
+        if was_history_mode != window.history_mode
+            || current != window.terminal.screen().scrollback()
+        {
             self.redraw()?;
         }
         Ok(())
@@ -789,6 +840,32 @@ impl App {
             let _ = waitpid(window.child, None);
         }
     }
+}
+
+fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
+    if !bytes.starts_with(b"\x1b[<") {
+        return None;
+    }
+    let final_offset = bytes[3..]
+        .iter()
+        .position(|byte| *byte == b'M' || *byte == b'm')?;
+    let final_index = final_offset + 3;
+    let button = bytes[3..final_index]
+        .split(|byte| *byte == b';')
+        .next()
+        .and_then(|digits| {
+            digits.iter().try_fold(0_u16, |value, digit| {
+                digit
+                    .is_ascii_digit()
+                    .then(|| value.saturating_mul(10) + u16::from(digit - b'0'))
+            })
+        });
+    let action = match button {
+        Some(button) if button & 64 != 0 && button & 3 == 0 => MouseAction::ScrollUp,
+        Some(button) if button & 64 != 0 && button & 3 == 1 => MouseAction::ScrollDown,
+        _ => MouseAction::Other,
+    };
+    Some((action, final_index + 1))
 }
 
 fn decode_history_action(bytes: &[u8], page_rows: usize) -> (HistoryAction, usize) {
@@ -1479,6 +1556,27 @@ mod tests {
         );
         assert_eq!(decode_history_action(b"g", 20), (HistoryAction::Top, 1));
         assert_eq!(decode_history_action(b"\x1b", 20), (HistoryAction::Exit, 1));
+    }
+
+    #[test]
+    fn sgr_mouse_decoder_recognizes_vertical_wheel_events() {
+        assert_eq!(
+            decode_sgr_mouse(b"\x1b[<64;10;5M"),
+            Some((MouseAction::ScrollUp, 11))
+        );
+        assert_eq!(
+            decode_sgr_mouse(b"\x1b[<69;10;5M"),
+            Some((MouseAction::ScrollDown, 11))
+        );
+        assert_eq!(
+            decode_sgr_mouse(b"\x1b[<66;10;5M"),
+            Some((MouseAction::Other, 11))
+        );
+        assert_eq!(
+            decode_sgr_mouse(b"\x1b[<0;10;5M"),
+            Some((MouseAction::Other, 10))
+        );
+        assert_eq!(decode_sgr_mouse(b"\x1b[<64;10"), None);
     }
 
     #[test]
