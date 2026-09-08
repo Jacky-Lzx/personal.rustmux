@@ -21,6 +21,7 @@ use nix::unistd::{Pid, execvp, read, write};
 const PREFIX: u8 = 0x02; // Ctrl-b
 const SCROLLBACK_LINES: usize = 1_000;
 const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(50);
+const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const ENCODED_PREFIXES: [&[u8]; 2] = [b"\x1b[98;5u", b"\x1b[27;5;98~"];
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -41,7 +42,7 @@ impl Drop for TerminalGuard {
         // are not nestable, so an inner program leaving one would also eject
         // rustmux from its own buffer.
         let _ = io::stdout().write_all(
-            b"\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b>",
+            b"\x1b[?2026l\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b>",
         );
         let _ = execute!(io::stdout(), Show);
         let _ = disable_raw_mode();
@@ -124,6 +125,7 @@ struct App {
     input_decoder: InputDecoder,
     renderer: Renderer,
     terminal_size: (u16, u16),
+    redraw_deadline: Option<Instant>,
 }
 
 impl App {
@@ -137,6 +139,7 @@ impl App {
             input_decoder: InputDecoder::default(),
             renderer: Renderer::default(),
             terminal_size,
+            redraw_deadline: None,
         };
         app.create_window()?;
         Ok(app)
@@ -187,6 +190,7 @@ impl App {
 
         while !self.windows.is_empty() {
             self.update_size()?;
+            self.flush_scheduled_redraw()?;
             let expired_input = self.input_decoder.flush_if_expired();
             if !expired_input.is_empty() && !self.handle_decoded_input(&expired_input)? {
                 break;
@@ -201,7 +205,7 @@ impl App {
                 ));
             }
 
-            match poll(&mut poll_fds, 100_u16) {
+            match poll(&mut poll_fds, self.poll_timeout()) {
                 Ok(_) => {}
                 Err(Errno::EINTR) => continue,
                 Err(error) => return Err(error.into()),
@@ -227,7 +231,7 @@ impl App {
                                 write_fd(&self.windows[index].master, &responses)?;
                             }
                             if index == self.active {
-                                self.redraw()?;
+                                self.schedule_redraw();
                             }
                         }
                         Err(Errno::EAGAIN) => {}
@@ -243,6 +247,7 @@ impl App {
                     break;
                 }
             }
+            self.flush_scheduled_redraw()?;
         }
         Ok(())
     }
@@ -320,6 +325,7 @@ impl App {
     }
 
     fn redraw(&mut self) -> Result<()> {
+        self.redraw_deadline = None;
         if self.windows.is_empty() {
             return Ok(());
         }
@@ -333,6 +339,32 @@ impl App {
         stdout.write_all(&frame)?;
         stdout.flush()?;
         Ok(())
+    }
+
+    fn schedule_redraw(&mut self) {
+        self.redraw_deadline
+            .get_or_insert_with(|| Instant::now() + FRAME_INTERVAL);
+    }
+
+    fn flush_scheduled_redraw(&mut self) -> Result<()> {
+        if self
+            .redraw_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.redraw()?;
+        }
+        Ok(())
+    }
+
+    fn poll_timeout(&self) -> u16 {
+        let Some(deadline) = self.redraw_deadline else {
+            return 100;
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return 0;
+        }
+        remaining.as_millis().clamp(1, 100) as u16
     }
 
     fn show_help(&self) -> Result<()> {
@@ -434,28 +466,66 @@ impl Renderer {
             return output;
         }
 
-        let (content_columns, _) = content_size(terminal_size);
-        let mut output = Vec::new();
-        for (index, (before, after)) in previous.cells.iter().zip(&current.cells).enumerate() {
-            if before == after || after.wide_continuation {
+        let (content_columns, content_rows) = content_size(terminal_size);
+        let columns = usize::from(content_columns);
+        let mut changes = Vec::new();
+        for row in 0..usize::from(content_rows) {
+            let start = row * columns;
+            let before = &previous.cells[start..start + columns];
+            let after = &current.cells[start..start + columns];
+            let Some(mut first) = before.iter().zip(after).position(|(a, b)| a != b) else {
                 continue;
+            };
+            let last = before
+                .iter()
+                .zip(after)
+                .rposition(|(a, b)| a != b)
+                .expect("a changed row has a final changed cell");
+            if after[first].wide_continuation && first > 0 {
+                first -= 1;
             }
-            if output.is_empty() {
-                output.extend_from_slice(b"\x1b[?25l");
-            }
-            let row = u16::try_from(index / usize::from(content_columns)).unwrap();
-            let column = u16::try_from(index % usize::from(content_columns)).unwrap();
-            let _ = write!(output, "\x1b[{};{}H", row + 2, column + 2);
-            write_cell_style(&mut output, after.style);
-            if after.contents.is_empty() {
-                output.push(b' ');
-            } else {
-                output.extend_from_slice(after.contents.as_bytes());
+            changes.push((row, first, last));
+        }
+
+        let cells_changed = !changes.is_empty();
+        let state_changed = previous.terminal_state != current.terminal_state;
+        let mut output = Vec::new();
+        if cells_changed || state_changed {
+            // DEC synchronized output makes the terminal display this diff as one
+            // frame. Unknown DEC private modes are safely ignored by terminals
+            // which do not implement mode 2026.
+            output.extend_from_slice(b"\x1b[?2026h");
+        }
+        if cells_changed && !previous.terminal_state.hide_cursor {
+            output.extend_from_slice(b"\x1b[?25l");
+        }
+        for (row, first, last) in changes {
+            let _ = write!(output, "\x1b[{};{}H", row + 2, first + 2);
+            let mut previous_style = None;
+            for cell in &current.cells[row * columns + first..=row * columns + last] {
+                if cell.wide_continuation {
+                    continue;
+                }
+                if previous_style != Some(cell.style) {
+                    write_cell_style(&mut output, cell.style);
+                    previous_style = Some(cell.style);
+                }
+                if cell.contents.is_empty() {
+                    output.push(b' ');
+                } else {
+                    output.extend_from_slice(cell.contents.as_bytes());
+                }
             }
         }
 
-        if !output.is_empty() || previous.terminal_state != current.terminal_state {
-            append_terminal_state(&mut output, &current.terminal_state, current.active_id);
+        if cells_changed || state_changed {
+            append_terminal_state_diff(
+                &mut output,
+                &previous.terminal_state,
+                &current.terminal_state,
+                cells_changed,
+            );
+            output.extend_from_slice(b"\x1b[?2026l");
         }
         self.previous = Some(current);
         output
@@ -608,6 +678,40 @@ fn append_terminal_state(output: &mut Vec<u8>, state: &TerminalState, active_id:
         cursor_column + 2,
         if state.hide_cursor { 'l' } else { 'h' },
     );
+}
+
+fn append_terminal_state_diff(
+    output: &mut Vec<u8>,
+    previous: &TerminalState,
+    current: &TerminalState,
+    cells_changed: bool,
+) {
+    output.extend_from_slice(b"\x1b[0m");
+    if previous.application_cursor != current.application_cursor {
+        let _ = write!(
+            output,
+            "\x1b[?1{}",
+            if current.application_cursor { 'h' } else { 'l' }
+        );
+    }
+    if previous.bracketed_paste != current.bracketed_paste {
+        let _ = write!(
+            output,
+            "\x1b[?2004{}",
+            if current.bracketed_paste { 'h' } else { 'l' }
+        );
+    }
+    if cells_changed || previous.cursor != current.cursor {
+        let (row, column) = current.cursor;
+        let _ = write!(output, "\x1b[{};{}H", row + 2, column + 2);
+    }
+    if cells_changed || previous.hide_cursor != current.hide_cursor {
+        let _ = write!(
+            output,
+            "\x1b[?25{}",
+            if current.hide_cursor { 'l' } else { 'h' }
+        );
+    }
 }
 
 fn draw_top_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, width: u16) {
@@ -803,10 +907,27 @@ mod tests {
         windows[0].terminal.process(b"x");
         let update = renderer.render(&windows, 0, (20, 5));
         assert!(!update.windows(4).any(|part| part == b"\x1b[2J"));
+        assert!(update.starts_with(b"\x1b[?2026h"));
+        assert!(update.ends_with(b"\x1b[?2026l"));
         assert!(update.contains(&b'x'));
         assert!(update.len() < initial.len());
 
         assert!(renderer.render(&windows, 0, (20, 5)).is_empty());
+    }
+
+    #[test]
+    fn adjacent_cell_changes_are_written_as_one_run() {
+        let window = test_window(1, "fish", 3, 18);
+        let mut windows = vec![window];
+        let mut renderer = Renderer::default();
+        renderer.render(&windows, 0, (20, 5));
+
+        windows[0].terminal.process(b"abcdef");
+        let update = renderer.render(&windows, 0, (20, 5));
+
+        // One CUP starts the changed run and one restores the application cursor.
+        assert_eq!(update.iter().filter(|&&byte| byte == b'H').count(), 2);
+        assert!(update.windows(6).any(|part| part == b"abcdef"));
     }
 
     #[test]
