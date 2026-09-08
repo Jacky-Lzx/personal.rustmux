@@ -122,6 +122,7 @@ struct App {
     next_id: usize,
     prefix_pending: bool,
     input_decoder: InputDecoder,
+    renderer: Renderer,
     terminal_size: (u16, u16),
 }
 
@@ -134,6 +135,7 @@ impl App {
             next_id: 1,
             prefix_pending: false,
             input_decoder: InputDecoder::default(),
+            renderer: Renderer::default(),
             terminal_size,
         };
         app.create_window()?;
@@ -165,6 +167,7 @@ impl App {
                     terminal: vt100::Parser::new(rows, columns, SCROLLBACK_LINES),
                 });
                 self.active = self.windows.len() - 1;
+                self.renderer.invalidate();
                 self.redraw()?;
             }
             ForkptyResult::Child => {
@@ -295,6 +298,7 @@ impl App {
         if self.windows.len() > 1 {
             self.active =
                 (self.active as isize + offset).rem_euclid(self.windows.len() as isize) as usize;
+            self.renderer.invalidate();
             self.redraw()?;
         }
         Ok(())
@@ -309,16 +313,22 @@ impl App {
         let _ = waitpid(window.child, None);
         if !self.windows.is_empty() {
             self.active = self.active.min(self.windows.len() - 1);
+            self.renderer.invalidate();
             self.redraw()?;
         }
         Ok(())
     }
 
-    fn redraw(&self) -> Result<()> {
+    fn redraw(&mut self) -> Result<()> {
         if self.windows.is_empty() {
             return Ok(());
         }
-        let frame = render_frame(&self.windows, self.active, self.terminal_size);
+        let frame = self
+            .renderer
+            .render(&self.windows, self.active, self.terminal_size);
+        if frame.is_empty() {
+            return Ok(());
+        }
         let mut stdout = io::stdout().lock();
         stdout.write_all(&frame)?;
         stdout.flush()?;
@@ -355,20 +365,20 @@ impl App {
         for window in &mut self.windows {
             window.terminal.screen_mut().set_size(rows, columns);
         }
+        self.renderer.invalidate();
         self.redraw()?;
         Ok(())
     }
 
     fn reap_children(&mut self) -> Result<()> {
-        let mut removed_active = false;
-        let active_pid = self.windows.get(self.active).map(|window| window.child);
+        let mut removed_any = false;
         let mut index = 0;
         while index < self.windows.len() {
             let pid = self.windows[index].child;
             match waitpid(pid, Some(WaitPidFlag::WNOHANG))? {
                 WaitStatus::StillAlive => index += 1,
                 _ => {
-                    removed_active |= Some(pid) == active_pid;
+                    removed_any = true;
                     self.windows.remove(index);
                     if index < self.active {
                         self.active -= 1;
@@ -378,7 +388,8 @@ impl App {
         }
         if !self.windows.is_empty() {
             self.active = self.active.min(self.windows.len() - 1);
-            if removed_active {
+            if removed_any {
+                self.renderer.invalidate();
                 self.redraw()?;
             }
         }
@@ -391,6 +402,125 @@ impl App {
         }
         for window in self.windows.drain(..) {
             let _ = waitpid(window.child, None);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Renderer {
+    previous: Option<FrameSnapshot>,
+}
+
+impl Renderer {
+    fn invalidate(&mut self) {
+        self.previous = None;
+    }
+
+    fn render(&mut self, windows: &[Window], active: usize, terminal_size: (u16, u16)) -> Vec<u8> {
+        let current = FrameSnapshot::capture(windows, active, terminal_size);
+        let Some(previous) = &self.previous else {
+            let output = render_frame(windows, active, terminal_size);
+            self.previous = Some(current);
+            return output;
+        };
+
+        if previous.terminal_size != current.terminal_size
+            || previous.active_id != current.active_id
+            || previous.tabs != current.tabs
+            || previous.cells.len() != current.cells.len()
+        {
+            let output = render_frame(windows, active, terminal_size);
+            self.previous = Some(current);
+            return output;
+        }
+
+        let (content_columns, _) = content_size(terminal_size);
+        let mut output = Vec::new();
+        for (index, (before, after)) in previous.cells.iter().zip(&current.cells).enumerate() {
+            if before == after || after.wide_continuation {
+                continue;
+            }
+            if output.is_empty() {
+                output.extend_from_slice(b"\x1b[?25l");
+            }
+            let row = u16::try_from(index / usize::from(content_columns)).unwrap();
+            let column = u16::try_from(index % usize::from(content_columns)).unwrap();
+            let _ = write!(output, "\x1b[{};{}H", row + 2, column + 2);
+            write_cell_style(&mut output, after.style);
+            if after.contents.is_empty() {
+                output.push(b' ');
+            } else {
+                output.extend_from_slice(after.contents.as_bytes());
+            }
+        }
+
+        if !output.is_empty() || previous.terminal_state != current.terminal_state {
+            append_terminal_state(&mut output, &current.terminal_state, current.active_id);
+        }
+        self.previous = Some(current);
+        output
+    }
+}
+
+#[derive(Eq, PartialEq)]
+struct FrameSnapshot {
+    terminal_size: (u16, u16),
+    active_id: usize,
+    tabs: Vec<(usize, String)>,
+    cells: Vec<CellSnapshot>,
+    terminal_state: TerminalState,
+}
+
+impl FrameSnapshot {
+    fn capture(windows: &[Window], active: usize, terminal_size: (u16, u16)) -> Self {
+        let screen = windows[active].terminal.screen();
+        let (columns, rows) = content_size(terminal_size);
+        let mut cells = Vec::with_capacity(usize::from(columns) * usize::from(rows));
+        for row in 0..rows {
+            for column in 0..columns {
+                let cell = screen.cell(row, column).expect("cell is within screen");
+                cells.push(CellSnapshot {
+                    contents: cell.contents().to_owned(),
+                    style: CellStyle::from(cell),
+                    wide_continuation: cell.is_wide_continuation(),
+                });
+            }
+        }
+        Self {
+            terminal_size,
+            active_id: windows[active].id,
+            tabs: windows
+                .iter()
+                .map(|window| (window.id, window.name.clone()))
+                .collect(),
+            cells,
+            terminal_state: TerminalState::capture(screen),
+        }
+    }
+}
+
+#[derive(Eq, PartialEq)]
+struct CellSnapshot {
+    contents: String,
+    style: CellStyle,
+    wide_continuation: bool,
+}
+
+#[derive(Eq, PartialEq)]
+struct TerminalState {
+    cursor: (u16, u16),
+    application_cursor: bool,
+    bracketed_paste: bool,
+    hide_cursor: bool,
+}
+
+impl TerminalState {
+    fn capture(screen: &vt100::Screen) -> Self {
+        Self {
+            cursor: screen.cursor_position(),
+            application_cursor: screen.application_cursor(),
+            bracketed_paste: screen.bracketed_paste(),
+            hide_cursor: screen.hide_cursor(),
         }
     }
 }
@@ -461,22 +591,23 @@ fn render_frame(windows: &[Window], active: usize, terminal_size: (u16, u16)) ->
         }
     }
 
-    let (cursor_row, cursor_column) = screen.cursor_position();
+    let state = TerminalState::capture(screen);
+    append_terminal_state(&mut output, &state, windows[active].id);
+    output
+}
+
+fn append_terminal_state(output: &mut Vec<u8>, state: &TerminalState, active_id: usize) {
+    let (cursor_row, cursor_column) = state.cursor;
     let _ = write!(
         output,
         "\x1b[0m\x1b]0;rustmux:{}\x07\x1b[?1{}\x1b[?2004{}\x1b[{};{}H\x1b[?25{}",
-        windows[active].id,
-        if screen.application_cursor() {
-            'h'
-        } else {
-            'l'
-        },
-        if screen.bracketed_paste() { 'h' } else { 'l' },
+        active_id,
+        if state.application_cursor { 'h' } else { 'l' },
+        if state.bracketed_paste { 'h' } else { 'l' },
         cursor_row + 2,
         cursor_column + 2,
-        if screen.hide_cursor() { 'l' } else { 'h' },
+        if state.hide_cursor { 'l' } else { 'h' },
     );
-    output
 }
 
 fn draw_top_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, width: u16) {
@@ -658,6 +789,24 @@ mod tests {
         assert!(frame.contains(" 2:fish "));
         assert!(frame.contains("hello"));
         assert!(frame.contains("\x1b[38;2;1;2;3m"));
+    }
+
+    #[test]
+    fn incremental_render_does_not_clear_the_screen() {
+        let window = test_window(1, "fish", 3, 18);
+        let mut windows = vec![window];
+        let mut renderer = Renderer::default();
+
+        let initial = renderer.render(&windows, 0, (20, 5));
+        assert!(initial.windows(4).any(|part| part == b"\x1b[2J"));
+
+        windows[0].terminal.process(b"x");
+        let update = renderer.render(&windows, 0, (20, 5));
+        assert!(!update.windows(4).any(|part| part == b"\x1b[2J"));
+        assert!(update.contains(&b'x'));
+        assert!(update.len() < initial.len());
+
+        assert!(renderer.render(&windows, 0, (20, 5)).is_empty());
     }
 
     #[test]
