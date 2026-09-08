@@ -61,11 +61,32 @@ struct Window {
     name: String,
     master: OwnedFd,
     child: Pid,
-    terminal: vt100::Parser,
+    terminal: vt100::Parser<TerminalMetadata>,
     cursor_style: CursorStyleTracker,
     kitty_graphics: KittyGraphicsParser,
     pending_graphics: Vec<Vec<u8>>,
     history_mode: bool,
+}
+
+#[derive(Default)]
+struct TerminalMetadata {
+    title: String,
+}
+
+impl vt100::Callbacks for TerminalMetadata {
+    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+        self.title = String::from_utf8_lossy(title)
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect();
+    }
+}
+
+impl Window {
+    fn terminal_title(&self) -> &str {
+        let title = self.terminal.callbacks().title.trim();
+        if title.is_empty() { &self.name } else { title }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -446,7 +467,12 @@ impl App {
                     name,
                     master,
                     child,
-                    terminal: vt100::Parser::new(rows, columns, SCROLLBACK_LINES),
+                    terminal: vt100::Parser::new_with_callbacks(
+                        rows,
+                        columns,
+                        SCROLLBACK_LINES,
+                        TerminalMetadata::default(),
+                    ),
                     cursor_style: CursorStyleTracker::default(),
                     kitty_graphics: KittyGraphicsParser::default(),
                     pending_graphics: Vec::new(),
@@ -973,6 +999,7 @@ impl Renderer {
         let graphics_changed = !graphics.is_empty();
         let history_changed = previous.history_mode != current.history_mode
             || previous.history_offset != current.history_offset;
+        let title_changed = previous.terminal_title != current.terminal_title;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
         // text updates. Some terminals cap or time out synchronized buffers;
@@ -982,7 +1009,7 @@ impl Renderer {
             output.extend_from_slice(b"\x1b[?25l");
         }
         append_graphics(&mut output, graphics, &current.terminal_state);
-        if cells_changed || state_changed || graphics_changed || history_changed {
+        if cells_changed || state_changed || graphics_changed || history_changed || title_changed {
             // DEC synchronized output makes the terminal display this diff as one
             // frame. Unknown DEC private modes are safely ignored by terminals
             // which do not implement mode 2026.
@@ -996,10 +1023,14 @@ impl Renderer {
         }
         if history_changed {
             let _ = write!(output, "\x1b[1;1H\x1b[32m");
-            draw_top_bar(&mut output, windows, active, terminal_size.0);
+            draw_window_bar(&mut output, windows, active, terminal_size.0);
+        }
+        if title_changed {
+            let _ = write!(output, "\x1b[2;1H\x1b[32m");
+            draw_terminal_border(&mut output, &current.terminal_title, terminal_size.0);
         }
         for (row, first, last) in changes {
-            let _ = write!(output, "\x1b[{};{}H", row + 2, first + 2);
+            let _ = write!(output, "\x1b[{};{}H", row + 3, first + 2);
             let mut previous_style = None;
             for cell in &current.cells[row * columns + first..=row * columns + last] {
                 if cell.wide_continuation {
@@ -1017,12 +1048,12 @@ impl Renderer {
             }
         }
 
-        if cells_changed || state_changed || graphics_changed || history_changed {
+        if cells_changed || state_changed || graphics_changed || history_changed || title_changed {
             append_terminal_state_diff(
                 &mut output,
                 &previous.terminal_state,
                 &current.terminal_state,
-                cells_changed || graphics_changed || history_changed,
+                cells_changed || graphics_changed || history_changed || title_changed,
             );
             output.extend_from_slice(b"\x1b[?2026l");
         }
@@ -1036,6 +1067,7 @@ struct FrameSnapshot {
     terminal_size: (u16, u16),
     active_id: usize,
     tabs: Vec<(usize, String)>,
+    terminal_title: String,
     history_mode: bool,
     history_offset: usize,
     cells: Vec<CellSnapshot>,
@@ -1064,6 +1096,7 @@ impl FrameSnapshot {
                 .iter()
                 .map(|window| (window.id, window.name.clone()))
                 .collect(),
+            terminal_title: windows[active].terminal_title().to_owned(),
             history_mode: windows[active].history_mode,
             history_offset: screen.scrollback(),
             cells,
@@ -1147,11 +1180,13 @@ fn render_frame(
         windows[active].history_mode,
     );
     append_graphics(&mut output, graphics, &state);
-    output.extend_from_slice(b"\x1b[H\x1b[32m");
-    draw_top_bar(&mut output, windows, active, width);
+    output.extend_from_slice(b"\x1b[H");
+    draw_window_bar(&mut output, windows, active, width);
+    let _ = write!(output, "\x1b[2;1H\x1b[32m");
+    draw_terminal_border(&mut output, windows[active].terminal_title(), width);
 
     for row in 0..content_rows {
-        let _ = write!(output, "\x1b[{};1H\x1b[32m│\x1b[0m", row + 2);
+        let _ = write!(output, "\x1b[{};1H\x1b[32m│\x1b[0m", row + 3);
         let mut previous_style = None;
         for column in 0..content_columns {
             let cell = screen.cell(row, column).expect("cell is within screen");
@@ -1173,12 +1208,12 @@ fn render_frame(
     }
 
     if height > 1 {
-        let _ = write!(output, "\x1b[{height};1H\x1b[32m╰");
+        let _ = write!(output, "\x1b[{height};1H\x1b[32m└");
         for _ in 0..width.saturating_sub(2) {
             output.extend_from_slice("─".as_bytes());
         }
         if width > 1 {
-            output.extend_from_slice("╯".as_bytes());
+            output.extend_from_slice("┘".as_bytes());
         }
     }
 
@@ -1192,7 +1227,7 @@ fn append_graphics(output: &mut Vec<u8>, graphics: &[Vec<u8>], state: &TerminalS
     }
     output.reserve(graphics.iter().map(Vec::len).sum());
     let (row, column) = state.cursor;
-    let _ = write!(output, "\x1b[{};{}H", row + 2, column + 2);
+    let _ = write!(output, "\x1b[{};{}H", row + 3, column + 2);
     for command in graphics {
         output.extend_from_slice(command);
     }
@@ -1207,7 +1242,7 @@ fn append_terminal_state(output: &mut Vec<u8>, state: &TerminalState, active_id:
         if state.application_cursor { 'h' } else { 'l' },
         if state.bracketed_paste { 'h' } else { 'l' },
         state.cursor_style,
-        cursor_row + 2,
+        cursor_row + 3,
         cursor_column + 2,
         if state.hide_cursor { 'l' } else { 'h' },
     );
@@ -1239,7 +1274,7 @@ fn append_terminal_state_diff(
     }
     if cells_changed || previous.cursor != current.cursor {
         let (row, column) = current.cursor;
-        let _ = write!(output, "\x1b[{};{}H", row + 2, column + 2);
+        let _ = write!(output, "\x1b[{};{}H", row + 3, column + 2);
     }
     if cells_changed || previous.hide_cursor != current.hide_cursor {
         let _ = write!(
@@ -1250,47 +1285,59 @@ fn append_terminal_state_diff(
     }
 }
 
-fn draw_top_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, width: u16) {
+fn draw_window_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, width: u16) {
     if width == 0 {
         return;
     }
-    output.extend_from_slice("╭".as_bytes());
-    let inner_width = usize::from(width.saturating_sub(2));
+    output.extend_from_slice(b"\x1b[2K\x1b[0m");
+    let inner_width = usize::from(width);
     let mut used = 0;
     for (index, window) in windows.iter().enumerate() {
         if used >= inner_width {
             break;
         }
-        if used > 0 {
-            output.extend_from_slice("─".as_bytes());
-            used += 1;
-        }
         let label = if index == active && window.history_mode {
             format!(
-                " {}:{} [history {}] ",
+                " {} {} [history {}] ",
                 window.id,
                 window.name,
                 window.terminal.screen().scrollback()
             )
         } else {
-            format!(" {}:{} ", window.id, window.name)
+            format!(" {} {} ", window.id, window.name)
         };
-        let available = inner_width.saturating_sub(used);
+        let available = inner_width.saturating_sub(used).saturating_sub(1);
         let label: String = label.chars().take(available).collect();
         if index == active {
             output.extend_from_slice(b"\x1b[1;30;42m");
         } else {
-            output.extend_from_slice(b"\x1b[0;32m");
+            output.extend_from_slice(b"\x1b[1;37;100m");
         }
         output.extend_from_slice(label.as_bytes());
-        output.extend_from_slice(b"\x1b[0;32m");
-        used += label.chars().count();
+        if index == active {
+            output.extend_from_slice("\x1b[0;32m".as_bytes());
+        } else {
+            output.extend_from_slice("\x1b[0;90m".as_bytes());
+        }
+        used += label.chars().count() + 1;
     }
-    for _ in used..inner_width {
+    output.extend_from_slice(b"\x1b[0m");
+}
+
+fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
+    if width == 0 {
+        return;
+    }
+    output.extend_from_slice("\x1b[2K\x1b[32m┌".as_bytes());
+    let inner_width = usize::from(width.saturating_sub(2));
+    let decorated = format!("─ {title} ");
+    let title: String = decorated.chars().take(inner_width).collect();
+    output.extend_from_slice(title.as_bytes());
+    for _ in title.chars().count()..inner_width {
         output.extend_from_slice("─".as_bytes());
     }
     if width > 1 {
-        output.extend_from_slice("╮".as_bytes());
+        output.extend_from_slice("┐".as_bytes());
     }
 }
 
@@ -1472,7 +1519,7 @@ fn write_fd(fd: &OwnedFd, mut bytes: &[u8]) -> Result<()> {
 fn content_size((columns, rows): (u16, u16)) -> (u16, u16) {
     (
         columns.saturating_sub(2).max(1),
-        rows.saturating_sub(2).max(1),
+        rows.saturating_sub(3).max(1),
     )
 }
 
@@ -1532,7 +1579,12 @@ mod tests {
             name: name.to_owned(),
             master,
             child: Pid::from_raw(1),
-            terminal: vt100::Parser::new(rows, columns, SCROLLBACK_LINES),
+            terminal: vt100::Parser::new_with_callbacks(
+                rows,
+                columns,
+                SCROLLBACK_LINES,
+                TerminalMetadata::default(),
+            ),
             cursor_style: CursorStyleTracker::default(),
             kitty_graphics: KittyGraphicsParser::default(),
             pending_graphics: Vec::new(),
@@ -1544,9 +1596,9 @@ mod tests {
     fn content_winsize_excludes_border_cells_and_preserves_cell_pixels() {
         let value = content_winsize((218, 62), (3706, 2046));
         assert_eq!(value.ws_col, 216);
-        assert_eq!(value.ws_row, 60);
+        assert_eq!(value.ws_row, 59);
         assert_eq!(value.ws_xpixel, 3672);
-        assert_eq!(value.ws_ypixel, 1980);
+        assert_eq!(value.ws_ypixel, 1947);
     }
 
     #[test]
@@ -1618,16 +1670,18 @@ mod tests {
     fn frame_has_green_border_tabs_and_terminal_contents() {
         let mut first = test_window(1, "fish", 3, 18);
         first.terminal.process(b"hello \x1b[38;2;1;2;3mcolor");
+        first.terminal.process(b"\x1b]2;nvim project\x07");
         let second = test_window(2, "fish", 3, 18);
 
         let frame = render_frame(&[first, second], 0, (20, 5), &[]);
         let frame = String::from_utf8(frame).expect("rendered frame is UTF-8");
 
         assert!(frame.contains("\x1b[32m"));
-        assert!(frame.contains('╭'));
-        assert!(frame.contains('╯'));
-        assert!(frame.contains(" 1:fish "));
-        assert!(frame.contains(" 2:fish "));
+        assert!(frame.contains('┌'));
+        assert!(frame.contains('┘'));
+        assert!(frame.contains(" 1 fish "));
+        assert!(frame.contains(" 2 fish "));
+        assert!(frame.contains("─ nvim project "));
         assert!(frame.contains("hello"));
         assert!(frame.contains("\x1b[38;2;1;2;3m"));
     }
@@ -1650,6 +1704,13 @@ mod tests {
         assert!(update.len() < initial.len());
 
         assert!(renderer.render(&windows, 0, (20, 5), &[]).is_empty());
+
+        windows[0].terminal.process(b"\x1b]2;nvim\x07");
+        let title_update = renderer.render(&windows, 0, (20, 5), &[]);
+        let title_update = String::from_utf8(title_update).expect("title update is UTF-8");
+        assert!(title_update.contains("\x1b[2;1H"));
+        assert!(title_update.contains("─ nvim "));
+        assert!(!title_update.contains("\x1b[2J"));
     }
 
     #[test]
@@ -1858,8 +1919,8 @@ mod tests {
         assert_eq!(bell_background, background);
         assert!(
             responses
-                .windows(b"\x1b[4;726;1326t".len())
-                .any(|part| part == b"\x1b[4;726;1326t")
+                .windows(b"\x1b[4;693;1326t".len())
+                .any(|part| part == b"\x1b[4;693;1326t")
         );
         assert!(
             responses
