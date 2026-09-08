@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crossterm::{
     cursor::Show,
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, size},
+    terminal::{disable_raw_mode, enable_raw_mode, window_size},
 };
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
@@ -397,13 +397,15 @@ struct App {
     input_decoder: InputDecoder,
     renderer: Renderer,
     terminal_size: (u16, u16),
+    terminal_pixels: (u16, u16),
     terminal_identity: String,
     redraw_deadline: Option<Instant>,
 }
 
 impl App {
     fn new() -> Result<Self> {
-        let terminal_size = size()?;
+        let outer = window_size()?;
+        let terminal_size = (outer.columns, outer.rows);
         let mut app = Self {
             windows: Vec::new(),
             active: 0,
@@ -412,6 +414,7 @@ impl App {
             input_decoder: InputDecoder::default(),
             renderer: Renderer::default(),
             terminal_size,
+            terminal_pixels: (outer.width, outer.height),
             terminal_identity: outer_terminal_identity(),
             redraw_deadline: None,
         };
@@ -427,7 +430,7 @@ impl App {
             .unwrap_or(&shell)
             .to_owned();
         let shell = CString::new(shell)?;
-        let winsize = content_winsize(self.terminal_size);
+        let winsize = content_winsize(self.terminal_size, self.terminal_pixels);
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
 
         // SAFETY: the child immediately calls execvp and _exit, both of which are
@@ -676,7 +679,7 @@ impl App {
         self.windows[index].terminal.process(&parsed.terminal);
         graphics_responses.extend_from_slice(&terminal_responses(
             &parsed.terminal,
-            content_winsize(self.terminal_size),
+            content_winsize(self.terminal_size, self.terminal_pixels),
             &self.terminal_identity,
         ));
         if !graphics_responses.is_empty() {
@@ -782,12 +785,15 @@ impl App {
     }
 
     fn update_size(&mut self) -> Result<()> {
-        let new_size = size()?;
-        if new_size == self.terminal_size {
+        let outer = window_size()?;
+        let new_size = (outer.columns, outer.rows);
+        let new_pixels = (outer.width, outer.height);
+        if new_size == self.terminal_size && new_pixels == self.terminal_pixels {
             return Ok(());
         }
         self.terminal_size = new_size;
-        let winsize = content_winsize(new_size);
+        self.terminal_pixels = new_pixels;
+        let winsize = content_winsize(new_size, new_pixels);
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
         for window in &self.windows {
             // SAFETY: master is an open PTY descriptor and winsize is valid.
@@ -1470,13 +1476,17 @@ fn content_size((columns, rows): (u16, u16)) -> (u16, u16) {
     )
 }
 
-fn content_winsize(terminal_size: (u16, u16)) -> Winsize {
+fn content_winsize(terminal_size: (u16, u16), terminal_pixels: (u16, u16)) -> Winsize {
     let (columns, rows) = content_size(terminal_size);
+    let (outer_columns, outer_rows) = terminal_size;
+    let (outer_width, outer_height) = terminal_pixels;
+    let cell_width = outer_width.checked_div(outer_columns).unwrap_or(0);
+    let cell_height = outer_height.checked_div(outer_rows).unwrap_or(0);
     Winsize {
         ws_row: rows,
         ws_col: columns,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
+        ws_xpixel: cell_width.saturating_mul(columns),
+        ws_ypixel: cell_height.saturating_mul(rows),
     }
 }
 
@@ -1531,12 +1541,12 @@ mod tests {
     }
 
     #[test]
-    fn content_winsize_excludes_border_cells_and_leaves_pixels_unknown() {
-        let value = content_winsize((122, 42));
-        assert_eq!(value.ws_col, 120);
-        assert_eq!(value.ws_row, 40);
-        assert_eq!(value.ws_xpixel, 0);
-        assert_eq!(value.ws_ypixel, 0);
+    fn content_winsize_excludes_border_cells_and_preserves_cell_pixels() {
+        let value = content_winsize((218, 62), (3706, 2046));
+        assert_eq!(value.ws_col, 216);
+        assert_eq!(value.ws_row, 60);
+        assert_eq!(value.ws_xpixel, 3672);
+        assert_eq!(value.ws_ypixel, 1980);
     }
 
     #[test]
@@ -1730,7 +1740,7 @@ mod tests {
         let mut responses = kitty_graphics_query_response(query).expect("query response");
         responses.extend_from_slice(&terminal_responses(
             b"\x1b[c",
-            content_winsize((80, 24)),
+            content_winsize((80, 24), (1360, 792)),
             "kitty 0.40.0",
         ));
 
@@ -1809,7 +1819,7 @@ mod tests {
     fn terminal_queries_receive_local_responses() {
         let responses = terminal_responses(
             b"\x1b[?2026$p\x1bP$qm\x1b\\\x1b[?u\x1b[5n\x1b[>q\x1b]11;?\x1b\\\x1b[0c\x1b[14t\x1b[16t",
-            content_winsize((80, 24)),
+            content_winsize((80, 24), (1360, 792)),
             "kitty 0.40.0",
         );
 
@@ -1840,11 +1850,22 @@ mod tests {
                 .windows(background.len())
                 .any(|part| part == background)
         );
-        let bell_background =
-            terminal_responses(b"\x1b]11;?\x07", content_winsize((80, 24)), "kitty 0.40.0");
+        let bell_background = terminal_responses(
+            b"\x1b]11;?\x07",
+            content_winsize((80, 24), (1360, 792)),
+            "kitty 0.40.0",
+        );
         assert_eq!(bell_background, background);
-        assert!(!responses.windows(4).any(|part| part == b"\x1b[4;"));
-        assert!(!responses.windows(4).any(|part| part == b"\x1b[6;"));
+        assert!(
+            responses
+                .windows(b"\x1b[4;726;1326t".len())
+                .any(|part| part == b"\x1b[4;726;1326t")
+        );
+        assert!(
+            responses
+                .windows(b"\x1b[6;33;17t".len())
+                .any(|part| part == b"\x1b[6;33;17t")
+        );
     }
 
     #[test]

@@ -52,4 +52,4 @@ RUSTMUX_SHELL=zsh rustmux
 
 ## MVP 边界
 
-当前版本是单进程复用器，窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持终端字符尺寸同步，并为每个窗口维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。退出 rustmux 会结束其 shell。尚未实现 tmux 的后台 server/session 持久化、分屏、鼠标点击转发和配置文件。
+当前版本是单进程复用器，窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持终端字符与像素尺寸同步，并为每个窗口维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。退出 rustmux 会结束其 shell。尚未实现 tmux 的后台 server/session 持久化、分屏、鼠标点击转发和配置文件。
