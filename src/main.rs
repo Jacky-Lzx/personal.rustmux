@@ -81,7 +81,7 @@ impl App {
     }
 
     fn create_window(&mut self) -> Result<()> {
-        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+        let shell = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
         let shell = CString::new(shell)?;
         let winsize = winsize(self.terminal_size);
 
