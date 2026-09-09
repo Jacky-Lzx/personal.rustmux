@@ -16,9 +16,10 @@ use nix::poll::{PollFd, PollFlags, poll};
 use nix::unistd::read;
 
 use super::{
-    App, CLIENT_INPUT, CLIENT_RESIZE, CLIENT_SHUTDOWN, Config, EARLY_DISCONNECT_RETRY, Result,
+    CLIENT_INPUT, CLIENT_RESIZE, CLIENT_SHUTDOWN, Config, EARLY_DISCONNECT_RETRY, Result,
     TerminalGuard,
 };
+use crate::app::App;
 use crate::layout::validate_terminal_size;
 
 struct SocketGuard(PathBuf);
