@@ -28,6 +28,7 @@ pub(super) struct Renderer {
     compact: bool,
     mode_hints: Vec<String>,
     session_name: String,
+    rename_prompt: Option<String>,
 }
 
 impl Renderer {
@@ -41,6 +42,10 @@ impl Renderer {
 
     pub(super) fn set_session_name(&mut self, session_name: &str) {
         self.session_name = session_name.to_owned();
+    }
+
+    pub(super) fn set_rename_prompt(&mut self, name: Option<&str>) {
+        self.rename_prompt = name.map(str::to_owned);
     }
 
     pub(super) fn set_ui(&mut self, compact: bool, mode_hints: Vec<String>) {
@@ -67,6 +72,7 @@ impl Renderer {
                 mode_hints: &self.mode_hints,
                 border_status: self.border_status.as_deref(),
                 session_name: &self.session_name,
+                rename_prompt: self.rename_prompt.as_deref(),
             },
             selection,
         );
@@ -120,7 +126,8 @@ impl Renderer {
         let mode_changed = previous.mode != current.mode;
         let title_changed = previous.terminal_title != current.terminal_title;
         let status_changed = previous.border_status != current.border_status
-            || previous.mode_hints != current.mode_hints;
+            || previous.mode_hints != current.mode_hints
+            || previous.rename_prompt != current.rename_prompt;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
         // text updates. Some terminals cap or time out synchronized buffers;
@@ -233,6 +240,7 @@ pub(super) struct FrameSnapshot {
     compact: bool,
     mode_hints: Vec<String>,
     session_name: String,
+    rename_prompt: Option<String>,
     history_mode: bool,
     history_offset: usize,
     cells: Vec<CellSnapshot>,
@@ -259,6 +267,7 @@ impl FrameSnapshot {
                 mode_hints: &[],
                 border_status,
                 session_name: "",
+                rename_prompt: None,
             },
             selection,
         )
@@ -277,6 +286,7 @@ impl FrameSnapshot {
             mode_hints,
             border_status,
             session_name,
+            rename_prompt,
         } = ui;
         let base = render_base_index(windows, active);
         let tab_id = windows[base].tab_id;
@@ -385,6 +395,7 @@ impl FrameSnapshot {
             compact,
             mode_hints: mode_hints.to_vec(),
             session_name: session_name.to_owned(),
+            rename_prompt: rename_prompt.map(str::to_owned),
             history_mode: windows[active].history_mode,
             history_offset: active_screen.scrollback(),
             cells,
@@ -400,6 +411,7 @@ struct RenderUi<'a> {
     mode_hints: &'a [String],
     border_status: Option<&'a str>,
     session_name: &'a str,
+    rename_prompt: Option<&'a str>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -903,6 +915,9 @@ fn draw_window_bar(
     output.extend_from_slice(b"\x1b[2K");
     let inner_width = usize::from(width);
     let compact_status = snapshot.compact.then(|| {
+        if let Some(name) = &snapshot.rename_prompt {
+            return format!("RENAME: {name}_");
+        }
         let mode = mode_label(&snapshot.mode, snapshot.history_offset);
         snapshot
             .border_status
@@ -985,6 +1000,9 @@ fn action_hint_label(action: &str) -> String {
 }
 
 fn status_segments(snapshot: &FrameSnapshot) -> Vec<(String, Rgb)> {
+    if let Some(name) = &snapshot.rename_prompt {
+        return vec![(format!("RENAME: {name}_"), MOCHA_YELLOW)];
+    }
     let mut segments = Vec::new();
     if snapshot.mode != "locked" {
         segments.push((

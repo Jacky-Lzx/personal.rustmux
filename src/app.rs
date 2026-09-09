@@ -17,7 +17,9 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
 
 use crate::config::{Action, Config, config_path};
-use crate::input::{InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse};
+use crate::input::{
+    DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
+};
 use crate::layout::{
     Direction, PaneNode, PaneRect, SplitAxis, content_rect_for, directional_distance,
     floating_layout_for, pane_ids, pane_pty_size, pane_rects, rect_in_direction, remove_pane,
@@ -97,6 +99,46 @@ impl TextSelection {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RenameEdit {
+    Continue,
+    Confirm,
+    Cancel,
+}
+
+pub(super) fn edit_window_name(name: &mut String, key: &DecodedKey) -> RenameEdit {
+    match key.name.as_str() {
+        "enter" => RenameEdit::Confirm,
+        "esc" => RenameEdit::Cancel,
+        "backspace" => {
+            name.pop();
+            RenameEdit::Continue
+        }
+        _ => {
+            if let Ok(text) = std::str::from_utf8(&key.raw)
+                && text.chars().all(|character| !character.is_control())
+                && name.chars().count() + text.chars().count() <= 64
+            {
+                name.push_str(text);
+            }
+            RenameEdit::Continue
+        }
+    }
+}
+
+pub(super) fn rename_tab(windows: &mut [Window], tab_id: usize, name: &str) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    for window in windows
+        .iter_mut()
+        .filter(|window| !window.floating && window.tab_id == tab_id)
+    {
+        window.name = name.to_owned();
+    }
+}
+
 pub(super) struct App {
     windows: Vec<Window>,
     tabs: Vec<Tab>,
@@ -113,6 +155,7 @@ pub(super) struct App {
     terminal_identity: String,
     redraw_deadline: Option<Instant>,
     clipboard_status_until: Option<Instant>,
+    rename_input: Option<String>,
     client: Option<UnixStream>,
     client_input: Vec<u8>,
 }
@@ -143,6 +186,7 @@ impl App {
             terminal_identity: outer_terminal_identity(),
             redraw_deadline: None,
             clipboard_status_until: None,
+            rename_input: None,
             client: None,
             client_input: Vec::new(),
         };
@@ -466,6 +510,12 @@ impl App {
         let mut index = 0;
         let mut selection_cleared = false;
         while index < bytes.len() {
+            if self.rename_input.is_some() {
+                let (key, consumed) = decode_key(&bytes[index..]);
+                self.handle_rename_key(&key)?;
+                index += consumed;
+                continue;
+            }
             if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
                 if !passthrough.is_empty() {
                     self.write_active(&passthrough)?;
@@ -512,6 +562,7 @@ impl App {
                 Action::SendPrefix => self.write_active(&[PREFIX])?,
                 Action::SendKey(bytes) => self.write_active(bytes)?,
                 Action::NewWindow => self.create_window()?,
+                Action::RenameWindow => self.begin_window_rename()?,
                 Action::NextWindow => self.select_relative(1)?,
                 Action::PreviousWindow => self.select_relative(-1)?,
                 Action::GoToWindow(index) => self.select_window(*index)?,
@@ -545,6 +596,47 @@ impl App {
         Ok(true)
     }
 
+    fn begin_window_rename(&mut self) -> Result<()> {
+        self.rename_input = Some(String::new());
+        self.sync_rename_prompt();
+        self.redraw()
+    }
+
+    fn handle_rename_key(&mut self, key: &DecodedKey) -> Result<()> {
+        let edit = edit_window_name(
+            self.rename_input.as_mut().expect("rename input is active"),
+            key,
+        );
+        match edit {
+            RenameEdit::Continue => {
+                self.sync_rename_prompt();
+            }
+            RenameEdit::Confirm => {
+                let name = self.rename_input.take().unwrap();
+                let tab_id = self.windows[self.active].tab_id;
+                rename_tab(&mut self.windows, tab_id, &name);
+                self.finish_window_rename();
+            }
+            RenameEdit::Cancel => {
+                self.rename_input = None;
+                self.finish_window_rename();
+            }
+        }
+        self.redraw()
+    }
+
+    fn sync_rename_prompt(&mut self) {
+        self.renderer
+            .set_rename_prompt(self.rename_input.as_deref());
+    }
+
+    fn finish_window_rename(&mut self) {
+        self.rename_input = None;
+        self.renderer.set_rename_prompt(None);
+        self.mode = self.config.default_mode.clone();
+        self.renderer.invalidate();
+    }
+
     fn switch_mode(&mut self, mode: &str) -> Result<()> {
         if !self.config.has_mode(mode) {
             return Err(format!("unknown mode '{mode}'").into());
@@ -566,7 +658,9 @@ impl App {
         self.mode = self.config.default_mode.clone();
         self.selection = None;
         self.clipboard_status_until = None;
+        self.rename_input = None;
         self.renderer.set_border_status(None);
+        self.renderer.set_rename_prompt(None);
         for window in &mut self.windows {
             window.history_mode = false;
             window.terminal.screen_mut().set_scrollback(0);

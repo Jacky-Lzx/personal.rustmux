@@ -4,8 +4,13 @@ use std::time::Instant;
 use nix::unistd::Pid;
 
 use super::*;
-use crate::app::{TextSelection, Window, selected_text, selection_contains, window_history};
-use crate::input::{InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse};
+use crate::app::{
+    RenameEdit, TextSelection, Window, edit_window_name, rename_tab, selected_text,
+    selection_contains, window_history,
+};
+use crate::input::{
+    DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
+};
 use crate::layout::{
     FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for, content_winsize_for,
     floating_layout_for, pane_ids, pane_rects, remove_pane, split_pane, tiled_content_rect_for,
@@ -101,6 +106,44 @@ fn key_decoder_names_control_navigation_and_modified_keys() {
     assert_eq!(decode_key(b"\x1b[103;5u").0.name, "ctrl g");
     assert_eq!(decode_key(b"\x1b[27;3;120~").0.name, "alt x");
     assert_eq!(decode_key(b"G").0.name, "G");
+}
+
+#[test]
+fn window_name_editor_accepts_text_backspace_confirm_and_cancel() {
+    let mut name = "fish".to_owned();
+    let text = DecodedKey {
+        name: "终".to_owned(),
+        raw: "终".as_bytes().to_vec(),
+    };
+    assert_eq!(edit_window_name(&mut name, &text), RenameEdit::Continue);
+    assert_eq!(name, "fish终");
+
+    let (backspace, _) = decode_key(b"\x7f");
+    assert_eq!(
+        edit_window_name(&mut name, &backspace),
+        RenameEdit::Continue
+    );
+    assert_eq!(name, "fish");
+
+    let (enter, _) = decode_key(b"\r");
+    assert_eq!(edit_window_name(&mut name, &enter), RenameEdit::Confirm);
+    let (escape, _) = decode_key(b"\x1b");
+    assert_eq!(edit_window_name(&mut name, &escape), RenameEdit::Cancel);
+}
+
+#[test]
+fn renaming_a_window_updates_all_panes_in_the_tab() {
+    let first = test_window(1, "fish", 2, 10);
+    let mut second = test_window(2, "fish", 2, 10);
+    second.tab_id = first.tab_id;
+    let third = test_window(3, "other", 2, 10);
+    let mut windows = vec![first, second, third];
+
+    rename_tab(&mut windows, 1, " editor ");
+
+    assert_eq!(windows[0].name, "editor");
+    assert_eq!(windows[1].name, "editor");
+    assert_eq!(windows[2].name, "other");
 }
 
 #[test]
@@ -261,6 +304,21 @@ fn status_line_shows_mode_and_key_hints() {
     assert!(!frame.contains(''));
     assert!(frame.contains("\x1b[4;1H\x1b[0;38;2;166;227;161;49m└"));
     assert!(frame.contains("\x1b[5;1H"));
+}
+
+#[test]
+fn rename_prompt_replaces_bottom_key_hints() {
+    let window = test_window(1, "fish", 1, 38);
+    let windows = vec![window];
+    let mut renderer = Renderer::default();
+    renderer.set_ui(false, vec!["Ctrl b=mode:normal".to_owned()]);
+    renderer.set_rename_prompt(Some("editor"));
+
+    let frame = renderer.render(&windows, 0, (40, 5), "normal", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+
+    assert!(frame.contains("RENAME: editor_"));
+    assert!(!frame.contains("Ctrl b"));
 }
 
 #[test]

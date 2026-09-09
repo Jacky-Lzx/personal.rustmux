@@ -20,6 +20,7 @@ command_duration_seconds = 10
 [keybinds.normal]
 "Ctrl b" = ["send-prefix", { action = "switch-mode", mode = "locked" }]
 c = ["new-window", { action = "switch-mode", mode = "locked" }]
+"," = ["rename-window"]
 n = ["next-window", { action = "switch-mode", mode = "locked" }]
 p = ["previous-window", { action = "switch-mode", mode = "locked" }]
 1 = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
@@ -88,6 +89,7 @@ pub enum Action {
     SendPrefix,
     SendKey(Vec<u8>),
     NewWindow,
+    RenameWindow,
     NextWindow,
     PreviousWindow,
     GoToWindow(usize),
@@ -304,6 +306,7 @@ impl Action {
             Self::SendPrefix => "send-prefix".to_owned(),
             Self::SendKey(_) => "send-key".to_owned(),
             Self::NewWindow => "new-window".to_owned(),
+            Self::RenameWindow => "rename-window".to_owned(),
             Self::NextWindow => "next-window".to_owned(),
             Self::PreviousWindow => "previous-window".to_owned(),
             Self::GoToWindow(index) => format!("window:{index}"),
@@ -398,6 +401,10 @@ fn parse_action(
         "new-window" => {
             no_arguments()?;
             Action::NewWindow
+        }
+        "rename-window" => {
+            no_arguments()?;
+            Action::RenameWindow
         }
         "next-window" => {
             no_arguments()?;
@@ -593,6 +600,10 @@ mod tests {
             Some(&[Action::SwitchMode("normal".to_owned())][..])
         );
         assert!(config.actions("scroll", "E").is_some());
+        assert_eq!(
+            config.actions("normal", ","),
+            Some(&[Action::RenameWindow][..])
+        );
         assert_eq!(
             config.actions("normal", "i"),
             Some(

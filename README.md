@@ -13,6 +13,7 @@
 按键兼容传统控制字符、Kitty keyboard protocol 和 xterm modified-key 编码，因此在 fish 启用扩展键盘模式后仍然有效。
 
 - `c`：创建窗口
+- `,`：重命名当前窗口；Enter 确认，Esc 取消
 - `n`：下一个窗口
 - `p`：上一个窗口
 - `[`：进入当前窗口的历史模式
@@ -75,6 +76,7 @@ command_duration_seconds = 10
 
 [keybinds.normal]
 c = ["new-window", { action = "switch-mode", mode = "locked" }]
+"," = ["rename-window"]
 n = ["next-window", { action = "switch-mode", mode = "locked" }]
 "1" = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
 i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
@@ -99,7 +101,7 @@ l = ["focus-right", { action = "switch-mode", mode = "locked" }]
 x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 ```
 
-一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`next-window`、`previous-window`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
+一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
 
 ```toml
 key = [{ action = "switch-mode", mode = "locked" }]
