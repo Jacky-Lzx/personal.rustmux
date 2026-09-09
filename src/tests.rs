@@ -4,7 +4,7 @@ use std::time::Instant;
 use nix::unistd::Pid;
 
 use super::*;
-use crate::app::{TextSelection, Window, selected_text, window_history};
+use crate::app::{TextSelection, Window, selected_text, selection_contains, window_history};
 use crate::input::{InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse};
 use crate::layout::{
     FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for, content_winsize_for,
@@ -198,6 +198,9 @@ fn selection_must_span_multiple_cells_before_copying() {
 
     assert!(!single_cell.spans_multiple_cells());
     assert!(multiple_cells.spans_multiple_cells());
+    assert!(!selection_contains(Some(&single_cell), 9, 1, 2, 5));
+    assert!(selection_contains(Some(&multiple_cells), 9, 1, 2, 5));
+    assert!(selection_contains(Some(&multiple_cells), 9, 1, 3, 5));
 }
 
 #[test]

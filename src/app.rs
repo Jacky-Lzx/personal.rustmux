@@ -1437,6 +1437,9 @@ pub(super) fn selection_contains(
     let Some(selection) = selection.filter(|selection| selection.window_id == window_id) else {
         return false;
     };
+    if !selection.spans_multiple_cells() {
+        return false;
+    }
     let position = usize::from(row) * usize::from(columns) + usize::from(column);
     let start = usize::from(selection.start.row) * usize::from(columns)
         + usize::from(selection.start.column);
