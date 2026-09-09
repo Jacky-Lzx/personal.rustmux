@@ -91,6 +91,12 @@ pub(super) struct TextSelection {
     pub(super) end: MousePosition,
 }
 
+impl TextSelection {
+    pub(super) fn spans_multiple_cells(self) -> bool {
+        self.start != self.end
+    }
+}
+
 pub(super) struct App {
     windows: Vec<Window>,
     tabs: Vec<Tab>,
@@ -699,7 +705,7 @@ impl App {
                     selection,
                     self.active_content_size(),
                 );
-                if !text.is_empty() {
+                if selection.spans_multiple_cells() && !text.is_empty() {
                     self.copy_to_clipboard(&text)?;
                     self.clipboard_status_until = Some(Instant::now() + CLIPBOARD_STATUS_DURATION);
                     self.renderer.set_border_status(Some(CLIPBOARD_STATUS));

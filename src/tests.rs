@@ -185,6 +185,22 @@ fn selected_text_does_not_insert_newlines_at_soft_wraps() {
 }
 
 #[test]
+fn selection_must_span_multiple_cells_before_copying() {
+    let single_cell = TextSelection {
+        window_id: 9,
+        start: MousePosition { column: 2, row: 1 },
+        end: MousePosition { column: 2, row: 1 },
+    };
+    let multiple_cells = TextSelection {
+        end: MousePosition { column: 3, row: 1 },
+        ..single_cell
+    };
+
+    assert!(!single_cell.spans_multiple_cells());
+    assert!(multiple_cells.spans_multiple_cells());
+}
+
+#[test]
 fn selection_highlight_is_rendered_incrementally() {
     let mut window = test_window(3, "fish", 3, 18);
     window.terminal.process(b"select me");
