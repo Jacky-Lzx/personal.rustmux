@@ -131,7 +131,7 @@ key = [{ action = "go-to-window", index = 2 }]
 key = [{ action = "send-key", key = "Ctrl c" }]
 ```
 
-默认布局会在最下面一行显示当前 mode 以及该 mode 的快捷键提示。设置 `compact = true` 后不会保留底部状态栏，pane 会使用腾出的空间，当前 mode 则显示在顶部标签栏右侧：
+默认布局会在最下面一行显示当前 mode 以及该 mode 的常用快捷键提示。同类快捷键会自动合并，状态栏会根据终端宽度隐藏放不下的项目并显示 `? MORE (+N)`，不会截断半个提示；按 `?` 可在居中的帮助框中查看当前 mode 的完整绑定，Esc 关闭。设置 `compact = true` 后不会保留底部状态栏，pane 会使用腾出的空间，当前 mode 则显示在顶部标签栏右侧：
 
 ```toml
 compact = true

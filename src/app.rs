@@ -26,7 +26,7 @@ use crate::layout::{
     floating_layout_for, pane_ids, pane_pty_size, pane_rects, rect_in_direction, remove_pane,
     resize_pane, split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
-use crate::render::{Renderer, SessionManagerView, render_base_index};
+use crate::render::{HelpView, Renderer, SessionManagerView, render_base_index};
 use crate::session::{
     SessionInfo, available_session_info, disconnect_session, ensure_session_dir, kill_session,
     rename_session, validate_session_name,
@@ -206,6 +206,7 @@ pub(super) struct App {
     rename_state: Option<RenameState>,
     history_search: Option<HistorySearchState>,
     session_manager: Option<SessionManagerState>,
+    help_visible: bool,
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
     client_input: Vec<u8>,
@@ -251,6 +252,7 @@ impl App {
             rename_state: None,
             history_search: None,
             session_manager: None,
+            help_visible: false,
             client: None,
             outer_dnd_window: None,
             client_input: Vec::new(),
@@ -877,6 +879,16 @@ impl App {
         let mut index = 0;
         let mut selection_cleared = false;
         while index < bytes.len() {
+            if self.help_visible {
+                let (key, consumed) = decode_key(&bytes[index..]);
+                if matches!(key.name.as_str(), "esc" | "q" | "?" | "enter") {
+                    self.help_visible = false;
+                    self.renderer.set_help(None);
+                    self.redraw()?;
+                }
+                index += consumed;
+                continue;
+            }
             if self.session_manager.is_some() {
                 let (key, consumed) = decode_key(&bytes[index..]);
                 if !self.handle_session_manager_key(&key)? {
@@ -1422,6 +1434,8 @@ impl App {
         self.renderer.set_history_search_prompt(None);
         self.session_manager = None;
         self.renderer.set_session_manager(None);
+        self.help_visible = false;
+        self.renderer.set_help(None);
         for window in &mut self.windows {
             window.history_mode = false;
             window.terminal.screen_mut().set_scrollback(0);
@@ -2395,20 +2409,13 @@ impl App {
         remaining.as_millis().clamp(1, 100) as u16
     }
 
-    fn show_help(&self) -> Result<()> {
-        if let Some(mut client) = self.client.as_ref() {
-            let bindings = self.config.describe_mode(&self.mode).join("  ");
-            let result = write!(
-                client,
-                "\r\n\x1b[1m[rustmux] mode {}:\x1b[0m {bindings}\r\nconfig: {}\r\n",
-                self.mode,
-                config_path().display()
-            );
-            if result.is_err() {
-                return Ok(());
-            }
-        }
-        Ok(())
+    fn show_help(&mut self) -> Result<()> {
+        self.help_visible = true;
+        self.renderer.set_help(Some(HelpView {
+            mode: self.mode.clone(),
+            hints: self.config.describe_mode(&self.mode),
+        }));
+        self.redraw()
     }
 
     fn update_size(&mut self, new_size: (u16, u16), new_pixels: (u16, u16)) -> Result<()> {

@@ -19,8 +19,9 @@ use crate::layout::{
     split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
 use crate::render::{
-    CellStyle, FrameSnapshot, Renderer, SessionManagerView, notification_rect, render_frame,
-    session_manager_rect, styled_text_cells, truncate_to_display_width,
+    CellStyle, FrameSnapshot, HelpView, Renderer, SessionManagerView, compact_status_hints,
+    help_rect, notification_rect, render_frame, session_manager_rect, styled_text_cells,
+    truncate_to_display_width,
 };
 use crate::session::ServerOutputDecoder;
 use crate::session::SessionInfo;
@@ -414,6 +415,76 @@ fn status_line_shows_mode_and_key_hints() {
     assert!(!frame.contains(''));
     assert!(frame.contains("\x1b[4;1H\x1b[0;38;2;166;227;161;49m└"));
     assert!(frame.contains("\x1b[5;1H"));
+}
+
+#[test]
+fn status_hints_group_aliases_and_window_shortcuts() {
+    let hints = [
+        "&=close-window + mode:locked",
+        "x=close-window + mode:locked",
+        ",=rename-window",
+        "1=window:1 + mode:locked",
+        "2=window:2 + mode:locked",
+        "n=next-window + mode:locked",
+        "p=previous-window + mode:locked",
+        "?=show-help + mode:locked",
+    ]
+    .map(str::to_owned);
+
+    let compact = compact_status_hints(&hints);
+
+    assert!(compact.contains(&("&/x".to_owned(), "CLOSE WINDOW".to_owned())));
+    assert!(compact.contains(&("1-2".to_owned(), "WINDOW".to_owned())));
+    assert!(compact.contains(&("n/p".to_owned(), "WINDOW".to_owned())));
+    assert!(compact.contains(&("?".to_owned(), "HELP".to_owned())));
+    assert!(compact.iter().all(|(_, action)| !action.contains("LOCK")));
+}
+
+#[test]
+fn overflowing_status_hints_end_with_more_instead_of_a_partial_action() {
+    let windows = vec![test_window(1, "fish", 2, 58)];
+    let mut renderer = Renderer::default();
+    renderer.set_ui(
+        false,
+        vec![
+            "c=new-window + mode:locked".to_owned(),
+            ",=rename-window".to_owned(),
+            "n=next-window + mode:locked".to_owned(),
+            "p=previous-window + mode:locked".to_owned(),
+            "s=switch-session".to_owned(),
+            "?=show-help + mode:locked".to_owned(),
+        ],
+    );
+
+    let frame = renderer.render(&windows, 0, (60, 6), "normal", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+
+    assert!(frame.contains("MORE (+"));
+    assert!(!frame.contains("RENAME WINDO"));
+}
+
+#[test]
+fn help_is_drawn_in_a_centered_two_column_box() {
+    let windows = vec![test_window(1, "fish", 16, 98)];
+    let mut renderer = Renderer::default();
+    renderer.set_help(Some(HelpView {
+        mode: "normal".to_owned(),
+        hints: vec![
+            "c=new-window + mode:locked".to_owned(),
+            ",=rename-window".to_owned(),
+            "n=next-window + mode:locked".to_owned(),
+            "p=previous-window + mode:locked".to_owned(),
+        ],
+    }));
+
+    let frame = renderer.render(&windows, 0, (100, 20), "locked", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+
+    assert!(frame.contains("Keybindings"));
+    assert!(frame.contains("Mode: NORMAL"));
+    assert!(frame.contains("c  NEW WINDOW + LOCK"));
+    assert!(frame.contains("Esc close"));
+    assert_eq!(help_rect((98, 16), 4), (12, 4, 73, 7));
 }
 
 #[test]

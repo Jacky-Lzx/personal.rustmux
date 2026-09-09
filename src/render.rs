@@ -32,6 +32,12 @@ pub(super) struct SessionManagerView {
     pub(super) rename_input: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HelpView {
+    pub(super) mode: String,
+    pub(super) hints: Vec<String>,
+}
+
 pub(super) fn session_manager_rect((columns, rows): (u16, u16)) -> (u16, u16, u16, u16) {
     let width = (columns / 2).max(40).min(columns);
     let height = (rows / 2).max(8).min(rows);
@@ -61,6 +67,22 @@ pub(super) fn notification_rect(
     )
 }
 
+pub(super) fn help_rect((columns, rows): (u16, u16), hint_count: usize) -> (u16, u16, u16, u16) {
+    let width = (columns.saturating_mul(3) / 4).max(48).min(columns);
+    let columns_per_row = if width >= 48 { 2 } else { 1 };
+    let hint_rows = hint_count.div_ceil(columns_per_row);
+    let height = u16::try_from(hint_rows.saturating_add(4))
+        .unwrap_or(u16::MAX)
+        .max(7)
+        .min(rows);
+    (
+        columns.saturating_sub(width) / 2,
+        rows.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
 #[derive(Default)]
 pub(super) struct Renderer {
     previous: Option<FrameSnapshot>,
@@ -72,6 +94,7 @@ pub(super) struct Renderer {
     history_search_prompt: Option<String>,
     session_manager: Option<SessionManagerView>,
     notification: Option<String>,
+    help: Option<HelpView>,
 }
 
 impl Renderer {
@@ -107,6 +130,13 @@ impl Renderer {
         }
     }
 
+    pub(super) fn set_help(&mut self, help: Option<HelpView>) {
+        if self.help != help {
+            self.help = help;
+            self.invalidate();
+        }
+    }
+
     pub(super) fn set_ui(&mut self, compact: bool, mode_hints: Vec<String>) {
         self.compact = compact;
         self.mode_hints = mode_hints;
@@ -135,6 +165,7 @@ impl Renderer {
                 history_search_prompt: self.history_search_prompt.as_deref(),
                 session_manager: self.session_manager.as_ref(),
                 notification: self.notification.as_deref(),
+                help: self.help.as_ref(),
             },
             selection,
         );
@@ -192,9 +223,11 @@ impl Renderer {
             || previous.rename_prompt != current.rename_prompt
             || previous.history_search_prompt != current.history_search_prompt
             || previous.session_manager != current.session_manager
-            || previous.notification != current.notification;
+            || previous.notification != current.notification
+            || previous.help != current.help;
         let manager_changed = previous.session_manager != current.session_manager;
         let notification_changed = previous.notification != current.notification;
+        let help_changed = previous.help != current.help;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
         // text updates. Some terminals cap or time out synchronized buffers;
@@ -272,6 +305,9 @@ impl Renderer {
         if notification_changed || (cells_changed && current.notification.is_some()) {
             draw_notification(&mut output, &current);
         }
+        if help_changed || (cells_changed && current.help.is_some()) {
+            draw_help(&mut output, &current);
+        }
 
         if cells_changed
             || state_changed
@@ -320,6 +356,7 @@ pub(super) struct FrameSnapshot {
     history_search_prompt: Option<String>,
     session_manager: Option<SessionManagerView>,
     notification: Option<String>,
+    help: Option<HelpView>,
     history_mode: bool,
     history_offset: usize,
     cells: Vec<CellSnapshot>,
@@ -350,6 +387,7 @@ impl FrameSnapshot {
                 history_search_prompt: None,
                 session_manager: None,
                 notification: None,
+                help: None,
             },
             selection,
         )
@@ -372,6 +410,7 @@ impl FrameSnapshot {
             history_search_prompt,
             session_manager,
             notification,
+            help,
         } = ui;
         let base = render_base_index(windows, active);
         let tab_id = windows[base].tab_id;
@@ -463,7 +502,7 @@ impl FrameSnapshot {
                 .1
                 .saturating_add(windows[active].pane_rect.column + 1);
         }
-        if session_manager.is_some() || notification.is_some() {
+        if session_manager.is_some() || notification.is_some() || help.is_some() {
             terminal_state.hide_cursor = true;
         }
         Self {
@@ -491,6 +530,7 @@ impl FrameSnapshot {
             history_search_prompt: history_search_prompt.map(str::to_owned),
             session_manager: session_manager.cloned(),
             notification: notification.map(str::to_owned),
+            help: help.cloned(),
             history_mode: windows[active].history_mode,
             history_offset: active_screen.scrollback(),
             cells,
@@ -510,6 +550,7 @@ struct RenderUi<'a> {
     history_search_prompt: Option<&'a str>,
     session_manager: Option<&'a SessionManagerView>,
     notification: Option<&'a str>,
+    help: Option<&'a HelpView>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -913,6 +954,9 @@ pub(super) fn render_frame(
     if snapshot.notification.is_some() {
         draw_notification(&mut output, snapshot);
     }
+    if snapshot.help.is_some() {
+        draw_help(&mut output, snapshot);
+    }
 
     if !snapshot.compact && height > 1 {
         if snapshot.outer_border && height > 2 {
@@ -1107,7 +1151,128 @@ fn action_hint_label(action: &str) -> String {
         .join(" + ")
 }
 
-fn status_segments(snapshot: &FrameSnapshot) -> Vec<(String, Rgb)> {
+pub(super) fn compact_status_hints(hints: &[String]) -> Vec<(String, String)> {
+    let has_window_navigation = hints
+        .iter()
+        .any(|hint| hint == "n=next-window + mode:locked")
+        && hints
+            .iter()
+            .any(|hint| hint == "p=previous-window + mode:locked");
+    let mut grouped: Vec<(Vec<String>, String)> = Vec::new();
+    let mut window_keys = Vec::new();
+    for hint in hints {
+        let Some((key, action)) = hint.split_once('=') else {
+            continue;
+        };
+        let action = action.strip_suffix(" + mode:locked").unwrap_or(action);
+        if key.len() == 1 && key.as_bytes()[0].is_ascii_digit() && action.starts_with("window:") {
+            window_keys.push(key.to_owned());
+            continue;
+        }
+        if has_window_navigation
+            && matches!(
+                (key, action),
+                ("n", "next-window") | ("p", "previous-window")
+            )
+        {
+            continue;
+        }
+        let label = match action {
+            "show-help" => "HELP".to_owned(),
+            _ => action_hint_label(action),
+        };
+        if let Some((keys, _)) = grouped.iter_mut().find(|(_, existing)| *existing == label) {
+            keys.push(key.to_owned());
+        } else {
+            grouped.push((vec![key.to_owned()], label));
+        }
+    }
+    if has_window_navigation {
+        grouped.push((vec!["n/p".to_owned()], "WINDOW".to_owned()));
+    }
+    if !window_keys.is_empty() {
+        window_keys.sort();
+        let key = if window_keys.len() > 1 {
+            format!("{}-{}", window_keys[0], window_keys[window_keys.len() - 1])
+        } else {
+            window_keys.remove(0)
+        };
+        grouped.push((vec![key], "WINDOW".to_owned()));
+    }
+
+    let mut hints = grouped
+        .into_iter()
+        .map(|(mut keys, action)| {
+            keys.sort_by_key(|key| (UnicodeWidthStr::width(key.as_str()), key.clone()));
+            keys.dedup();
+            let hidden_aliases = keys.len().saturating_sub(2);
+            let mut key = keys.into_iter().take(2).collect::<Vec<_>>().join("/");
+            if hidden_aliases > 0 {
+                key.push_str("/…");
+            }
+            (key, action)
+        })
+        .collect::<Vec<_>>();
+    hints.sort_by_key(|(key, action)| {
+        let priority = match action.as_str() {
+            "UNLOCK" => 0,
+            "NEW WINDOW" => 10,
+            "RENAME WINDOW" => 20,
+            "WINDOW" | "NEXT WINDOW" | "PREVIOUS WINDOW" => 30,
+            "SWITCH SESSION" => 40,
+            "PANE" => 50,
+            "CLOSE WINDOW" | "CLOSE PANE" => 70,
+            "DETACH" => 80,
+            "HELP" => 250,
+            _ => 100,
+        };
+        (priority, key.clone())
+    });
+    hints
+}
+
+fn powerline_segment_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text).saturating_add(4)
+}
+
+fn status_segments_width(segments: &[(String, Rgb)]) -> usize {
+    segments
+        .iter()
+        .map(|(text, _)| powerline_segment_width(text))
+        .sum()
+}
+
+fn fit_status_hints(
+    base: Vec<(String, Rgb)>,
+    hints: Vec<(String, String)>,
+    width: usize,
+) -> Vec<(String, Rgb)> {
+    for shown in (0..=hints.len()).rev() {
+        let hidden = hints.len() - shown;
+        let mut segments = base.clone();
+        for (index, (key, action)) in hints.iter().take(shown).enumerate() {
+            segments.push((key.clone(), MOCHA_PINK));
+            segments.push((
+                action.clone(),
+                if index % 2 == 0 {
+                    MOCHA_LAVENDER
+                } else {
+                    MOCHA_BLUE
+                },
+            ));
+        }
+        if hidden > 0 {
+            segments.push(("?".to_owned(), MOCHA_PINK));
+            segments.push((format!("MORE (+{hidden})"), MOCHA_LAVENDER));
+        }
+        if status_segments_width(&segments) <= width {
+            return segments;
+        }
+    }
+    base
+}
+
+fn status_segments(snapshot: &FrameSnapshot, width: usize) -> Vec<(String, Rgb)> {
     if snapshot.session_manager.is_some() {
         return vec![
             ("Enter".to_owned(), MOCHA_PINK),
@@ -1138,28 +1303,14 @@ fn status_segments(snapshot: &FrameSnapshot) -> Vec<(String, Rgb)> {
     if let Some(status) = &snapshot.border_status {
         segments.push((status.clone(), MOCHA_YELLOW));
     }
-    for (index, hint) in snapshot.mode_hints.iter().enumerate() {
-        if let Some((key, action)) = hint.split_once('=') {
-            segments.push((key.to_owned(), MOCHA_PINK));
-            segments.push((
-                action_hint_label(action),
-                if index % 2 == 0 {
-                    MOCHA_LAVENDER
-                } else {
-                    MOCHA_BLUE
-                },
-            ));
-        } else {
-            segments.push((hint.clone(), MOCHA_LAVENDER));
-        }
-    }
-    if segments.is_empty() {
-        segments.push((
+    let hints = compact_status_hints(&snapshot.mode_hints);
+    if segments.is_empty() && hints.is_empty() {
+        return vec![(
             mode_label(&snapshot.mode, snapshot.history_offset),
             MOCHA_GREEN,
-        ));
+        )];
     }
-    segments
+    fit_status_hints(segments, hints, width)
 }
 
 fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
@@ -1297,6 +1448,93 @@ fn session_created(created_at: u64) -> String {
     }
 }
 
+fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
+    let Some(help) = &snapshot.help else {
+        return;
+    };
+    let (box_column, box_row, columns, rows) = help_rect(snapshot.content_size, help.hints.len());
+    if columns < 4 || rows < 7 {
+        return;
+    }
+    let origin_column = snapshot.content_origin.0 + box_column;
+    let origin_row = snapshot.content_origin.1 + box_row;
+    let inner_width = usize::from(columns - 2);
+    let blank = " ".repeat(usize::from(columns));
+    for row in 0..rows {
+        let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
+        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        output.extend_from_slice(blank.as_bytes());
+    }
+
+    let title = "─ Keybindings ";
+    let (title, title_width) = truncate_to_display_width(title, inner_width);
+    let _ = write!(output, "\x1b[{origin_row};{origin_column}H");
+    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    output.extend_from_slice("┌".as_bytes());
+    output.extend_from_slice(title.as_bytes());
+    for _ in title_width..inner_width {
+        output.extend_from_slice("─".as_bytes());
+    }
+    output.extend_from_slice("┐".as_bytes());
+
+    for row in 1..rows - 1 {
+        let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
+        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), false);
+        output.extend_from_slice("│".as_bytes());
+        let _ = write!(
+            output,
+            "\x1b[{};{}H",
+            origin_row + row,
+            origin_column + columns - 1
+        );
+        output.extend_from_slice("│".as_bytes());
+    }
+
+    let mode = format!("Mode: {}", help.mode.to_ascii_uppercase());
+    let (mode, _) = truncate_to_display_width(&mode, inner_width.saturating_sub(2));
+    let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
+    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    output.extend_from_slice(mode.as_bytes());
+
+    let available_rows = usize::from(rows - 4);
+    let column_count = if columns >= 48 { 2 } else { 1 };
+    let column_width = inner_width / column_count;
+    for (index, hint) in help
+        .hints
+        .iter()
+        .take(available_rows * column_count)
+        .enumerate()
+    {
+        let row = index % available_rows;
+        let column = index / available_rows;
+        let label = hint
+            .split_once('=')
+            .map(|(key, action)| format!("{key}  {}", action_hint_label(action)))
+            .unwrap_or_else(|| hint.clone());
+        let available = column_width.saturating_sub(2);
+        let (label, _) = truncate_to_display_width(&label, available);
+        let _ = write!(
+            output,
+            "\x1b[{};{}H",
+            origin_row + 2 + u16::try_from(row).unwrap_or(u16::MAX),
+            origin_column + 2 + u16::try_from(column * column_width).unwrap_or(u16::MAX)
+        );
+        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        output.extend_from_slice(label.as_bytes());
+    }
+
+    let footer = "─ Esc close ";
+    let (footer, footer_width) = truncate_to_display_width(footer, inner_width);
+    let _ = write!(output, "\x1b[{};{}H", origin_row + rows - 1, origin_column);
+    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    output.extend_from_slice("└".as_bytes());
+    output.extend_from_slice(footer.as_bytes());
+    for _ in footer_width..inner_width {
+        output.extend_from_slice("─".as_bytes());
+    }
+    output.extend_from_slice("┘".as_bytes());
+}
+
 fn draw_notification(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let Some(message) = &snapshot.notification else {
         return;
@@ -1358,7 +1596,7 @@ fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     output.extend_from_slice(b"\x1b[2K");
     draw_powerline_segments(
         output,
-        &status_segments(snapshot),
+        &status_segments(snapshot, usize::from(width)),
         usize::from(width),
         MOCHA_BASE,
     );
