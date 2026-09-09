@@ -185,6 +185,8 @@ rustmux
 RUSTMUX_SHELL=zsh rustmux
 ```
 
+rustmux 会通过 OSC 7 shell integration 跟踪每个 pane 的当前工作目录。新建 window、pane 或浮动 terminal 时会继承当前 pane 的目录；如果 shell 尚未报告目录，则使用 session server 的启动目录。
+
 ## MVP 边界
 
 当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 tab 内的水平/垂直 pane、pane resize 与全屏、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现 pane 移动和鼠标点击切换焦点。

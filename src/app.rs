@@ -76,6 +76,7 @@ struct SpawnOptions {
     return_to_window: Option<usize>,
     floating: bool,
     tab_id: usize,
+    current_directory: Option<PathBuf>,
 }
 
 impl Window {
@@ -230,6 +231,10 @@ impl App {
     }
 
     fn create_window(&mut self) -> Result<()> {
+        let current_directory = self
+            .windows
+            .get(self.active)
+            .and_then(|window| window.terminal.callbacks().current_directory.clone());
         let shell = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
         let name = Path::new(&shell)
             .file_name()
@@ -247,6 +252,7 @@ impl App {
                 return_to_window: None,
                 floating: false,
                 tab_id,
+                current_directory,
             },
         )?;
         self.tabs.push(Tab {
@@ -285,6 +291,11 @@ impl App {
             .to_owned();
         let shell = CString::new(shell)?;
         let tab_id = self.windows[self.active].tab_id;
+        let current_directory = self.windows[self.active]
+            .terminal
+            .callbacks()
+            .current_directory
+            .clone();
         self.spawn_window(
             name,
             shell.clone(),
@@ -294,6 +305,7 @@ impl App {
                 return_to_window: Some(return_to),
                 floating: true,
                 tab_id,
+                current_directory,
             },
         )?;
         self.redraw()
@@ -313,6 +325,12 @@ impl App {
             self.config.compact(),
         );
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
+        let current_directory = options
+            .current_directory
+            .as_ref()
+            .filter(|path| path.is_dir())
+            .map(|path| CString::new(path.as_os_str().as_encoded_bytes()))
+            .transpose()?;
 
         // SAFETY: the child immediately calls execvp and _exit, both of which are
         // async-signal-safe; all application bookkeeping remains in the parent.
@@ -363,6 +381,12 @@ impl App {
                 Ok(id)
             }
             ForkptyResult::Child => {
+                if let Some(directory) = current_directory
+                    && unsafe { nix::libc::chdir(directory.as_ptr()) } == -1
+                {
+                    // SAFETY: exiting directly is required after fork if setup fails.
+                    unsafe { nix::libc::_exit(127) };
+                }
                 let _ = execvp(&program, &arguments);
                 // SAFETY: exiting directly is required after fork if exec fails.
                 unsafe { nix::libc::_exit(127) };
@@ -1159,6 +1183,11 @@ impl App {
                 return_to_window: Some(return_to),
                 floating: false,
                 tab_id,
+                current_directory: self.windows[self.active]
+                    .terminal
+                    .callbacks()
+                    .current_directory
+                    .clone(),
             },
         ) {
             Ok(id) => id,
@@ -1503,6 +1532,11 @@ impl App {
                 return_to_window: None,
                 floating: false,
                 tab_id,
+                current_directory: self.windows[self.active]
+                    .terminal
+                    .callbacks()
+                    .current_directory
+                    .clone(),
             },
         )?;
         let tab = self.tabs.iter_mut().find(|tab| tab.id == tab_id).unwrap();

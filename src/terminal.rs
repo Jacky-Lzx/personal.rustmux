@@ -1,5 +1,8 @@
 use std::env;
+use std::ffi::OsString;
 use std::io::Write;
+use std::os::unix::ffi::OsStringExt;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use nix::pty::Winsize;
@@ -13,6 +16,7 @@ const STRING_TERMINATOR: &[u8] = b"\x1b\\";
 #[derive(Default)]
 pub(super) struct TerminalMetadata {
     pub(super) title: String,
+    pub(super) current_directory: Option<PathBuf>,
 }
 
 impl vt100::Callbacks for TerminalMetadata {
@@ -21,6 +25,44 @@ impl vt100::Callbacks for TerminalMetadata {
             .chars()
             .filter(|character| !character.is_control())
             .collect();
+    }
+
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        if let [b"7", uri] = params
+            && let Some(path) = osc7_path(uri)
+        {
+            self.current_directory = Some(path);
+        }
+    }
+}
+
+pub(super) fn osc7_path(uri: &[u8]) -> Option<PathBuf> {
+    let uri = uri.strip_prefix(b"file://")?;
+    let path_start = uri.iter().position(|byte| *byte == b'/')?;
+    let encoded = &uri[path_start..];
+    let mut decoded = Vec::with_capacity(encoded.len());
+    let mut index = 0;
+    while index < encoded.len() {
+        if encoded[index] == b'%' {
+            let high = hex_digit(*encoded.get(index + 1)?)?;
+            let low = hex_digit(*encoded.get(index + 2)?)?;
+            decoded.push(high * 16 + low);
+            index += 3;
+        } else {
+            decoded.push(encoded[index]);
+            index += 1;
+        }
+    }
+    (!decoded.contains(&0) && decoded.starts_with(b"/"))
+        .then(|| PathBuf::from(OsString::from_vec(decoded)))
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 

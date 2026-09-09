@@ -26,7 +26,7 @@ use crate::terminal::{
     CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
     SemanticOutputCapture, TerminalMetadata, base64_encode, kitty_dnd_for_child, kitty_dnd_id,
     kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
-    kitty_graphics_uses_shared_memory, kitty_notification, terminal_responses,
+    kitty_graphics_uses_shared_memory, kitty_notification, osc7_path, terminal_responses,
 };
 
 fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
@@ -93,6 +93,23 @@ fn terminal_size_validation_bounds_frame_allocations() {
     assert!(validate_terminal_size((80, 0)).is_err());
     assert!(validate_terminal_size((1_001, 1_000)).is_err());
     assert!(validate_terminal_size((u16::MAX, u16::MAX)).is_err());
+}
+
+#[test]
+fn osc7_tracks_the_current_working_directory() {
+    assert_eq!(
+        osc7_path(b"file://localhost/Users/example/My%20Project"),
+        Some(PathBuf::from("/Users/example/My Project"))
+    );
+    assert_eq!(osc7_path(b"https://example.com/tmp"), None);
+    assert_eq!(osc7_path(b"file://localhost/tmp/%GG"), None);
+
+    let mut terminal = vt100::Parser::new_with_callbacks(2, 10, 0, TerminalMetadata::default());
+    terminal.process(b"\x1b]7;file://host/tmp/work%20tree\x1b\\");
+    assert_eq!(
+        terminal.callbacks().current_directory,
+        Some(PathBuf::from("/tmp/work tree"))
+    );
 }
 
 #[test]
