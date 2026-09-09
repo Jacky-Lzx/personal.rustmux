@@ -116,6 +116,7 @@ struct SemanticOutputCapture {
     semantic_boundaries: bool,
     current: Vec<u8>,
     last: Vec<u8>,
+    command_started_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -129,7 +130,8 @@ enum TextCaptureState {
 }
 
 impl SemanticOutputCapture {
-    fn process(&mut self, bytes: &[u8]) {
+    fn process(&mut self, bytes: &[u8]) -> Vec<Duration> {
+        let mut completions = Vec::new();
         for &byte in bytes {
             let state = std::mem::take(&mut self.state);
             self.state = match state {
@@ -164,7 +166,9 @@ impl SemanticOutputCapture {
                 }
                 TextCaptureState::Osc(mut control) => match byte {
                     0x07 => {
-                        self.finish_osc(&control);
+                        if let Some(duration) = self.finish_osc(&control) {
+                            completions.push(duration);
+                        }
                         TextCaptureState::Ground
                     }
                     0x1b => TextCaptureState::OscEscape(control),
@@ -177,7 +181,9 @@ impl SemanticOutputCapture {
                 },
                 TextCaptureState::OscEscape(mut control) => {
                     if byte == b'\\' {
-                        self.finish_osc(&control);
+                        if let Some(duration) = self.finish_osc(&control) {
+                            completions.push(duration);
+                        }
                         TextCaptureState::Ground
                     } else {
                         if control.len() < 1024 {
@@ -188,9 +194,10 @@ impl SemanticOutputCapture {
                 }
             };
         }
+        completions
     }
 
-    fn finish_osc(&mut self, control: &[u8]) {
+    fn finish_osc(&mut self, control: &[u8]) -> Option<Duration> {
         let marker = control
             .strip_prefix(b"133;")
             .and_then(|value| value.first().copied());
@@ -199,10 +206,12 @@ impl SemanticOutputCapture {
                 self.current.clear();
                 self.capturing = true;
                 self.semantic_boundaries = true;
+                self.command_started_at = Some(Instant::now());
+                None
             }
             Some(b'D') if self.capturing => self.finish_command(),
             Some(b'A') if self.capturing => self.finish_command(),
-            _ => {}
+            _ => None,
         }
     }
 
@@ -212,13 +221,16 @@ impl SemanticOutputCapture {
         }
     }
 
-    fn finish_command(&mut self) {
+    fn finish_command(&mut self) -> Option<Duration> {
         while self.current.last().is_some_and(u8::is_ascii_whitespace) {
             self.current.pop();
         }
         self.last = std::mem::take(&mut self.current);
         self.capturing = false;
         self.semantic_boundaries = false;
+        self.command_started_at
+            .take()
+            .map(|started| started.elapsed())
     }
 
     fn last_output(&self) -> String {
@@ -230,12 +242,16 @@ impl SemanticOutputCapture {
     }
 
     fn command_submitted(&mut self) {
+        if self.capturing && self.semantic_boundaries {
+            return;
+        }
         if self.capturing && !self.semantic_boundaries {
             self.last = fallback_command_output(&self.current).into_bytes();
         }
         self.current.clear();
         self.capturing = true;
         self.semantic_boundaries = false;
+        self.command_started_at = Some(Instant::now());
     }
 }
 
@@ -593,6 +609,7 @@ struct App {
     windows: Vec<Window>,
     active: usize,
     next_id: usize,
+    next_notification_id: u64,
     input_decoder: InputDecoder,
     config: Config,
     mode: String,
@@ -613,6 +630,7 @@ impl App {
             windows: Vec::new(),
             active: 0,
             next_id: 1,
+            next_notification_id: 1,
             input_decoder: InputDecoder::default(),
             config,
             mode,
@@ -1164,7 +1182,7 @@ impl App {
                 graphics_changed = true;
             }
         }
-        self.windows[index].command_output.process(&parsed.terminal);
+        let completions = self.windows[index].command_output.process(&parsed.terminal);
         self.windows[index].terminal.process(&parsed.terminal);
         let screen = self.windows[index].terminal.screen();
         graphics_responses.extend_from_slice(&terminal_responses(
@@ -1177,6 +1195,14 @@ impl App {
         if !graphics_responses.is_empty() {
             write_fd(&self.windows[index].master, &graphics_responses)?;
         }
+        if let Some(seconds) = self.config.command_notification_seconds() {
+            let threshold = Duration::from_secs(seconds);
+            for duration in completions {
+                if duration >= threshold {
+                    self.notify_command_finished(index, duration)?;
+                }
+            }
+        }
         if index == self.active && (terminal_changed || graphics_changed) {
             if flush_graphics_immediately {
                 // A shared-memory object must be opened by the outer terminal
@@ -1186,6 +1212,36 @@ impl App {
             } else {
                 self.schedule_redraw();
             }
+        }
+        Ok(())
+    }
+
+    fn notify_command_finished(&mut self, index: usize, duration: Duration) -> Result<()> {
+        if self.client.is_none() {
+            return Ok(());
+        }
+        let notification_id = format!(
+            "rustmux-{}-{}",
+            std::process::id(),
+            self.next_notification_id
+        );
+        self.next_notification_id = self.next_notification_id.wrapping_add(1).max(1);
+        let window = &self.windows[index];
+        let title = "rustmux: command finished";
+        let window_title = window.terminal_title().chars().take(80).collect::<String>();
+        let body = format!(
+            "Window {} ({}) completed in {}",
+            window.id,
+            window_title,
+            format_duration(duration)
+        );
+        let notification = kitty_notification(&notification_id, title, &body);
+        let client = self.client.as_mut().expect("client was checked above");
+        let result = client
+            .write_all(&notification)
+            .and_then(|()| client.flush());
+        if result.is_err() {
+            self.detach_client();
         }
         Ok(())
     }
@@ -1490,6 +1546,24 @@ fn base64_encode(bytes: &[u8]) -> String {
         });
     }
     encoded
+}
+
+fn kitty_notification(identifier: &str, title: &str, body: &str) -> Vec<u8> {
+    let title = base64_encode(title.as_bytes());
+    let body = base64_encode(body.as_bytes());
+    format!(
+        "\x1b]99;i={identifier}:p=title:d=0:e=1;{title}\x1b\\\x1b]99;i={identifier}:p=body:d=1:e=1;{body}\x1b\\"
+    )
+    .into_bytes()
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration >= Duration::from_secs(60) {
+        let total_seconds = duration.as_secs();
+        format!("{}m {}s", total_seconds / 60, total_seconds % 60)
+    } else {
+        format!("{:.1}s", duration.as_secs_f64())
+    }
 }
 
 fn signal_window(window: &Window, signal: Signal) {
@@ -3152,6 +3226,31 @@ mod tests {
     }
 
     #[test]
+    fn semantic_output_capture_reports_command_duration() {
+        let mut capture = SemanticOutputCapture::default();
+        let _ = capture.process(b"\x1b]133;C\x07running");
+        capture.command_started_at = Some(Instant::now() - Duration::from_secs(11));
+
+        let completions = capture.process(b"\x1b]133;D;0\x07");
+
+        assert_eq!(completions.len(), 1);
+        assert!(completions[0] >= Duration::from_secs(11));
+        assert!(completions[0] < Duration::from_secs(12));
+    }
+
+    #[test]
+    fn semantic_command_timer_is_not_reset_by_interactive_input() {
+        let mut capture = SemanticOutputCapture::default();
+        let _ = capture.process(b"\x1b]133;C\x07");
+        let started = capture.command_started_at;
+
+        capture.command_submitted();
+
+        assert_eq!(capture.command_started_at, started);
+        assert!(capture.semantic_boundaries);
+    }
+
+    #[test]
     fn command_output_has_a_fallback_without_shell_integration() {
         let mut capture = SemanticOutputCapture::default();
         capture.command_submitted();
@@ -3172,5 +3271,16 @@ mod tests {
     fn osc_52_payload_uses_standard_base64() {
         assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
         assert_eq!(base64_encode("你好".as_bytes()), "5L2g5aW9");
+    }
+
+    #[test]
+    fn kitty_notification_uses_osc_99_with_base64_title_and_body() {
+        let notification = kitty_notification("rustmux-1-2", "done", "finished in 10.0s");
+        let notification = String::from_utf8(notification).unwrap();
+
+        assert_eq!(notification.matches("\x1b]99;").count(), 2);
+        assert!(notification.contains("i=rustmux-1-2:p=title:d=0:e=1;ZG9uZQ=="));
+        assert!(notification.contains("p=body:d=1:e=1;ZmluaXNoZWQgaW4gMTAuMHM="));
+        assert!(notification.ends_with("\x1b\\"));
     }
 }

@@ -54,6 +54,10 @@ rustmux check-config
 default_mode = "locked"
 clear_defaults = false
 
+[notifications]
+enabled = true
+command_duration_seconds = 10
+
 [keybinds.locked]
 "Ctrl b" = [{ action = "switch-mode", mode = "normal" }]
 
@@ -81,6 +85,18 @@ key = [{ action = "send-key", key = "Ctrl c" }]
 ```
 
 可配置普通字符、`Ctrl a` 到 `Ctrl z`、`Alt <key>`、方向键、`enter`、`tab`、`backspace`、`esc`、`pageup` 和 `pagedown`。将某个绑定设为空数组可取消默认绑定；`clear_defaults = true` 会先移除全部默认绑定。配置在创建 session 时加载，修改后需要结束并重新创建 session。
+
+## 长命令完成通知
+
+默认情况下，通过 OSC 133 检测到一条命令运行至少 10 秒并完成后，rustmux 会使用 Kitty 的 OSC 99 协议发送桌面通知。通知包含窗口编号、标题和实际运行时间；后台窗口中的命令也会触发。可以修改阈值或完全关闭：
+
+```toml
+[notifications]
+enabled = true
+command_duration_seconds = 10
+```
+
+该功能依赖 shell integration 提供的命令边界，默认的 fish 可以直接使用。通知需要 session 当前连接着一个 Kitty 客户端；detach 期间没有终端可接收通知。设置 `enabled = false` 可以关闭。
 
 ## 运行
 

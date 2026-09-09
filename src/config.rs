@@ -9,6 +9,10 @@ pub const DEFAULT_CONFIG_TOML: &str = r#"
 default_mode = "locked"
 clear_defaults = false
 
+[notifications]
+enabled = true
+command_duration_seconds = 10
+
 [keybinds.locked]
 "Ctrl b" = [{ action = "switch-mode", mode = "normal" }]
 
@@ -84,6 +88,8 @@ pub enum Action {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub default_mode: String,
+    notifications_enabled: bool,
+    command_duration_seconds: u64,
     bindings: HashMap<String, HashMap<String, Vec<Action>>>,
 }
 
@@ -93,8 +99,16 @@ struct ConfigFile {
     default_mode: Option<String>,
     #[serde(default)]
     clear_defaults: bool,
+    notifications: Option<NotificationsFile>,
     #[serde(default)]
     keybinds: HashMap<String, HashMap<String, Vec<ActionSpec>>>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotificationsFile {
+    enabled: Option<bool>,
+    command_duration_seconds: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +147,14 @@ impl Config {
         if let Some(mode) = user.default_mode {
             self.default_mode = normalize_mode(&mode)?;
         }
+        if let Some(notifications) = user.notifications {
+            if let Some(enabled) = notifications.enabled {
+                self.notifications_enabled = enabled;
+            }
+            if let Some(seconds) = notifications.command_duration_seconds {
+                self.command_duration_seconds = seconds;
+            }
+        }
         self.merge_bindings(user.keybinds)?;
         self.validate()
     }
@@ -144,8 +166,11 @@ impl Config {
                 .or(fallback_mode)
                 .unwrap_or("locked"),
         )?;
+        let notifications = file.notifications.unwrap_or_default();
         let mut config = Self {
             default_mode,
+            notifications_enabled: notifications.enabled.unwrap_or(true),
+            command_duration_seconds: notifications.command_duration_seconds.unwrap_or(10),
             bindings: HashMap::new(),
         };
         config.merge_bindings(file.keybinds)?;
@@ -206,6 +231,11 @@ impl Config {
 
     pub fn has_mode(&self, mode: &str) -> bool {
         self.bindings.contains_key(mode)
+    }
+
+    pub fn command_notification_seconds(&self) -> Option<u64> {
+        self.notifications_enabled
+            .then_some(self.command_duration_seconds)
     }
 
     pub fn describe_mode(&self, mode: &str) -> Vec<String> {
@@ -465,6 +495,7 @@ mod tests {
             Some(&[Action::SwitchMode("normal".to_owned())][..])
         );
         assert!(config.actions("scroll", "E").is_some());
+        assert_eq!(config.command_notification_seconds(), Some(10));
     }
 
     #[test]
@@ -520,5 +551,30 @@ q = [{ action = "switch-mode", mode = "base" }]
         assert_eq!(config.default_mode, "base");
         assert!(!config.has_mode("locked"));
         assert!(config.actions("command", "q").is_some());
+    }
+
+    #[test]
+    fn user_can_change_or_disable_command_notifications() {
+        let defaults: ConfigFile = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
+        let mut config = Config::from_file(defaults, None).unwrap();
+        let user: ConfigFile = toml::from_str(
+            r#"
+[notifications]
+command_duration_seconds = 25
+"#,
+        )
+        .unwrap();
+        config.apply_user(user).unwrap();
+        assert_eq!(config.command_notification_seconds(), Some(25));
+
+        let disabled: ConfigFile = toml::from_str(
+            r#"
+[notifications]
+enabled = false
+"#,
+        )
+        .unwrap();
+        config.apply_user(disabled).unwrap();
+        assert_eq!(config.command_notification_seconds(), None);
     }
 }
