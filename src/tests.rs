@@ -482,7 +482,8 @@ fn help_is_drawn_in_a_centered_two_column_box() {
 
     assert!(frame.contains("Keybindings"));
     assert!(frame.contains("Mode: NORMAL"));
-    assert!(frame.contains("c  NEW WINDOW + LOCK"));
+    assert!(frame.contains("\x1b[1;38;2;245;194;231;48;2;30;30;46mc"));
+    assert!(frame.contains("\x1b[0;38;2;205;214;244;48;2;30;30;46m  NEW WINDOW + LOCK"));
     assert!(frame.contains("Esc close"));
     assert!(frame.contains("press a key to run"));
     assert_eq!(help_rect((98, 16), 4), (12, 4, 73, 7));

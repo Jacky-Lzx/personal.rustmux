@@ -1499,28 +1499,54 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let available_rows = usize::from(rows - 4);
     let column_count = if columns >= 48 { 2 } else { 1 };
     let column_width = inner_width / column_count;
-    for (index, hint) in help
+    let visible_hints = help
         .hints
         .iter()
         .take(available_rows * column_count)
-        .enumerate()
-    {
+        .collect::<Vec<_>>();
+    let key_widths = (0..column_count)
+        .map(|column| {
+            visible_hints
+                .iter()
+                .skip(column * available_rows)
+                .take(available_rows)
+                .filter_map(|hint| hint.split_once('=').map(|(key, _)| key))
+                .map(UnicodeWidthStr::width)
+                .max()
+                .unwrap_or(0)
+                .min(column_width.saturating_sub(4))
+        })
+        .collect::<Vec<_>>();
+    for (index, hint) in visible_hints.into_iter().enumerate() {
         let row = index % available_rows;
         let column = index / available_rows;
-        let label = hint
-            .split_once('=')
-            .map(|(key, action)| format!("{key}  {}", action_hint_label(action)))
-            .unwrap_or_else(|| hint.clone());
         let available = column_width.saturating_sub(2);
-        let (label, _) = truncate_to_display_width(&label, available);
         let _ = write!(
             output,
             "\x1b[{};{}H",
             origin_row + 2 + u16::try_from(row).unwrap_or(u16::MAX),
             origin_column + 2 + u16::try_from(column * column_width).unwrap_or(u16::MAX)
         );
-        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
-        output.extend_from_slice(label.as_bytes());
+        if let Some((key, action)) = hint.split_once('=') {
+            let (key, key_width) = truncate_to_display_width(key, key_widths[column]);
+            write_rgb_style(output, MOCHA_PINK, Some(MOCHA_BASE), true);
+            output.extend_from_slice(key.as_bytes());
+
+            let padding = key_widths[column]
+                .saturating_sub(key_width)
+                .saturating_add(2)
+                .min(available.saturating_sub(key_width));
+            write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+            output.extend_from_slice(" ".repeat(padding).as_bytes());
+            let action = action_hint_label(action);
+            let (action, _) =
+                truncate_to_display_width(&action, available.saturating_sub(key_width + padding));
+            output.extend_from_slice(action.as_bytes());
+        } else {
+            let (label, _) = truncate_to_display_width(hint, available);
+            write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+            output.extend_from_slice(label.as_bytes());
+        }
     }
 
     let footer = "─ Esc close · press a key to run ";
