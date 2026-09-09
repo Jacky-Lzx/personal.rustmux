@@ -19,6 +19,7 @@ use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
 use crate::config::{Action, Config, ConfigReloader, config_path};
 use crate::input::{
     DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
+    sgr_mouse_at,
 };
 use crate::layout::{
     Direction, PaneNode, PaneRect, SplitAxis, content_rect_for, directional_distance,
@@ -28,8 +29,9 @@ use crate::layout::{
 use crate::render::{Renderer, SessionManagerView, render_base_index};
 use crate::session::{available_sessions, ensure_session_dir, validate_session_name};
 use crate::terminal::{
-    CursorStyleTracker, KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata,
-    base64_encode, format_duration, kitty_graphics_query_response,
+    CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
+    SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration, kitty_dnd_for_child,
+    kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
     kitty_graphics_uses_shared_memory, kitty_notification, outer_terminal_identity,
     terminal_responses,
 };
@@ -51,6 +53,9 @@ pub(super) struct Window {
     pub(super) terminal: vt100::Parser<TerminalMetadata>,
     pub(super) cursor_style: CursorStyleTracker,
     pub(super) kitty_graphics: KittyGraphicsParser,
+    pub(super) kitty_dnd: KittyDndParser,
+    pub(super) dnd_drag_registration: Option<Vec<u8>>,
+    pub(super) dnd_drop_registration: Option<Vec<u8>>,
     pub(super) pending_graphics: Vec<Vec<u8>>,
     pub(super) history_mode: bool,
     pub(super) command_output: SemanticOutputCapture,
@@ -164,6 +169,7 @@ pub(super) struct App {
     next_id: usize,
     next_notification_id: u64,
     input_decoder: InputDecoder,
+    dnd_input: KittyDndParser,
     config: Config,
     config_reloader: ConfigReloader,
     mode: String,
@@ -178,6 +184,7 @@ pub(super) struct App {
     rename_state: Option<RenameState>,
     session_manager: Option<SessionManagerState>,
     client: Option<UnixStream>,
+    outer_dnd_window: Option<usize>,
     client_input: Vec<u8>,
 }
 
@@ -199,6 +206,7 @@ impl App {
             next_id: 1,
             next_notification_id: 1,
             input_decoder: InputDecoder::default(),
+            dnd_input: KittyDndParser::default(),
             config,
             config_reloader,
             mode,
@@ -213,6 +221,7 @@ impl App {
             rename_state: None,
             session_manager: None,
             client: None,
+            outer_dnd_window: None,
             client_input: Vec::new(),
         };
         app.create_window()?;
@@ -337,6 +346,9 @@ impl App {
                     ),
                     cursor_style: CursorStyleTracker::default(),
                     kitty_graphics: KittyGraphicsParser::default(),
+                    kitty_dnd: KittyDndParser::default(),
+                    dnd_drag_registration: None,
+                    dnd_drop_registration: None,
                     pending_graphics: Vec::new(),
                     history_mode: false,
                     command_output: SemanticOutputCapture::default(),
@@ -499,17 +511,21 @@ impl App {
         // may then return EAGAIN, which must not be mistaken for a disconnect.
         stream.set_nonblocking(false)?;
         self.client = Some(stream);
+        self.outer_dnd_window = None;
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
+        self.dnd_input = KittyDndParser::default();
         self.reset_mode();
         self.renderer.invalidate();
         self.redraw()
     }
 
     fn detach_client(&mut self) {
+        self.clear_outer_dnd_registration();
         self.client = None;
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
+        self.dnd_input = KittyDndParser::default();
         self.reset_mode();
         self.redraw_deadline = None;
         self.clipboard_status_until = None;
@@ -579,8 +595,161 @@ impl App {
     }
 
     fn handle_input(&mut self, bytes: &[u8]) -> Result<bool> {
-        let decoded = self.input_decoder.push(bytes);
+        let dnd = self.dnd_input.process(bytes);
+        for command in dnd.commands {
+            self.route_kitty_dnd_input(&command)?;
+        }
+        let decoded = self.input_decoder.push(&dnd.terminal);
         self.handle_decoded_input(&decoded)
+    }
+
+    fn route_kitty_dnd_input(&mut self, command: &[u8]) -> Result<()> {
+        if self.windows.is_empty() {
+            return Ok(());
+        }
+        let index = match kitty_dnd_id(command) {
+            Some(id) => {
+                let Some(index) = self
+                    .windows
+                    .iter()
+                    .position(|window| window.id == id as usize)
+                else {
+                    return Ok(());
+                };
+                index
+            }
+            None => self.active,
+        };
+        let (origin, size) = self.dnd_geometry(index);
+        let cell_pixels = (
+            self.terminal_pixels.0 / self.terminal_size.0.max(1),
+            self.terminal_pixels.1 / self.terminal_size.1.max(1),
+        );
+        if let Some(command) = kitty_dnd_for_child(command, origin, size, cell_pixels) {
+            write_fd(&self.windows[index].master, &command)?;
+        }
+        Ok(())
+    }
+
+    fn dnd_geometry(&self, index: usize) -> ((i32, i32), (u16, u16)) {
+        let window = &self.windows[index];
+        if window.floating {
+            let layout = floating_layout_for(self.terminal_size, self.config.compact());
+            return (
+                (i32::from(layout.column), i32::from(layout.row)),
+                layout.content_size(),
+            );
+        }
+        if window.pane_framed {
+            return (
+                (
+                    i32::from(window.pane_rect.column) + 1,
+                    i32::from(window.pane_rect.row) + 2,
+                ),
+                pane_pty_size(window.pane_rect, true),
+            );
+        }
+        ((1, 2), pane_pty_size(window.pane_rect, false))
+    }
+
+    fn handle_window_dnd_command(&mut self, index: usize, command: &[u8]) {
+        let Ok(id) = u32::try_from(self.windows[index].id) else {
+            return;
+        };
+        let Some(command) = kitty_dnd_with_id(command, id) else {
+            return;
+        };
+        match kitty_dnd_registration(&command) {
+            Some(KittyDndRegistration::Drag(true)) => {
+                self.windows[index].dnd_drag_registration = Some(command.clone());
+            }
+            Some(KittyDndRegistration::Drag(false)) => {
+                self.windows[index].dnd_drag_registration = None;
+            }
+            Some(KittyDndRegistration::Drop(true)) => {
+                self.windows[index].dnd_drop_registration = Some(command.clone());
+            }
+            Some(KittyDndRegistration::Drop(false)) => {
+                self.windows[index].dnd_drop_registration = None;
+            }
+            None => {}
+        }
+        if index == self.active {
+            self.write_client_protocol(&command);
+            self.outer_dnd_window = (self.windows[index].dnd_drag_registration.is_some()
+                || self.windows[index].dnd_drop_registration.is_some())
+            .then_some(self.windows[index].id);
+        }
+    }
+
+    fn write_client_protocol(&mut self, bytes: &[u8]) {
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
+        if client
+            .write_all(bytes)
+            .and_then(|()| client.flush())
+            .is_err()
+        {
+            self.detach_client();
+        }
+    }
+
+    fn clear_outer_dnd_registration(&mut self) {
+        let Some(id) = self.outer_dnd_window.take() else {
+            return;
+        };
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
+        let Ok(id) = u32::try_from(id) else {
+            return;
+        };
+        for disable in [b"\x1b]72;t=A\x1b\\".as_slice(), b"\x1b]72;t=o:x=2\x1b\\"] {
+            if let Some(command) = kitty_dnd_with_id(disable, id) {
+                let _ = client.write_all(&command);
+            }
+        }
+        let _ = client.flush();
+    }
+
+    fn sync_kitty_dnd_registration(&mut self) {
+        if self.client.is_none() || self.windows.is_empty() {
+            return;
+        }
+        let active = &self.windows[self.active];
+        let desired = (active.dnd_drag_registration.is_some()
+            || active.dnd_drop_registration.is_some())
+        .then_some(active.id);
+        if desired == self.outer_dnd_window {
+            return;
+        }
+        if let Some(previous) = self.outer_dnd_window
+            && let Ok(id) = u32::try_from(previous)
+        {
+            for disable in [b"\x1b]72;t=A\x1b\\".as_slice(), b"\x1b]72;t=o:x=2\x1b\\"] {
+                if let Some(command) = kitty_dnd_with_id(disable, id) {
+                    self.write_client_protocol(&command);
+                }
+            }
+        }
+        if let Some(id) = desired {
+            let registrations = self
+                .windows
+                .iter()
+                .find(|window| window.id == id)
+                .map(|window| {
+                    [
+                        window.dnd_drag_registration.clone(),
+                        window.dnd_drop_registration.clone(),
+                    ]
+                })
+                .unwrap_or_default();
+            for registration in registrations.into_iter().flatten() {
+                self.write_client_protocol(&registration);
+            }
+        }
+        self.outer_dnd_window = desired.filter(|_| self.client.is_some());
     }
 
     fn handle_decoded_input(&mut self, bytes: &[u8]) -> Result<bool> {
@@ -603,11 +772,23 @@ impl App {
                 continue;
             }
             if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
-                if !passthrough.is_empty() {
-                    self.write_active(&passthrough)?;
-                    passthrough.clear();
+                if self.windows[self.active].history_mode {
+                    if !passthrough.is_empty() {
+                        self.write_active(&passthrough)?;
+                        passthrough.clear();
+                    }
+                    self.apply_mouse_action(mouse)?;
+                } else if self.mode == "locked"
+                    && self.windows[self.active]
+                        .terminal
+                        .screen()
+                        .mouse_protocol_mode()
+                        != vt100::MouseProtocolMode::None
+                    && let Some(position) = self.content_position(mouse.position(), false)
+                    && let Some(sequence) = sgr_mouse_at(&bytes[index..index + consumed], position)
+                {
+                    passthrough.extend_from_slice(&sequence);
                 }
-                self.apply_mouse_action(mouse)?;
                 index += consumed;
                 continue;
             }
@@ -892,6 +1073,7 @@ impl App {
             let window = &mut self.windows[self.active];
             window.history_mode = false;
             window.terminal.screen_mut().set_scrollback(0);
+            self.selection = None;
         }
         self.mode = mode.to_owned();
         if mode == "scroll" && !self.windows.is_empty() {
@@ -1070,13 +1252,15 @@ impl App {
             return self.redraw();
         }
 
-        let selection_cleared = matches!(action, MouseAction::ScrollUp | MouseAction::ScrollDown)
-            && self.selection.take().is_some();
+        let selection_cleared = matches!(
+            action,
+            MouseAction::ScrollUp(_) | MouseAction::ScrollDown(_)
+        ) && self.selection.take().is_some();
         let window = &mut self.windows[self.active];
         let current = window.terminal.screen().scrollback();
         let was_history_mode = window.history_mode;
         match action {
-            MouseAction::ScrollUp => {
+            MouseAction::ScrollUp(_) => {
                 window.history_mode = true;
                 if self.config.has_mode("scroll") {
                     self.mode = "scroll".to_owned();
@@ -1086,7 +1270,7 @@ impl App {
                     .screen_mut()
                     .set_scrollback(current.saturating_add(MOUSE_SCROLL_LINES));
             }
-            MouseAction::ScrollDown if window.history_mode => {
+            MouseAction::ScrollDown(_) if window.history_mode => {
                 window
                     .terminal
                     .screen_mut()
@@ -1096,13 +1280,13 @@ impl App {
                     self.mode = self.config.default_mode.clone();
                 }
             }
-            MouseAction::ScrollDown => {
+            MouseAction::ScrollDown(_) => {
                 if selection_cleared {
                     self.redraw()?;
                 }
                 return Ok(());
             }
-            MouseAction::Other => return Ok(()),
+            MouseAction::Other(_) => return Ok(()),
             MouseAction::SelectStart(_)
             | MouseAction::SelectExtend(_)
             | MouseAction::SelectEnd(_) => unreachable!(),
@@ -1157,8 +1341,12 @@ impl App {
 
     fn process_pty_output(&mut self, index: usize, output: &[u8]) -> Result<()> {
         let parsed = self.windows[index].kitty_graphics.process(output);
-        let terminal_changed = !parsed.terminal.is_empty();
-        self.windows[index].cursor_style.process(&parsed.terminal);
+        let dnd = self.windows[index].kitty_dnd.process(&parsed.terminal);
+        for command in dnd.commands {
+            self.handle_window_dnd_command(index, &command);
+        }
+        let terminal_changed = !dnd.terminal.is_empty();
+        self.windows[index].cursor_style.process(&dnd.terminal);
         let mut graphics_responses = Vec::new();
         let mut graphics_changed = false;
         let mut flush_graphics_immediately = false;
@@ -1175,7 +1363,7 @@ impl App {
             .command_output
             .command_started_at
             .is_some();
-        let completions = self.windows[index].command_output.process(&parsed.terminal);
+        let completions = self.windows[index].command_output.process(&dnd.terminal);
         if !command_was_running
             && self.windows[index]
                 .command_output
@@ -1184,13 +1372,13 @@ impl App {
         {
             self.windows[index].notification_applications.clear();
         }
-        self.windows[index].terminal.process(&parsed.terminal);
+        self.windows[index].terminal.process(&dnd.terminal);
         let screen = self.windows[index].terminal.screen();
         let (screen_rows, screen_columns) = screen.size();
         let cell_width = self.terminal_pixels.0 / self.terminal_size.0.max(1);
         let cell_height = self.terminal_pixels.1 / self.terminal_size.1.max(1);
         graphics_responses.extend_from_slice(&terminal_responses(
-            &parsed.terminal,
+            &dnd.terminal,
             Winsize {
                 ws_col: screen_columns,
                 ws_row: screen_rows,
@@ -1556,6 +1744,10 @@ impl App {
         if self.windows.is_empty() || self.client.is_none() {
             return Ok(());
         }
+        self.sync_kitty_dnd_registration();
+        if self.client.is_none() {
+            return Ok(());
+        }
         self.renderer
             .set_ui(self.config.compact(), self.config.describe_mode(&self.mode));
         let graphics = std::mem::take(&mut self.windows[self.active].pending_graphics);
@@ -1721,6 +1913,7 @@ impl App {
     }
 
     pub(super) fn shutdown(&mut self) {
+        self.clear_outer_dnd_registration();
         for window in self.windows.drain(..) {
             terminate_window(window);
         }

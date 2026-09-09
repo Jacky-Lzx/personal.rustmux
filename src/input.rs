@@ -4,12 +4,25 @@ use super::{ENCODED_PREFIXES, ESCAPE_SEQUENCE_TIMEOUT, PREFIX};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MouseAction {
-    ScrollUp,
-    ScrollDown,
+    ScrollUp(MousePosition),
+    ScrollDown(MousePosition),
     SelectStart(MousePosition),
     SelectExtend(MousePosition),
     SelectEnd(MousePosition),
-    Other,
+    Other(MousePosition),
+}
+
+impl MouseAction {
+    pub(super) fn position(self) -> MousePosition {
+        match self {
+            Self::ScrollUp(position)
+            | Self::ScrollDown(position)
+            | Self::SelectStart(position)
+            | Self::SelectExtend(position)
+            | Self::SelectEnd(position)
+            | Self::Other(position) => position,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -213,12 +226,25 @@ pub(super) fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
     }
     let released = bytes[final_index] == b'm';
     let action = match button {
-        button if button & 64 != 0 && button & 3 == 0 => MouseAction::ScrollUp,
-        button if button & 64 != 0 && button & 3 == 1 => MouseAction::ScrollDown,
+        button if button & 64 != 0 && button & 3 == 0 => MouseAction::ScrollUp(position),
+        button if button & 64 != 0 && button & 3 == 1 => MouseAction::ScrollDown(position),
         button if released && button & 3 == 0 => MouseAction::SelectEnd(position),
         button if button & 32 != 0 && button & 3 == 0 => MouseAction::SelectExtend(position),
         button if button & 32 == 0 && button & 3 == 0 => MouseAction::SelectStart(position),
-        _ => MouseAction::Other,
+        _ => MouseAction::Other(position),
     };
     Some((action, final_index + 1))
+}
+
+pub(super) fn sgr_mouse_at(bytes: &[u8], position: MousePosition) -> Option<Vec<u8>> {
+    let (_, consumed) = decode_sgr_mouse(bytes)?;
+    let sequence = &bytes[..consumed];
+    let button_end = sequence[3..].iter().position(|byte| *byte == b';')? + 3;
+    let mut translated = Vec::with_capacity(sequence.len());
+    translated.extend_from_slice(&sequence[..=button_end]);
+    translated.extend_from_slice(position.column.saturating_add(1).to_string().as_bytes());
+    translated.push(b';');
+    translated.extend_from_slice(position.row.saturating_add(1).to_string().as_bytes());
+    translated.push(*sequence.last()?);
+    Some(translated)
 }

@@ -10,6 +10,7 @@ use crate::app::{
 };
 use crate::input::{
     DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
+    sgr_mouse_at,
 };
 use crate::layout::{
     FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for, content_winsize_for,
@@ -22,9 +23,10 @@ use crate::render::{
 };
 use crate::session::ServerOutputDecoder;
 use crate::terminal::{
-    CursorStyleTracker, KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata,
-    base64_encode, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
-    kitty_notification, terminal_responses,
+    CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
+    SemanticOutputCapture, TerminalMetadata, base64_encode, kitty_dnd_for_child, kitty_dnd_id,
+    kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
+    kitty_graphics_uses_shared_memory, kitty_notification, terminal_responses,
 };
 
 fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
@@ -55,6 +57,9 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         ),
         cursor_style: CursorStyleTracker::default(),
         kitty_graphics: KittyGraphicsParser::default(),
+        kitty_dnd: KittyDndParser::default(),
+        dnd_drag_registration: None,
+        dnd_drop_registration: None,
         pending_graphics: Vec::new(),
         history_mode: false,
         command_output: SemanticOutputCapture::default(),
@@ -163,15 +168,21 @@ fn renaming_a_window_updates_all_panes_in_the_tab() {
 fn sgr_mouse_decoder_recognizes_wheel_and_selection_events() {
     assert_eq!(
         decode_sgr_mouse(b"\x1b[<64;10;5M"),
-        Some((MouseAction::ScrollUp, 11))
+        Some((
+            MouseAction::ScrollUp(MousePosition { column: 10, row: 5 }),
+            11
+        ))
     );
     assert_eq!(
         decode_sgr_mouse(b"\x1b[<69;10;5M"),
-        Some((MouseAction::ScrollDown, 11))
+        Some((
+            MouseAction::ScrollDown(MousePosition { column: 10, row: 5 }),
+            11
+        ))
     );
     assert_eq!(
         decode_sgr_mouse(b"\x1b[<66;10;5M"),
-        Some((MouseAction::Other, 11))
+        Some((MouseAction::Other(MousePosition { column: 10, row: 5 }), 11))
     );
     assert_eq!(
         decode_sgr_mouse(b"\x1b[<0;10;5M"),
@@ -195,6 +206,11 @@ fn sgr_mouse_decoder_recognizes_wheel_and_selection_events() {
         ))
     );
     assert_eq!(decode_sgr_mouse(b"\x1b[<64;10"), None);
+
+    assert_eq!(
+        sgr_mouse_at(b"\x1b[<32;12;6M", MousePosition { column: 2, row: 3 }),
+        Some(b"\x1b[<32;3;4M".to_vec())
+    );
 }
 
 #[test]
@@ -663,6 +679,71 @@ fn kitty_graphics_parser_handles_chunked_apc_commands() {
     let c1 = parser.process(b"\x9fGa=d,d=A\x9c");
     assert_eq!(c1.commands, vec![b"\x9fGa=d,d=A\x9c".to_vec()]);
     assert!(c1.terminal.is_empty());
+}
+
+#[test]
+fn kitty_dnd_parser_extracts_fragmented_osc_72_sequences() {
+    let mut parser = KittyDndParser::default();
+
+    let first = parser.process(b"before\x1b]7");
+    assert_eq!(first.terminal, b"before");
+    assert!(first.commands.is_empty());
+
+    let second = parser.process(b"2;t=a;text/uri-list\x1b");
+    assert!(second.terminal.is_empty());
+    assert!(second.commands.is_empty());
+
+    let third = parser.process(b"\\after");
+    assert_eq!(third.commands, [b"\x1b]72;t=a;text/uri-list\x1b\\"]);
+    assert_eq!(third.terminal, b"after");
+
+    let ordinary = parser.process(b"\x1b]2;title\x1b\\");
+    assert_eq!(ordinary.terminal, b"\x1b]2;title\x1b\\");
+    assert!(ordinary.commands.is_empty());
+}
+
+#[test]
+fn kitty_dnd_commands_are_tagged_for_multiplexer_routing() {
+    let tagged = kitty_dnd_with_id(b"\x1b]72;t=o:x=1;machine\x1b\\", 42).unwrap();
+    assert_eq!(tagged, b"\x1b]72;t=o:x=1:i=42;machine\x1b\\");
+    assert_eq!(kitty_dnd_id(&tagged), Some(42));
+    assert_eq!(
+        kitty_dnd_registration(&tagged),
+        Some(KittyDndRegistration::Drag(true))
+    );
+
+    let replaced = kitty_dnd_with_id(b"\x1b]72;m=1:i=9;YWJj\x1b\\", 42).unwrap();
+    assert_eq!(replaced, b"\x1b]72;m=1:i=42;YWJj\x1b\\");
+    assert_eq!(
+        kitty_dnd_registration(b"\x1b]72;t=A:i=42\x1b\\"),
+        Some(KittyDndRegistration::Drop(false))
+    );
+}
+
+#[test]
+fn kitty_dnd_events_are_translated_to_pane_coordinates() {
+    let event = b"\x1b]72;t=m:i=42:x=11:y=7:X=110:Y=140:o=3;text/uri-list\x1b\\";
+    let translated = kitty_dnd_for_child(event, (10, 5), (20, 10), (10, 20)).unwrap();
+    assert_eq!(
+        translated,
+        b"\x1b]72;t=m:x=1:y=2:X=10:Y=40:o=3;text/uri-list\x1b\\"
+    );
+    assert_eq!(kitty_dnd_id(&translated), None);
+
+    let outside = kitty_dnd_for_child(event, (20, 5), (20, 10), (10, 20)).unwrap();
+    assert_eq!(
+        outside,
+        b"\x1b]72;t=m:x=-1:y=-1:X=110:Y=140:o=3;text/uri-list\x1b\\"
+    );
+
+    let data = kitty_dnd_for_child(
+        b"\x1b]72;t=r:i=42:x=2:m=0;YWJj\x1b\\",
+        (10, 5),
+        (20, 10),
+        (10, 20),
+    )
+    .unwrap();
+    assert_eq!(data, b"\x1b]72;t=r:x=2:m=0;YWJj\x1b\\");
 }
 
 #[test]

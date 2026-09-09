@@ -6,6 +6,9 @@ use nix::pty::Winsize;
 
 const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_KITTY_COMMAND_BYTES: usize = 64 * 1024 * 1024;
+const MAX_KITTY_DND_SEQUENCE_BYTES: usize = 16 * 1024;
+const KITTY_DND_PREFIX: &[u8] = b"\x1b]72;";
+const STRING_TERMINATOR: &[u8] = b"\x1b\\";
 
 #[derive(Default)]
 pub(super) struct TerminalMetadata {
@@ -180,6 +183,194 @@ pub(super) fn fallback_command_output(bytes: &[u8]) -> String {
         lines.pop();
     }
     lines.join("\n").trim_end().to_owned()
+}
+
+#[derive(Default)]
+pub(super) struct KittyDndParser {
+    pending: Vec<u8>,
+}
+
+#[derive(Default)]
+pub(super) struct KittyDndOutput {
+    pub(super) terminal: Vec<u8>,
+    pub(super) commands: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum KittyDndRegistration {
+    Drag(bool),
+    Drop(bool),
+}
+
+impl KittyDndParser {
+    pub(super) fn process(&mut self, bytes: &[u8]) -> KittyDndOutput {
+        self.pending.extend_from_slice(bytes);
+        let mut output = KittyDndOutput::default();
+
+        loop {
+            let Some(start) = find_subslice(&self.pending, KITTY_DND_PREFIX) else {
+                let retained = partial_prefix_length(&self.pending, KITTY_DND_PREFIX);
+                let visible = self.pending.len().saturating_sub(retained);
+                output.terminal.extend(self.pending.drain(..visible));
+                break;
+            };
+            output.terminal.extend(self.pending.drain(..start));
+            let Some(end) =
+                find_subslice(&self.pending[KITTY_DND_PREFIX.len()..], STRING_TERMINATOR)
+            else {
+                if self.pending.len() > MAX_KITTY_DND_SEQUENCE_BYTES {
+                    output.terminal.push(self.pending.remove(0));
+                    continue;
+                }
+                break;
+            };
+            let length = KITTY_DND_PREFIX.len() + end + STRING_TERMINATOR.len();
+            output.commands.push(self.pending.drain(..length).collect());
+        }
+
+        output
+    }
+}
+
+pub(super) fn kitty_dnd_with_id(command: &[u8], id: u32) -> Option<Vec<u8>> {
+    rewrite_kitty_dnd(
+        command,
+        |key, value| (key != "i").then(|| format!("{key}={value}")),
+        Some(("i", id.to_string())),
+    )
+}
+
+pub(super) fn kitty_dnd_id(command: &[u8]) -> Option<u32> {
+    let (metadata, _) = kitty_dnd_parts(command)?;
+    metadata.split(':').find_map(|field| {
+        let (key, value) = field.split_once('=')?;
+        (key == "i").then(|| value.parse().ok()).flatten()
+    })
+}
+
+pub(super) fn kitty_dnd_registration(command: &[u8]) -> Option<KittyDndRegistration> {
+    let (metadata, _) = kitty_dnd_parts(command)?;
+    let kind = metadata_value(metadata, "t")?;
+    match kind {
+        "a" => Some(KittyDndRegistration::Drop(true)),
+        "A" => Some(KittyDndRegistration::Drop(false)),
+        "o" if metadata_value(metadata, "x") == Some("1") => Some(KittyDndRegistration::Drag(true)),
+        "o" if metadata_value(metadata, "x") == Some("2") => {
+            Some(KittyDndRegistration::Drag(false))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn kitty_dnd_for_child(
+    command: &[u8],
+    origin: (i32, i32),
+    size: (u16, u16),
+    cell_pixels: (u16, u16),
+) -> Option<Vec<u8>> {
+    let (metadata, _) = kitty_dnd_parts(command)?;
+    let kind = metadata_value(metadata, "t");
+    let location = matches!(kind, Some("m" | "M" | "o"));
+    let x = metadata_value(metadata, "x").and_then(|value| value.parse::<i32>().ok());
+    let y = metadata_value(metadata, "y").and_then(|value| value.parse::<i32>().ok());
+    let inside = location
+        && x.zip(y).is_some_and(|(x, y)| {
+            x >= origin.0
+                && y >= origin.1
+                && x < origin.0 + i32::from(size.0)
+                && y < origin.1 + i32::from(size.1)
+        });
+
+    rewrite_kitty_dnd(
+        command,
+        |key, value| {
+            if key == "i" {
+                return None;
+            }
+            let value = if location && matches!(key, "x" | "y") {
+                let coordinate = value.parse::<i32>().ok()?;
+                if coordinate < 0 || !inside {
+                    "-1".to_owned()
+                } else if key == "x" {
+                    (coordinate - origin.0).to_string()
+                } else {
+                    (coordinate - origin.1).to_string()
+                }
+            } else if location && inside && matches!(key, "X" | "Y") {
+                let coordinate = value.parse::<i64>().ok()?;
+                let offset = if key == "X" {
+                    i64::from(origin.0) * i64::from(cell_pixels.0)
+                } else {
+                    i64::from(origin.1) * i64::from(cell_pixels.1)
+                };
+                coordinate.saturating_sub(offset).to_string()
+            } else {
+                value.to_owned()
+            };
+            Some(format!("{key}={value}"))
+        },
+        None,
+    )
+}
+
+fn kitty_dnd_parts(command: &[u8]) -> Option<(&str, Option<&[u8]>)> {
+    let body = command
+        .strip_prefix(KITTY_DND_PREFIX)?
+        .strip_suffix(STRING_TERMINATOR)?;
+    let (metadata, payload) = body
+        .iter()
+        .position(|byte| *byte == b';')
+        .map_or((body, None), |position| {
+            (&body[..position], Some(&body[position + 1..]))
+        });
+    Some((std::str::from_utf8(metadata).ok()?, payload))
+}
+
+fn metadata_value<'a>(metadata: &'a str, wanted: &str) -> Option<&'a str> {
+    metadata.split(':').find_map(|field| {
+        let (key, value) = field.split_once('=')?;
+        (key == wanted).then_some(value)
+    })
+}
+
+fn rewrite_kitty_dnd(
+    command: &[u8],
+    mut rewrite: impl FnMut(&str, &str) -> Option<String>,
+    additional: Option<(&str, String)>,
+) -> Option<Vec<u8>> {
+    let (metadata, payload) = kitty_dnd_parts(command)?;
+    let mut fields = Vec::new();
+    for field in metadata.split(':') {
+        let (key, value) = field.split_once('=')?;
+        if let Some(field) = rewrite(key, value) {
+            fields.push(field);
+        }
+    }
+    if let Some((key, value)) = additional {
+        fields.push(format!("{key}={value}"));
+    }
+    let mut result = Vec::with_capacity(command.len() + 16);
+    result.extend_from_slice(KITTY_DND_PREFIX);
+    result.extend_from_slice(fields.join(":").as_bytes());
+    if let Some(payload) = payload {
+        result.push(b';');
+        result.extend_from_slice(payload);
+    }
+    result.extend_from_slice(STRING_TERMINATOR);
+    Some(result)
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn partial_prefix_length(bytes: &[u8], prefix: &[u8]) -> usize {
+    (1..prefix.len())
+        .rev()
+        .find(|length| bytes.ends_with(&prefix[..*length]))
+        .unwrap_or(0)
 }
 
 #[derive(Default)]
