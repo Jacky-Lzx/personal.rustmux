@@ -53,7 +53,7 @@ impl TerminalGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout().lock();
-        stdout.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
         stdout.flush()?;
         Ok(Self)
     }
@@ -266,7 +266,23 @@ enum HistoryAction {
 enum MouseAction {
     ScrollUp,
     ScrollDown,
+    SelectStart(MousePosition),
+    SelectExtend(MousePosition),
+    SelectEnd(MousePosition),
     Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MousePosition {
+    column: u16,
+    row: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TextSelection {
+    window_id: usize,
+    start: MousePosition,
+    end: MousePosition,
 }
 
 #[derive(Default)]
@@ -580,6 +596,7 @@ struct App {
     input_decoder: InputDecoder,
     config: Config,
     mode: String,
+    selection: Option<TextSelection>,
     renderer: Renderer,
     terminal_size: (u16, u16),
     terminal_pixels: (u16, u16),
@@ -599,6 +616,7 @@ impl App {
             input_decoder: InputDecoder::default(),
             config,
             mode,
+            selection: None,
             renderer: Renderer::default(),
             terminal_size,
             terminal_pixels,
@@ -845,6 +863,7 @@ impl App {
     fn handle_decoded_input(&mut self, bytes: &[u8]) -> Result<bool> {
         let mut passthrough = Vec::with_capacity(bytes.len());
         let mut index = 0;
+        let mut selection_cleared = false;
         while index < bytes.len() {
             if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
                 if !passthrough.is_empty() {
@@ -854,6 +873,11 @@ impl App {
                 self.apply_mouse_action(mouse)?;
                 index += consumed;
                 continue;
+            }
+
+            if !selection_cleared && self.selection.take().is_some() {
+                selection_cleared = true;
+                self.redraw()?;
             }
 
             let (key, consumed) = decode_key(&bytes[index..]);
@@ -930,6 +954,7 @@ impl App {
 
     fn reset_mode(&mut self) {
         self.mode = self.config.default_mode.clone();
+        self.selection = None;
         for window in &mut self.windows {
             window.history_mode = false;
             window.terminal.screen_mut().set_scrollback(0);
@@ -988,13 +1013,18 @@ impl App {
         if text.is_empty() {
             return self.notify("no previous command output (OSC 133 shell integration required)");
         }
+        self.copy_to_clipboard(&text)?;
+        self.notify("previous command output copied to clipboard")
+    }
+
+    fn copy_to_clipboard(&mut self, text: &str) -> Result<()> {
         let encoded = base64_encode(text.as_bytes());
         if let Some(client) = self.client.as_mut() {
             client.write_all(b"\x1b]52;c;")?;
             client.write_all(encoded.as_bytes())?;
             client.write_all(b"\x07")?;
         }
-        self.notify("previous command output copied to clipboard")
+        Ok(())
     }
 
     fn notify(&mut self, message: &str) -> Result<()> {
@@ -1021,6 +1051,44 @@ impl App {
     }
 
     fn apply_mouse_action(&mut self, action: MouseAction) -> Result<()> {
+        if let MouseAction::SelectStart(position) = action {
+            let Some(position) = self.content_position(position, false) else {
+                if self.selection.take().is_some() {
+                    self.redraw()?;
+                }
+                return Ok(());
+            };
+            self.selection = Some(TextSelection {
+                window_id: self.windows[self.active].id,
+                start: position,
+                end: position,
+            });
+            return self.redraw();
+        }
+        if let MouseAction::SelectExtend(position) | MouseAction::SelectEnd(position) = action {
+            let Some(mut selection) = self.selection else {
+                return Ok(());
+            };
+            if selection.window_id != self.windows[self.active].id {
+                self.selection = None;
+                return Ok(());
+            }
+            selection.end = self
+                .content_position(position, true)
+                .expect("clamped content position is always available");
+            self.selection = Some(selection);
+            self.redraw()?;
+            if matches!(action, MouseAction::SelectEnd(_)) {
+                let text = selected_text(&self.windows[self.active], selection, self.terminal_size);
+                if !text.is_empty() {
+                    self.copy_to_clipboard(&text)?;
+                }
+            }
+            return Ok(());
+        }
+
+        let selection_cleared = matches!(action, MouseAction::ScrollUp | MouseAction::ScrollDown)
+            && self.selection.take().is_some();
         let window = &mut self.windows[self.active];
         let current = window.terminal.screen().scrollback();
         let was_history_mode = window.history_mode;
@@ -1045,14 +1113,39 @@ impl App {
                     self.mode = self.config.default_mode.clone();
                 }
             }
-            MouseAction::ScrollDown | MouseAction::Other => return Ok(()),
+            MouseAction::ScrollDown => {
+                if selection_cleared {
+                    self.redraw()?;
+                }
+                return Ok(());
+            }
+            MouseAction::Other => return Ok(()),
+            MouseAction::SelectStart(_)
+            | MouseAction::SelectExtend(_)
+            | MouseAction::SelectEnd(_) => unreachable!(),
         }
         if was_history_mode != window.history_mode
             || current != window.terminal.screen().scrollback()
+            || selection_cleared
         {
             self.redraw()?;
         }
         Ok(())
+    }
+
+    fn content_position(&self, position: MousePosition, clamp: bool) -> Option<MousePosition> {
+        let (columns, rows) = content_size(self.terminal_size);
+        let column = i32::from(position.column) - 2;
+        let row = i32::from(position.row) - 3;
+        if !clamp
+            && (column < 0 || row < 0 || column >= i32::from(columns) || row >= i32::from(rows))
+        {
+            return None;
+        }
+        Some(MousePosition {
+            column: column.clamp(0, i32::from(columns) - 1) as u16,
+            row: row.clamp(0, i32::from(rows) - 1) as u16,
+        })
     }
 
     fn process_pty_output(&mut self, index: usize, output: &[u8]) -> Result<()> {
@@ -1154,6 +1247,7 @@ impl App {
             self.active,
             self.terminal_size,
             &self.mode,
+            self.selection.as_ref(),
             &graphics,
         );
         if frame.is_empty() {
@@ -1218,6 +1312,7 @@ impl App {
         }
         self.terminal_size = new_size;
         self.terminal_pixels = new_pixels;
+        self.selection = None;
         let winsize = content_winsize(new_size, new_pixels);
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
         for window in &self.windows {
@@ -1267,6 +1362,7 @@ impl App {
         if !self.windows.is_empty() {
             self.active = self.active.min(self.windows.len() - 1);
             if removed_any {
+                self.selection = None;
                 self.renderer.invalidate();
                 self.redraw()?;
             }
@@ -1303,6 +1399,74 @@ fn window_history(window: &mut Window) -> String {
     let mut history = lines.join("\n");
     history.push('\n');
     history
+}
+
+fn selected_text(window: &Window, selection: TextSelection, terminal_size: (u16, u16)) -> String {
+    if selection.window_id != window.id {
+        return String::new();
+    }
+    let (columns, _) = content_size(terminal_size);
+    let start_index = usize::from(selection.start.row) * usize::from(columns)
+        + usize::from(selection.start.column);
+    let end_index =
+        usize::from(selection.end.row) * usize::from(columns) + usize::from(selection.end.column);
+    let (start, end) = if start_index <= end_index {
+        (selection.start, selection.end)
+    } else {
+        (selection.end, selection.start)
+    };
+    let screen = window.terminal.screen();
+    let mut text = String::new();
+    for row in start.row..=end.row {
+        let first_column = if row == start.row { start.column } else { 0 };
+        let last_column = if row == end.row {
+            end.column
+        } else {
+            columns - 1
+        };
+        let mut line = String::new();
+        for column in first_column..=last_column {
+            let cell = screen
+                .cell(row, column)
+                .expect("selection is within screen");
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            if cell.has_contents() {
+                line.push_str(cell.contents());
+            } else {
+                line.push(' ');
+            }
+        }
+        let wrapped = screen.row_wrapped(row) && row != end.row;
+        if wrapped {
+            text.push_str(&line);
+        } else {
+            text.push_str(line.trim_end_matches(' '));
+        }
+        if row != end.row && !wrapped {
+            text.push('\n');
+        }
+    }
+    text
+}
+
+fn selection_contains(
+    selection: Option<&TextSelection>,
+    window_id: usize,
+    row: u16,
+    column: u16,
+    columns: u16,
+) -> bool {
+    let Some(selection) = selection.filter(|selection| selection.window_id == window_id) else {
+        return false;
+    };
+    let position = usize::from(row) * usize::from(columns) + usize::from(column);
+    let start = usize::from(selection.start.row) * usize::from(columns)
+        + usize::from(selection.start.column);
+    let end =
+        usize::from(selection.end.row) * usize::from(columns) + usize::from(selection.end.column);
+    (start.min(end)..=start.max(end)).contains(&position)
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -1471,19 +1635,29 @@ fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
         .iter()
         .position(|byte| *byte == b'M' || *byte == b'm')?;
     let final_index = final_offset + 3;
-    let button = bytes[3..final_index]
-        .split(|byte| *byte == b';')
-        .next()
-        .and_then(|digits| {
-            digits.iter().try_fold(0_u16, |value, digit| {
-                digit
-                    .is_ascii_digit()
-                    .then(|| value.saturating_mul(10) + u16::from(digit - b'0'))
-            })
-        });
+    let mut fields = bytes[3..final_index].split(|byte| *byte == b';');
+    let parse_number = |digits: &[u8]| {
+        digits.iter().try_fold(0_u16, |value, digit| {
+            digit
+                .is_ascii_digit()
+                .then(|| value.saturating_mul(10) + u16::from(digit - b'0'))
+        })
+    };
+    let button = parse_number(fields.next()?)?;
+    let position = MousePosition {
+        column: parse_number(fields.next()?)?,
+        row: parse_number(fields.next()?)?,
+    };
+    if fields.next().is_some() {
+        return None;
+    }
+    let released = bytes[final_index] == b'm';
     let action = match button {
-        Some(button) if button & 64 != 0 && button & 3 == 0 => MouseAction::ScrollUp,
-        Some(button) if button & 64 != 0 && button & 3 == 1 => MouseAction::ScrollDown,
+        button if button & 64 != 0 && button & 3 == 0 => MouseAction::ScrollUp,
+        button if button & 64 != 0 && button & 3 == 1 => MouseAction::ScrollDown,
+        button if released && button & 3 == 0 => MouseAction::SelectEnd(position),
+        button if button & 32 != 0 && button & 3 == 0 => MouseAction::SelectExtend(position),
+        button if button & 32 == 0 && button & 3 == 0 => MouseAction::SelectStart(position),
         _ => MouseAction::Other,
     };
     Some((action, final_index + 1))
@@ -1505,11 +1679,12 @@ impl Renderer {
         active: usize,
         terminal_size: (u16, u16),
         mode: &str,
+        selection: Option<&TextSelection>,
         graphics: &[Vec<u8>],
     ) -> Vec<u8> {
-        let current = FrameSnapshot::capture(windows, active, terminal_size, mode);
+        let current = FrameSnapshot::capture(windows, active, terminal_size, mode, selection);
         let Some(previous) = &self.previous else {
-            let output = render_frame(windows, active, terminal_size, mode, graphics);
+            let output = render_frame(windows, active, terminal_size, mode, selection, graphics);
             self.previous = Some(current);
             return output;
         };
@@ -1519,7 +1694,7 @@ impl Renderer {
             || previous.tabs != current.tabs
             || previous.cells.len() != current.cells.len()
         {
-            let output = render_frame(windows, active, terminal_size, mode, graphics);
+            let output = render_frame(windows, active, terminal_size, mode, selection, graphics);
             self.previous = Some(current);
             return output;
         }
@@ -1644,16 +1819,26 @@ struct FrameSnapshot {
 }
 
 impl FrameSnapshot {
-    fn capture(windows: &[Window], active: usize, terminal_size: (u16, u16), mode: &str) -> Self {
+    fn capture(
+        windows: &[Window],
+        active: usize,
+        terminal_size: (u16, u16),
+        mode: &str,
+        selection: Option<&TextSelection>,
+    ) -> Self {
         let screen = windows[active].terminal.screen();
         let (columns, rows) = content_size(terminal_size);
         let mut cells = Vec::with_capacity(usize::from(columns) * usize::from(rows));
         for row in 0..rows {
             for column in 0..columns {
                 let cell = screen.cell(row, column).expect("cell is within screen");
+                let mut style = CellStyle::from(cell);
+                if selection_contains(selection, windows[active].id, row, column, columns) {
+                    style.inverse = !style.inverse;
+                }
                 cells.push(CellSnapshot {
                     contents: cell.contents().to_owned(),
-                    style: CellStyle::from(cell),
+                    style,
                     wide_continuation: cell.is_wide_continuation(),
                 });
             }
@@ -1737,6 +1922,7 @@ fn render_frame(
     active: usize,
     terminal_size: (u16, u16),
     mode: &str,
+    selection: Option<&TextSelection>,
     graphics: &[Vec<u8>],
 ) -> Vec<u8> {
     let (width, height) = terminal_size;
@@ -1764,7 +1950,10 @@ fn render_frame(
             if cell.is_wide_continuation() {
                 continue;
             }
-            let style = CellStyle::from(cell);
+            let mut style = CellStyle::from(cell);
+            if selection_contains(selection, windows[active].id, row, column, content_columns) {
+                style.inverse = !style.inverse;
+            }
             if previous_style != Some(style) {
                 write_cell_style(&mut output, style);
                 previous_style = Some(style);
@@ -2511,7 +2700,7 @@ mod tests {
     }
 
     #[test]
-    fn sgr_mouse_decoder_recognizes_vertical_wheel_events() {
+    fn sgr_mouse_decoder_recognizes_wheel_and_selection_events() {
         assert_eq!(
             decode_sgr_mouse(b"\x1b[<64;10;5M"),
             Some((MouseAction::ScrollUp, 11))
@@ -2526,9 +2715,88 @@ mod tests {
         );
         assert_eq!(
             decode_sgr_mouse(b"\x1b[<0;10;5M"),
-            Some((MouseAction::Other, 10))
+            Some((
+                MouseAction::SelectStart(MousePosition { column: 10, row: 5 }),
+                10
+            ))
+        );
+        assert_eq!(
+            decode_sgr_mouse(b"\x1b[<32;12;6M"),
+            Some((
+                MouseAction::SelectExtend(MousePosition { column: 12, row: 6 }),
+                11
+            ))
+        );
+        assert_eq!(
+            decode_sgr_mouse(b"\x1b[<0;14;6m"),
+            Some((
+                MouseAction::SelectEnd(MousePosition { column: 14, row: 6 }),
+                10
+            ))
         );
         assert_eq!(decode_sgr_mouse(b"\x1b[<64;10"), None);
+    }
+
+    #[test]
+    fn selected_text_spans_rows_and_ignores_terminal_padding() {
+        let mut window = test_window(7, "fish", 3, 18);
+        window
+            .terminal
+            .process(b"hello world\r\nsecond line\r\nthird");
+        let selection = TextSelection {
+            window_id: 7,
+            start: MousePosition { column: 0, row: 0 },
+            end: MousePosition { column: 5, row: 1 },
+        };
+
+        assert_eq!(
+            selected_text(&window, selection, (20, 6)),
+            "hello world\nsecond"
+        );
+        assert_eq!(
+            selected_text(
+                &window,
+                TextSelection {
+                    start: selection.end,
+                    end: selection.start,
+                    ..selection
+                },
+                (20, 6)
+            ),
+            "hello world\nsecond"
+        );
+    }
+
+    #[test]
+    fn selected_text_does_not_insert_newlines_at_soft_wraps() {
+        let mut window = test_window(9, "sh", 2, 5);
+        window.terminal.process(b"abcdef");
+        let selection = TextSelection {
+            window_id: 9,
+            start: MousePosition { column: 0, row: 0 },
+            end: MousePosition { column: 0, row: 1 },
+        };
+
+        assert_eq!(selected_text(&window, selection, (7, 5)), "abcdef");
+    }
+
+    #[test]
+    fn selection_highlight_is_rendered_incrementally() {
+        let mut window = test_window(3, "fish", 3, 18);
+        window.terminal.process(b"select me");
+        let windows = vec![window];
+        let mut renderer = Renderer::default();
+        renderer.render(&windows, 0, (20, 6), "locked", None, &[]);
+        let selection = TextSelection {
+            window_id: 3,
+            start: MousePosition { column: 0, row: 0 },
+            end: MousePosition { column: 5, row: 0 },
+        };
+
+        let update = renderer.render(&windows, 0, (20, 6), "locked", Some(&selection), &[]);
+
+        assert!(update.windows(4).any(|part| part == b"\x1b[7m"));
+        assert!(!update.windows(4).any(|part| part == b"\x1b[2J"));
     }
 
     #[test]
@@ -2537,11 +2805,11 @@ mod tests {
         window.terminal.process(b"one\r\ntwo\r\nthree\r\nfour");
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
-        renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
 
         windows[0].history_mode = true;
         windows[0].terminal.screen_mut().set_scrollback(1);
-        let history = renderer.render(&windows, 0, (20, 5), "scroll", &[]);
+        let history = renderer.render(&windows, 0, (20, 5), "scroll", None, &[]);
         let history_text = String::from_utf8_lossy(&history);
         assert!(history_text.contains("[scroll 1"));
         assert!(history_text.contains("\x1b[?25l"));
@@ -2549,7 +2817,7 @@ mod tests {
 
         windows[0].history_mode = false;
         windows[0].terminal.screen_mut().set_scrollback(0);
-        let live = renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        let live = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
         let live_text = String::from_utf8_lossy(&live);
         assert!(!live_text.contains("[scroll"));
         assert!(live_text.contains("\x1b[?25h"));
@@ -2563,7 +2831,7 @@ mod tests {
         first.terminal.process(b"\x1b]2;nvim project\x07");
         let second = test_window(2, "fish", 3, 18);
 
-        let frame = render_frame(&[first, second], 0, (20, 5), "locked", &[]);
+        let frame = render_frame(&[first, second], 0, (20, 5), "locked", None, &[]);
         let frame = String::from_utf8(frame).expect("rendered frame is UTF-8");
 
         assert!(frame.contains("\x1b[32m"));
@@ -2586,11 +2854,11 @@ mod tests {
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
 
-        let initial = renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        let initial = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
         assert!(initial.windows(4).any(|part| part == b"\x1b[2J"));
 
         windows[0].terminal.process(b"x");
-        let update = renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        let update = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
         assert!(!update.windows(4).any(|part| part == b"\x1b[2J"));
         assert!(update.starts_with(b"\x1b[?2026h"));
         assert!(update.ends_with(b"\x1b[?2026l"));
@@ -2599,12 +2867,12 @@ mod tests {
 
         assert!(
             renderer
-                .render(&windows, 0, (20, 5), "locked", &[])
+                .render(&windows, 0, (20, 5), "locked", None, &[])
                 .is_empty()
         );
 
         windows[0].terminal.process(b"\x1b]2;nvim\x07");
-        let title_update = renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        let title_update = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
         let title_update = String::from_utf8(title_update).expect("title update is UTF-8");
         assert!(title_update.contains("\x1b[2;1H"));
         assert!(title_update.contains("─ nvim "));
@@ -2616,10 +2884,10 @@ mod tests {
         let window = test_window(1, "fish", 3, 18);
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
-        renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
 
         windows[0].terminal.process(b"abcdef");
-        let update = renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        let update = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
 
         // One CUP starts the changed run and one restores the application cursor.
         assert_eq!(update.iter().filter(|&&byte| byte == b'H').count(), 2);
@@ -2646,10 +2914,10 @@ mod tests {
         let window = test_window(1, "fish", 3, 18);
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
-        renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
 
         windows[0].cursor_style.process(b"\x1b[6 q");
-        let update = renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        let update = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
 
         assert!(update.windows(5).any(|part| part == b"\x1b[6 q"));
     }
@@ -2738,7 +3006,7 @@ mod tests {
         let window = test_window(1, "fish", 3, 18);
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
-        renderer.render(&windows, 0, (20, 5), "locked", &[]);
+        renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
 
         let placeholder = "\u{10eeee}\u{0305}\u{0305}";
         let contents = format!("\x1b[38;2;0;0;42m{placeholder}");
@@ -2746,7 +3014,7 @@ mod tests {
         let delete = b"\x1b_Gq=2,a=d,d=A;\x1b\\";
         let graphics = b"\x1b_Ga=T,t=s,U=1,i=42,c=1,r=1;/rustmux-image\x1b\\";
         let graphics_commands = vec![delete.to_vec(), graphics.to_vec()];
-        let update = renderer.render(&windows, 0, (20, 5), "locked", &graphics_commands);
+        let update = renderer.render(&windows, 0, (20, 5), "locked", None, &graphics_commands);
 
         let delete_at = update
             .windows(delete.len())
