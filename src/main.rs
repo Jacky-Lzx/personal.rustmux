@@ -627,33 +627,37 @@ impl InputDecoder {
 
     fn decode_complete(&mut self) -> Vec<u8> {
         let mut decoded = Vec::with_capacity(self.pending.len());
+        let mut consumed = 0;
         loop {
-            if self.pending.is_empty() {
+            let pending = &self.pending[consumed..];
+            if pending.is_empty() {
                 break;
             }
             if let Some(sequence) = ENCODED_PREFIXES
                 .iter()
-                .find(|sequence| self.pending.starts_with(sequence))
+                .find(|sequence| pending.starts_with(sequence))
             {
                 decoded.push(PREFIX);
-                self.pending.drain(..sequence.len());
+                consumed += sequence.len();
                 continue;
             }
             if ENCODED_PREFIXES
                 .iter()
-                .any(|sequence| sequence.starts_with(&self.pending))
+                .any(|sequence| sequence.starts_with(pending))
             {
                 break;
             }
-            if self.pending == [0x1b]
-                || (self.pending.starts_with(b"\x1b[")
-                    && !self.pending[2..]
-                        .iter()
-                        .any(|byte| (0x40..=0x7e).contains(byte)))
+            if pending == [0x1b]
+                || (pending.starts_with(b"\x1b[")
+                    && !pending[2..].iter().any(|byte| (0x40..=0x7e).contains(byte)))
             {
                 break;
             }
-            decoded.push(self.pending.remove(0));
+            decoded.push(pending[0]);
+            consumed += 1;
+        }
+        if consumed > 0 {
+            self.pending.drain(..consumed);
         }
         decoded
     }
@@ -4570,6 +4574,15 @@ mod tests {
         let input = b"a\x02b\x1b[98;5uc\x1b[27;5;98~d";
 
         assert_eq!(decoder.push(input), b"a\x02b\x02c\x02d");
+        assert!(decoder.flush().is_empty());
+    }
+
+    #[test]
+    fn decoder_preserves_large_pastes() {
+        let mut decoder = InputDecoder::default();
+        let input = vec![b'x'; 64 * 1024];
+
+        assert_eq!(decoder.push(&input), input);
         assert!(decoder.flush().is_empty());
     }
 
