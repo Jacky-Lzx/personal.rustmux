@@ -78,6 +78,7 @@ impl Drop for TerminalGuard {
 struct Window {
     id: usize,
     name: String,
+    floating: bool,
     master: OwnedFd,
     child: Pid,
     terminal: vt100::Parser<TerminalMetadata>,
@@ -659,7 +660,43 @@ impl App {
             .unwrap_or(&shell)
             .to_owned();
         let shell = CString::new(shell)?;
-        self.spawn_window(name, shell.clone(), vec![shell], None, None)
+        self.spawn_window(name, shell.clone(), vec![shell], None, None, false)
+    }
+
+    fn toggle_floating_terminal(&mut self) -> Result<()> {
+        if self.windows[self.active].floating {
+            let return_to = self.windows[self.active].return_to_window;
+            self.active = return_to
+                .and_then(|id| self.windows.iter().position(|window| window.id == id))
+                .or_else(|| self.windows.iter().position(|window| !window.floating))
+                .unwrap_or(self.active);
+            self.selection = None;
+            return self.redraw();
+        }
+
+        let return_to = self.windows[self.active].id;
+        if let Some(index) = self.windows.iter().position(|window| window.floating) {
+            self.windows[index].return_to_window = Some(return_to);
+            self.active = index;
+            self.selection = None;
+            return self.redraw();
+        }
+
+        let shell = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
+        let name = Path::new(&shell)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&shell)
+            .to_owned();
+        let shell = CString::new(shell)?;
+        self.spawn_window(
+            name,
+            shell.clone(),
+            vec![shell],
+            None,
+            Some(return_to),
+            true,
+        )
     }
 
     fn spawn_window(
@@ -669,8 +706,9 @@ impl App {
         arguments: Vec<CString>,
         temporary_file: Option<PathBuf>,
         return_to_window: Option<usize>,
+        floating: bool,
     ) -> Result<()> {
-        let winsize = content_winsize(self.terminal_size, self.terminal_pixels);
+        let winsize = window_winsize(self.terminal_size, self.terminal_pixels, floating);
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
 
         // SAFETY: the child immediately calls execvp and _exit, both of which are
@@ -684,6 +722,7 @@ impl App {
                 self.windows.push(Window {
                     id,
                     name,
+                    floating,
                     master,
                     child,
                     terminal: vt100::Parser::new_with_callbacks(
@@ -954,6 +993,7 @@ impl App {
                 Action::EditHistory => self.open_history_in_editor()?,
                 Action::EditLastOutput => self.open_last_output_in_editor()?,
                 Action::CopyLastOutput => self.copy_last_output()?,
+                Action::ToggleFloatingTerminal => self.toggle_floating_terminal()?,
             }
         }
         Ok(true)
@@ -988,7 +1028,7 @@ impl App {
     }
 
     fn history_page_rows(&self) -> usize {
-        usize::from(content_size(self.terminal_size).1.saturating_sub(1).max(1))
+        usize::from(self.active_content_size().1.saturating_sub(1).max(1))
     }
 
     fn open_history_in_editor(&mut self) -> Result<()> {
@@ -1027,6 +1067,7 @@ impl App {
             arguments,
             Some(path.clone()),
             Some(return_to),
+            false,
         ) {
             let _ = fs::remove_file(path);
             return Err(error);
@@ -1104,7 +1145,11 @@ impl App {
                 .expect("clamped content position is always available");
             self.selection = Some(selection);
             if matches!(action, MouseAction::SelectEnd(_)) {
-                let text = selected_text(&self.windows[self.active], selection, self.terminal_size);
+                let text = selected_text(
+                    &self.windows[self.active],
+                    selection,
+                    self.active_content_size(),
+                );
                 if !text.is_empty() {
                     self.copy_to_clipboard(&text)?;
                     self.clipboard_status_until = Some(Instant::now() + CLIPBOARD_STATUS_DURATION);
@@ -1161,9 +1206,16 @@ impl App {
     }
 
     fn content_position(&self, position: MousePosition, clamp: bool) -> Option<MousePosition> {
-        let (columns, rows) = content_size(self.terminal_size);
-        let column = i32::from(position.column) - 2;
-        let row = i32::from(position.row) - 3;
+        let (origin_column, origin_row, columns, rows) = if self.windows[self.active].floating {
+            let layout = floating_layout(self.terminal_size);
+            let (columns, rows) = layout.content_size();
+            (layout.column + 1, layout.row + 1, columns, rows)
+        } else {
+            let (columns, rows) = content_size(self.terminal_size);
+            (2, 3, columns, rows)
+        };
+        let column = i32::from(position.column) - i32::from(origin_column);
+        let row = i32::from(position.row) - i32::from(origin_row);
         if !clamp
             && (column < 0 || row < 0 || column >= i32::from(columns) || row >= i32::from(rows))
         {
@@ -1173,6 +1225,14 @@ impl App {
             column: column.clamp(0, i32::from(columns) - 1) as u16,
             row: row.clamp(0, i32::from(rows) - 1) as u16,
         })
+    }
+
+    fn active_content_size(&self) -> (u16, u16) {
+        if self.windows[self.active].floating {
+            floating_layout(self.terminal_size).content_size()
+        } else {
+            content_size(self.terminal_size)
+        }
     }
 
     fn process_pty_output(&mut self, index: usize, output: &[u8]) -> Result<()> {
@@ -1196,7 +1256,11 @@ impl App {
         let screen = self.windows[index].terminal.screen();
         graphics_responses.extend_from_slice(&terminal_responses(
             &parsed.terminal,
-            content_winsize(self.terminal_size, self.terminal_pixels),
+            window_winsize(
+                self.terminal_size,
+                self.terminal_pixels,
+                self.windows[index].floating,
+            ),
             &self.terminal_identity,
             screen.cursor_position(),
             screen.bracketed_paste(),
@@ -1266,9 +1330,18 @@ impl App {
     }
 
     fn select_relative(&mut self, offset: isize) -> Result<()> {
-        if self.windows.len() > 1 {
-            self.active =
-                (self.active as isize + offset).rem_euclid(self.windows.len() as isize) as usize;
+        let regular = self
+            .windows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, window)| (!window.floating).then_some(index))
+            .collect::<Vec<_>>();
+        if regular.len() > 1 {
+            let base = render_base_index(&self.windows, self.active);
+            let current = regular.iter().position(|index| *index == base).unwrap_or(0);
+            let next = (current as isize + offset).rem_euclid(regular.len() as isize) as usize;
+            self.active = regular[next];
+            self.selection = None;
             self.renderer.invalidate();
             self.redraw()?;
         }
@@ -1276,8 +1349,16 @@ impl App {
     }
 
     fn select_window(&mut self, index: usize) -> Result<()> {
-        if index <= self.windows.len() {
-            self.active = index - 1;
+        if let Some(target) = self
+            .windows
+            .iter()
+            .enumerate()
+            .filter(|(_, window)| !window.floating)
+            .nth(index.saturating_sub(1))
+            .map(|(index, _)| index)
+        {
+            self.active = target;
+            self.selection = None;
             self.renderer.invalidate();
             self.redraw()?;
         }
@@ -1291,6 +1372,12 @@ impl App {
         let window = self.windows.remove(self.active);
         let return_to = window.return_to_window;
         terminate_window(window);
+        if !self.windows.iter().any(|window| !window.floating) {
+            for window in self.windows.drain(..) {
+                terminate_window(window);
+            }
+            return Ok(());
+        }
         if !self.windows.is_empty() {
             self.active = return_to
                 .and_then(|id| self.windows.iter().position(|window| window.id == id))
@@ -1391,9 +1478,8 @@ impl App {
         self.terminal_size = new_size;
         self.terminal_pixels = new_pixels;
         self.selection = None;
-        let winsize = content_winsize(new_size, new_pixels);
-        let (columns, rows) = (winsize.ws_col, winsize.ws_row);
         for window in &self.windows {
+            let winsize = window_winsize(new_size, new_pixels, window.floating);
             // SAFETY: master is an open PTY descriptor and winsize is valid.
             let result = unsafe {
                 nix::libc::ioctl(window.master.as_raw_fd(), nix::libc::TIOCSWINSZ, &winsize)
@@ -1403,6 +1489,8 @@ impl App {
             }
         }
         for window in &mut self.windows {
+            let winsize = window_winsize(new_size, new_pixels, window.floating);
+            let (columns, rows) = (winsize.ws_col, winsize.ws_row);
             window.terminal.screen_mut().set_size(rows, columns);
         }
         self.renderer.invalidate();
@@ -1436,6 +1524,12 @@ impl App {
                     }
                 }
             }
+        }
+        if !self.windows.iter().any(|window| !window.floating) {
+            for window in self.windows.drain(..) {
+                terminate_window(window);
+            }
+            return Ok(());
         }
         if !self.windows.is_empty() {
             self.active = self.active.min(self.windows.len() - 1);
@@ -1479,11 +1573,11 @@ fn window_history(window: &mut Window) -> String {
     history
 }
 
-fn selected_text(window: &Window, selection: TextSelection, terminal_size: (u16, u16)) -> String {
+fn selected_text(window: &Window, selection: TextSelection, content_size: (u16, u16)) -> String {
     if selection.window_id != window.id {
         return String::new();
     }
-    let (columns, _) = content_size(terminal_size);
+    let (columns, _) = content_size;
     let start_index = usize::from(selection.start.row) * usize::from(columns)
         + usize::from(selection.start.column);
     let end_index =
@@ -1792,15 +1886,7 @@ impl Renderer {
             self.border_status.as_deref(),
         );
         let Some(previous) = &self.previous else {
-            let output = render_frame(
-                windows,
-                active,
-                terminal_size,
-                mode,
-                selection,
-                self.border_status.as_deref(),
-                graphics,
-            );
+            let output = render_frame(windows, active, &current, graphics);
             self.previous = Some(current);
             return output;
         };
@@ -1810,15 +1896,7 @@ impl Renderer {
             || previous.tabs != current.tabs
             || previous.cells.len() != current.cells.len()
         {
-            let output = render_frame(
-                windows,
-                active,
-                terminal_size,
-                mode,
-                selection,
-                self.border_status.as_deref(),
-                graphics,
-            );
+            let output = render_frame(windows, active, &current, graphics);
             self.previous = Some(current);
             return output;
         }
@@ -1964,14 +2042,15 @@ impl FrameSnapshot {
         selection: Option<&TextSelection>,
         border_status: Option<&str>,
     ) -> Self {
-        let screen = windows[active].terminal.screen();
+        let base = render_base_index(windows, active);
+        let screen = windows[base].terminal.screen();
         let (columns, rows) = content_size(terminal_size);
         let mut cells = Vec::with_capacity(usize::from(columns) * usize::from(rows));
         for row in 0..rows {
             for column in 0..columns {
                 let cell = screen.cell(row, column).expect("cell is within screen");
                 let mut style = CellStyle::from(cell);
-                if selection_contains(selection, windows[active].id, row, column, columns) {
+                if selection_contains(selection, windows[base].id, row, column, columns) {
                     style.inverse = !style.inverse;
                 }
                 cells.push(CellSnapshot {
@@ -1981,24 +2060,49 @@ impl FrameSnapshot {
                 });
             }
         }
+        if windows[active].floating {
+            overlay_floating_cells(
+                &mut cells,
+                columns,
+                rows,
+                &windows[active],
+                floating_layout(terminal_size),
+                selection,
+                mode,
+            );
+        }
+        let active_screen = windows[active].terminal.screen();
+        let mut terminal_state = TerminalState::capture(
+            active_screen,
+            windows[active].cursor_style.style,
+            windows[active].history_mode,
+        );
+        if windows[active].floating {
+            let layout = floating_layout(terminal_size);
+            terminal_state.cursor.0 = terminal_state
+                .cursor
+                .0
+                .saturating_add(layout.row.saturating_sub(2));
+            terminal_state.cursor.1 = terminal_state
+                .cursor
+                .1
+                .saturating_add(layout.column.saturating_sub(1));
+        }
         Self {
             terminal_size,
             active_id: windows[active].id,
             tabs: windows
                 .iter()
+                .filter(|window| !window.floating)
                 .map(|window| (window.id, window.name.clone()))
                 .collect(),
             mode: mode.to_owned(),
-            terminal_title: windows[active].terminal_title().to_owned(),
+            terminal_title: windows[base].terminal_title().to_owned(),
             border_status: border_status.map(str::to_owned),
             history_mode: windows[active].history_mode,
-            history_offset: screen.scrollback(),
+            history_offset: active_screen.scrollback(),
             cells,
-            terminal_state: TerminalState::capture(
-                screen,
-                windows[active].cursor_style.style,
-                windows[active].history_mode,
-            ),
+            terminal_state,
         }
     }
 }
@@ -2008,6 +2112,139 @@ struct CellSnapshot {
     contents: String,
     style: CellStyle,
     wide_continuation: bool,
+}
+
+fn render_base_index(windows: &[Window], active: usize) -> usize {
+    if !windows[active].floating {
+        return active;
+    }
+    windows[active]
+        .return_to_window
+        .and_then(|id| {
+            windows
+                .iter()
+                .position(|window| window.id == id && !window.floating)
+        })
+        .or_else(|| windows.iter().position(|window| !window.floating))
+        .expect("a floating window always has a regular base window")
+}
+
+fn overlay_floating_cells(
+    cells: &mut [CellSnapshot],
+    columns: u16,
+    rows: u16,
+    window: &Window,
+    layout: FloatingLayout,
+    selection: Option<&TextSelection>,
+    mode: &str,
+) {
+    let first_row = layout.row.saturating_sub(3);
+    let first_column = layout.column.saturating_sub(2);
+    let last_column = first_column
+        .saturating_add(layout.width.saturating_sub(1))
+        .min(columns.saturating_sub(1));
+    for row in first_row..first_row.saturating_add(layout.height).min(rows) {
+        let row_start = usize::from(row) * usize::from(columns);
+        let first = row_start + usize::from(first_column);
+        if cells[first].wide_continuation && first_column > 0 {
+            cells[first - 1] = CellSnapshot::blank();
+        }
+        if last_column + 1 < columns {
+            let after = row_start + usize::from(last_column + 1);
+            if cells[after].wide_continuation {
+                cells[after] = CellSnapshot::blank();
+            }
+        }
+        for column in first_column..=last_column {
+            cells[row_start + usize::from(column)] = CellSnapshot::blank();
+        }
+    }
+
+    let replace =
+        |cells: &mut [CellSnapshot], local_row: u16, local_column: u16, cell: CellSnapshot| {
+            let row = layout.row.saturating_sub(3).saturating_add(local_row);
+            let column = layout.column.saturating_sub(2).saturating_add(local_column);
+            if row < rows && column < columns {
+                cells[usize::from(row) * usize::from(columns) + usize::from(column)] = cell;
+            }
+        };
+    let border_cell = |contents: char| CellSnapshot {
+        contents: contents.to_string(),
+        style: CellStyle::border(),
+        wide_continuation: false,
+    };
+
+    for row in 0..layout.height {
+        for column in 0..layout.width {
+            let border = match (row, column) {
+                (0, 0) => Some('┌'),
+                (0, column) if column + 1 == layout.width => Some('┐'),
+                (row, 0) if row + 1 == layout.height => Some('└'),
+                (row, column) if row + 1 == layout.height && column + 1 == layout.width => {
+                    Some('┘')
+                }
+                _ if row == 0 || row + 1 == layout.height => Some('─'),
+                _ if column == 0 || column + 1 == layout.width => Some('│'),
+                _ => None,
+            };
+            if let Some(character) = border {
+                replace(cells, row, column, border_cell(character));
+            }
+        }
+    }
+
+    let title = if window.history_mode {
+        format!(
+            "─ {} [{mode} {}] ",
+            window.terminal_title(),
+            window.terminal.screen().scrollback()
+        )
+    } else if mode != "locked" {
+        format!("─ {} [{mode}] ", window.terminal_title())
+    } else {
+        format!("─ {} ", window.terminal_title())
+    };
+    for (offset, character) in title
+        .chars()
+        .take(usize::from(layout.width.saturating_sub(2)))
+        .enumerate()
+    {
+        replace(cells, 0, offset as u16 + 1, border_cell(character));
+    }
+
+    let screen = window.terminal.screen();
+    let (content_columns, content_rows) = layout.content_size();
+    for row in 0..content_rows {
+        for column in 0..content_columns {
+            let cell = screen
+                .cell(row, column)
+                .expect("floating cell is within screen");
+            let mut style = CellStyle::from(cell);
+            if selection_contains(selection, window.id, row, column, content_columns) {
+                style.inverse = !style.inverse;
+            }
+            replace(
+                cells,
+                row + 1,
+                column + 1,
+                CellSnapshot {
+                    contents: cell.contents().to_owned(),
+                    style,
+                    wide_continuation: cell.is_wide_continuation(),
+                },
+            );
+        }
+    }
+}
+
+impl CellSnapshot {
+    fn blank() -> Self {
+        Self {
+            contents: String::new(),
+            style: CellStyle::plain(),
+            wide_continuation: false,
+        }
+    }
 }
 
 #[derive(Eq, PartialEq)]
@@ -2056,50 +2293,60 @@ impl From<&vt100::Cell> for CellStyle {
     }
 }
 
+impl CellStyle {
+    fn plain() -> Self {
+        Self {
+            foreground: vt100::Color::Default,
+            background: vt100::Color::Default,
+            bold: false,
+            dim: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+        }
+    }
+
+    fn border() -> Self {
+        Self {
+            foreground: vt100::Color::Idx(2),
+            ..Self::plain()
+        }
+    }
+}
+
 fn render_frame(
     windows: &[Window],
     active: usize,
-    terminal_size: (u16, u16),
-    mode: &str,
-    selection: Option<&TextSelection>,
-    border_status: Option<&str>,
+    snapshot: &FrameSnapshot,
     graphics: &[Vec<u8>],
 ) -> Vec<u8> {
+    let terminal_size = snapshot.terminal_size;
     let (width, height) = terminal_size;
     let (content_columns, content_rows) = content_size(terminal_size);
-    let screen = windows[active].terminal.screen();
     let mut output = Vec::with_capacity(usize::from(width) * usize::from(height) * 2);
 
     output.extend_from_slice(b"\x1b[?25l\x1b[2J");
-    let state = TerminalState::capture(
-        screen,
-        windows[active].cursor_style.style,
-        windows[active].history_mode,
-    );
-    append_graphics(&mut output, graphics, &state);
+    append_graphics(&mut output, graphics, &snapshot.terminal_state);
     output.extend_from_slice(b"\x1b[H");
-    draw_window_bar(&mut output, windows, active, width, mode);
+    draw_window_bar(&mut output, windows, active, width, &snapshot.mode);
     let _ = write!(output, "\x1b[2;1H\x1b[32m");
-    draw_terminal_border(&mut output, windows[active].terminal_title(), width);
+    draw_terminal_border(&mut output, &snapshot.terminal_title, width);
 
     for row in 0..content_rows {
         let _ = write!(output, "\x1b[{};1H\x1b[32m│\x1b[0m", row + 3);
         let mut previous_style = None;
         for column in 0..content_columns {
-            let cell = screen.cell(row, column).expect("cell is within screen");
-            if cell.is_wide_continuation() {
+            let cell = &snapshot.cells
+                [usize::from(row) * usize::from(content_columns) + usize::from(column)];
+            if cell.wide_continuation {
                 continue;
             }
-            let mut style = CellStyle::from(cell);
-            if selection_contains(selection, windows[active].id, row, column, content_columns) {
-                style.inverse = !style.inverse;
+            if previous_style != Some(cell.style) {
+                write_cell_style(&mut output, cell.style);
+                previous_style = Some(cell.style);
             }
-            if previous_style != Some(style) {
-                write_cell_style(&mut output, style);
-                previous_style = Some(style);
-            }
-            if cell.has_contents() {
-                output.extend_from_slice(cell.contents().as_bytes());
+            if !cell.contents.is_empty() {
+                output.extend_from_slice(cell.contents.as_bytes());
             } else {
                 output.push(b' ');
             }
@@ -2109,10 +2356,10 @@ fn render_frame(
 
     if height > 1 {
         let _ = write!(output, "\x1b[{height};1H\x1b[32m");
-        draw_bottom_border(&mut output, width, border_status);
+        draw_bottom_border(&mut output, width, snapshot.border_status.as_deref());
     }
 
-    append_terminal_state(&mut output, &state, windows[active].id);
+    append_terminal_state(&mut output, &snapshot.terminal_state, windows[active].id);
     output
 }
 
@@ -2196,25 +2443,31 @@ fn draw_window_bar(
     output.extend_from_slice(b"\x1b[0;49m\x1b[2K");
     let inner_width = usize::from(width);
     let mut used = 0;
-    for (index, window) in windows.iter().enumerate() {
+    let base = render_base_index(windows, active);
+    for (display_index, (index, window)) in windows
+        .iter()
+        .enumerate()
+        .filter(|(_, window)| !window.floating)
+        .enumerate()
+    {
         if used >= inner_width {
             break;
         }
         let label = if index == active && window.history_mode {
             format!(
                 " {} {} [{mode} {}] ",
-                window.id,
+                display_index + 1,
                 window.name,
                 window.terminal.screen().scrollback()
             )
         } else if index == active && mode != "locked" {
-            format!(" {} {} [{mode}] ", window.id, window.name)
+            format!(" {} {} [{mode}] ", display_index + 1, window.name)
         } else {
-            format!(" {} {} ", window.id, window.name)
+            format!(" {} {} ", display_index + 1, window.name)
         };
         let available = inner_width.saturating_sub(used).saturating_sub(1);
         let label: String = label.chars().take(available).collect();
-        if index == active {
+        if index == base {
             output.extend_from_slice(b"\x1b[1;30;42m");
         } else {
             output.extend_from_slice(b"\x1b[1;30;48;2;205;214;244m");
@@ -2455,6 +2708,65 @@ fn content_size((columns, rows): (u16, u16)) -> (u16, u16) {
         columns.saturating_sub(2).max(1),
         rows.saturating_sub(3).max(1),
     )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FloatingLayout {
+    column: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+}
+
+impl FloatingLayout {
+    fn content_size(self) -> (u16, u16) {
+        (
+            self.width.saturating_sub(2).max(1),
+            self.height.saturating_sub(2).max(1),
+        )
+    }
+}
+
+fn floating_layout(terminal_size: (u16, u16)) -> FloatingLayout {
+    let (available_width, available_height) = content_size(terminal_size);
+    let width = available_width
+        .saturating_mul(3)
+        .checked_div(4)
+        .unwrap_or(available_width)
+        .max(12)
+        .min(available_width);
+    let height = available_height
+        .saturating_mul(7)
+        .checked_div(10)
+        .unwrap_or(available_height)
+        .max(5)
+        .min(available_height);
+    FloatingLayout {
+        column: 2 + available_width.saturating_sub(width) / 2,
+        row: 3 + available_height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn window_winsize(
+    terminal_size: (u16, u16),
+    terminal_pixels: (u16, u16),
+    floating: bool,
+) -> Winsize {
+    if !floating {
+        return content_winsize(terminal_size, terminal_pixels);
+    }
+    let (columns, rows) = floating_layout(terminal_size).content_size();
+    let (outer_columns, outer_rows) = terminal_size;
+    let cell_width = terminal_pixels.0.checked_div(outer_columns).unwrap_or(0);
+    let cell_height = terminal_pixels.1.checked_div(outer_rows).unwrap_or(0);
+    Winsize {
+        ws_row: rows,
+        ws_col: columns,
+        ws_xpixel: cell_width.saturating_mul(columns),
+        ws_ypixel: cell_height.saturating_mul(rows),
+    }
 }
 
 fn content_winsize(terminal_size: (u16, u16), terminal_pixels: (u16, u16)) -> Winsize {
@@ -2816,6 +3128,7 @@ mod tests {
         Window {
             id,
             name: name.to_owned(),
+            floating: false,
             master,
             child: Pid::from_raw(1),
             terminal: vt100::Parser::new_with_callbacks(
@@ -2841,6 +3154,24 @@ mod tests {
         assert_eq!(value.ws_row, 59);
         assert_eq!(value.ws_xpixel, 3672);
         assert_eq!(value.ws_ypixel, 1947);
+    }
+
+    #[test]
+    fn floating_layout_is_centered_and_has_a_smaller_pty() {
+        let layout = floating_layout((80, 24));
+        let winsize = window_winsize((80, 24), (800, 480), true);
+
+        assert_eq!(
+            layout,
+            FloatingLayout {
+                column: 12,
+                row: 6,
+                width: 58,
+                height: 14,
+            }
+        );
+        assert_eq!((winsize.ws_col, winsize.ws_row), layout.content_size());
+        assert_eq!((winsize.ws_xpixel, winsize.ws_ypixel), (560, 240));
     }
 
     #[test]
@@ -2904,7 +3235,7 @@ mod tests {
         };
 
         assert_eq!(
-            selected_text(&window, selection, (20, 6)),
+            selected_text(&window, selection, (18, 3)),
             "hello world\nsecond"
         );
         assert_eq!(
@@ -2915,7 +3246,7 @@ mod tests {
                     end: selection.start,
                     ..selection
                 },
-                (20, 6)
+                (18, 3)
             ),
             "hello world\nsecond"
         );
@@ -2931,7 +3262,7 @@ mod tests {
             end: MousePosition { column: 0, row: 1 },
         };
 
-        assert_eq!(selected_text(&window, selection, (7, 5)), "abcdef");
+        assert_eq!(selected_text(&window, selection, (5, 2)), "abcdef");
     }
 
     #[test]
@@ -3006,7 +3337,9 @@ mod tests {
         first.terminal.process(b"\x1b]2;nvim project\x07");
         let second = test_window(2, "fish", 3, 18);
 
-        let frame = render_frame(&[first, second], 0, (20, 5), "locked", None, None, &[]);
+        let windows = [first, second];
+        let snapshot = FrameSnapshot::capture(&windows, 0, (20, 5), "locked", None, None);
+        let frame = render_frame(&windows, 0, &snapshot, &[]);
         let frame = String::from_utf8(frame).expect("rendered frame is UTF-8");
 
         assert!(frame.contains("\x1b[32m"));
@@ -3021,6 +3354,27 @@ mod tests {
         assert!(frame.contains("─ nvim project "));
         assert!(frame.contains("hello"));
         assert!(frame.contains("\x1b[38;2;1;2;3m"));
+    }
+
+    #[test]
+    fn floating_terminal_is_composited_over_the_active_tab() {
+        let mut base = test_window(1, "base", 12, 38);
+        base.terminal.process(b"base contents");
+        let mut floating = test_window(2, "float", 6, 26);
+        floating.floating = true;
+        floating.return_to_window = Some(1);
+        floating.terminal.process(b"floating contents");
+        let windows = vec![base, floating];
+        let mut renderer = Renderer::default();
+
+        let frame = renderer.render(&windows, 1, (40, 15), "locked", None, &[]);
+        let frame = String::from_utf8(frame).unwrap();
+
+        assert!(frame.contains("base contents"));
+        assert!(frame.contains("┌─ float "));
+        assert!(frame.contains("floating contents"));
+        assert!(frame.contains(" 1 base "));
+        assert!(!frame.contains(" 2 float "));
     }
 
     #[test]

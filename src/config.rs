@@ -35,6 +35,7 @@ enter = [{ action = "switch-mode", mode = "scroll" }]
 h = ["edit-history", { action = "switch-mode", mode = "locked" }]
 e = ["edit-last-output", { action = "switch-mode", mode = "locked" }]
 y = ["copy-last-output", { action = "switch-mode", mode = "locked" }]
+i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
 "&" = ["close-window", { action = "switch-mode", mode = "locked" }]
 x = ["close-window", { action = "switch-mode", mode = "locked" }]
 d = ["detach"]
@@ -83,6 +84,7 @@ pub enum Action {
     EditHistory,
     EditLastOutput,
     CopyLastOutput,
+    ToggleFloatingTerminal,
 }
 
 #[derive(Clone, Debug)]
@@ -280,6 +282,7 @@ impl Action {
             Self::EditHistory => "edit-history".to_owned(),
             Self::EditLastOutput => "edit-last-output".to_owned(),
             Self::CopyLastOutput => "copy-last-output".to_owned(),
+            Self::ToggleFloatingTerminal => "toggle-floating-terminal".to_owned(),
         }
     }
 }
@@ -394,6 +397,10 @@ fn parse_action(
             no_arguments()?;
             Action::CopyLastOutput
         }
+        "toggle-floating-terminal" => {
+            no_arguments()?;
+            Action::ToggleFloatingTerminal
+        }
         _ => return Err(format!("unknown action '{name}'")),
     };
     Ok(action)
@@ -495,6 +502,15 @@ mod tests {
             Some(&[Action::SwitchMode("normal".to_owned())][..])
         );
         assert!(config.actions("scroll", "E").is_some());
+        assert_eq!(
+            config.actions("normal", "i"),
+            Some(
+                &[
+                    Action::SwitchMode("locked".to_owned()),
+                    Action::ToggleFloatingTerminal
+                ][..]
+            )
+        );
         assert_eq!(config.command_notification_seconds(), Some(10));
     }
 

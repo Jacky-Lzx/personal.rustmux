@@ -19,6 +19,7 @@
 - `h`：用 `$VISUAL` 或 `$EDITOR`（默认 `vi`）打开当前窗口的完整历史
 - `e`：用编辑器打开上一条命令的输出
 - `y`：通过 OSC 52 把上一条命令的输出复制到系统剪贴板
+- `i`：显示或隐藏居中的浮动 terminal；首次使用时创建一个独立 PTY shell
 - `&`：关闭当前窗口
 - `d`：detach，断开当前终端；session 和其中的程序继续在后台运行
 - 再按一次 `Ctrl-b`：把 `Ctrl-b` 发送给当前 shell
@@ -65,6 +66,7 @@ command_duration_seconds = 10
 c = ["new-window", { action = "switch-mode", mode = "locked" }]
 n = ["next-window", { action = "switch-mode", mode = "locked" }]
 "1" = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
+i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
 enter = [{ action = "switch-mode", mode = "scroll" }]
 d = ["detach"]
 
@@ -76,7 +78,7 @@ y = ["copy-last-output", "scroll-bottom", { action = "switch-mode", mode = "lock
 esc = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
 ```
 
-一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`next-window`、`previous-window`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
+一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`next-window`、`previous-window`、`toggle-floating-terminal`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
 
 ```toml
 key = [{ action = "switch-mode", mode = "locked" }]
