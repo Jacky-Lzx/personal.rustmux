@@ -39,6 +39,7 @@ const CLIENT_INPUT: u8 = b'I';
 const CLIENT_RESIZE: u8 = b'R';
 const CLIENT_SHUTDOWN: u8 = b'Q';
 const MAX_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -78,6 +79,9 @@ struct Window {
     kitty_graphics: KittyGraphicsParser,
     pending_graphics: Vec<Vec<u8>>,
     history_mode: bool,
+    command_output: SemanticOutputCapture,
+    temporary_file: Option<PathBuf>,
+    return_to_window: Option<usize>,
 }
 
 #[derive(Default)]
@@ -99,6 +103,151 @@ impl Window {
         let title = self.terminal.callbacks().title.trim();
         if title.is_empty() { &self.name } else { title }
     }
+}
+
+#[derive(Default)]
+struct SemanticOutputCapture {
+    state: TextCaptureState,
+    capturing: bool,
+    semantic_boundaries: bool,
+    current: Vec<u8>,
+    last: Vec<u8>,
+}
+
+#[derive(Default)]
+enum TextCaptureState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+    Osc(Vec<u8>),
+    OscEscape(Vec<u8>),
+}
+
+impl SemanticOutputCapture {
+    fn process(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            let state = std::mem::take(&mut self.state);
+            self.state = match state {
+                TextCaptureState::Ground => match byte {
+                    0x1b => TextCaptureState::Escape,
+                    b'\r' => TextCaptureState::Ground,
+                    b'\n' | b'\t' if self.capturing => {
+                        self.push(byte);
+                        TextCaptureState::Ground
+                    }
+                    0x08 if self.capturing => {
+                        self.current.pop();
+                        TextCaptureState::Ground
+                    }
+                    0x20..=0x7e | 0x80..=0xff if self.capturing => {
+                        self.push(byte);
+                        TextCaptureState::Ground
+                    }
+                    _ => TextCaptureState::Ground,
+                },
+                TextCaptureState::Escape => match byte {
+                    b'[' => TextCaptureState::Csi,
+                    b']' => TextCaptureState::Osc(Vec::new()),
+                    _ => TextCaptureState::Ground,
+                },
+                TextCaptureState::Csi => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        TextCaptureState::Ground
+                    } else {
+                        TextCaptureState::Csi
+                    }
+                }
+                TextCaptureState::Osc(mut control) => match byte {
+                    0x07 => {
+                        self.finish_osc(&control);
+                        TextCaptureState::Ground
+                    }
+                    0x1b => TextCaptureState::OscEscape(control),
+                    _ => {
+                        if control.len() < 1024 {
+                            control.push(byte);
+                        }
+                        TextCaptureState::Osc(control)
+                    }
+                },
+                TextCaptureState::OscEscape(mut control) => {
+                    if byte == b'\\' {
+                        self.finish_osc(&control);
+                        TextCaptureState::Ground
+                    } else {
+                        if control.len() < 1024 {
+                            control.extend_from_slice(&[0x1b, byte]);
+                        }
+                        TextCaptureState::Osc(control)
+                    }
+                }
+            };
+        }
+    }
+
+    fn finish_osc(&mut self, control: &[u8]) {
+        let marker = control
+            .strip_prefix(b"133;")
+            .and_then(|value| value.first().copied());
+        match marker {
+            Some(b'C') => {
+                self.current.clear();
+                self.capturing = true;
+                self.semantic_boundaries = true;
+            }
+            Some(b'D') if self.capturing => self.finish_command(),
+            Some(b'A') if self.capturing => self.finish_command(),
+            _ => {}
+        }
+    }
+
+    fn push(&mut self, byte: u8) {
+        if self.current.len() < MAX_CAPTURE_BYTES {
+            self.current.push(byte);
+        }
+    }
+
+    fn finish_command(&mut self) {
+        while self.current.last().is_some_and(u8::is_ascii_whitespace) {
+            self.current.pop();
+        }
+        self.last = std::mem::take(&mut self.current);
+        self.capturing = false;
+        self.semantic_boundaries = false;
+    }
+
+    fn last_output(&self) -> String {
+        if self.capturing && !self.semantic_boundaries {
+            fallback_command_output(&self.current)
+        } else {
+            String::from_utf8_lossy(&self.last).into_owned()
+        }
+    }
+
+    fn command_submitted(&mut self) {
+        if self.capturing && !self.semantic_boundaries {
+            self.last = fallback_command_output(&self.current).into_bytes();
+        }
+        self.current.clear();
+        self.capturing = true;
+        self.semantic_boundaries = false;
+    }
+}
+
+fn fallback_command_output(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines = text.lines().collect::<Vec<_>>();
+    if !lines.is_empty() {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    if !lines.is_empty() {
+        lines.pop();
+    }
+    lines.join("\n").trim_end().to_owned()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -465,6 +614,17 @@ impl App {
             .unwrap_or(&shell)
             .to_owned();
         let shell = CString::new(shell)?;
+        self.spawn_window(name, shell.clone(), vec![shell], None, None)
+    }
+
+    fn spawn_window(
+        &mut self,
+        name: String,
+        program: CString,
+        arguments: Vec<CString>,
+        temporary_file: Option<PathBuf>,
+        return_to_window: Option<usize>,
+    ) -> Result<()> {
         let winsize = content_winsize(self.terminal_size, self.terminal_pixels);
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
 
@@ -491,14 +651,16 @@ impl App {
                     kitty_graphics: KittyGraphicsParser::default(),
                     pending_graphics: Vec::new(),
                     history_mode: false,
+                    command_output: SemanticOutputCapture::default(),
+                    temporary_file,
+                    return_to_window,
                 });
                 self.active = self.windows.len() - 1;
                 self.renderer.invalidate();
                 self.redraw()?;
             }
             ForkptyResult::Child => {
-                let args = [&shell];
-                let _ = execvp(&shell, &args);
+                let _ = execvp(&program, &arguments);
                 // SAFETY: exiting directly is required after fork if exec fails.
                 unsafe { nix::libc::_exit(127) };
             }
@@ -700,6 +862,9 @@ impl App {
                     b'n' => self.select_relative(1)?,
                     b'p' => self.select_relative(-1)?,
                     b'[' => self.enter_history_mode()?,
+                    b'h' => self.open_history_in_editor()?,
+                    b'e' => self.open_last_output_in_editor()?,
+                    b'y' => self.copy_last_output()?,
                     b'&' => self.close_active()?,
                     b'd' => return Ok(false),
                     b'?' => self.show_help()?,
@@ -735,6 +900,70 @@ impl App {
 
     fn history_page_rows(&self) -> usize {
         usize::from(content_size(self.terminal_size).1.saturating_sub(1).max(1))
+    }
+
+    fn open_history_in_editor(&mut self) -> Result<()> {
+        let text = window_history(&mut self.windows[self.active]);
+        self.open_text_in_editor("history", &text)
+    }
+
+    fn open_last_output_in_editor(&mut self) -> Result<()> {
+        let text = self.windows[self.active].command_output.last_output();
+        if text.is_empty() {
+            return self.notify("no previous command output (OSC 133 shell integration required)");
+        }
+        self.open_text_in_editor("last-output", &text)
+    }
+
+    fn open_text_in_editor(&mut self, label: &str, text: &str) -> Result<()> {
+        let directory = ensure_session_dir()?;
+        let path = directory.join(format!(
+            "editor-{}-{}-{label}.txt",
+            std::process::id(),
+            self.next_id
+        ));
+        fs::write(&path, text)?;
+        let shell = CString::new("/bin/sh")?;
+        let arguments = vec![
+            shell.clone(),
+            CString::new("-c")?,
+            CString::new("exec ${VISUAL:-${EDITOR:-vi}} \"$1\"")?,
+            CString::new("rustmux-editor")?,
+            CString::new(path.as_os_str().as_encoded_bytes())?,
+        ];
+        let return_to = self.windows[self.active].id;
+        if let Err(error) = self.spawn_window(
+            label.to_owned(),
+            shell,
+            arguments,
+            Some(path.clone()),
+            Some(return_to),
+        ) {
+            let _ = fs::remove_file(path);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn copy_last_output(&mut self) -> Result<()> {
+        let text = self.windows[self.active].command_output.last_output();
+        if text.is_empty() {
+            return self.notify("no previous command output (OSC 133 shell integration required)");
+        }
+        let encoded = base64_encode(text.as_bytes());
+        if let Some(client) = self.client.as_mut() {
+            client.write_all(b"\x1b]52;c;")?;
+            client.write_all(encoded.as_bytes())?;
+            client.write_all(b"\x07")?;
+        }
+        self.notify("previous command output copied to clipboard")
+    }
+
+    fn notify(&mut self, message: &str) -> Result<()> {
+        if let Some(client) = self.client.as_mut() {
+            writeln!(client, "\r\x1b[1m[rustmux]\x1b[0m {message}\r")?;
+        }
+        Ok(())
     }
 
     fn enter_history_mode(&mut self) -> Result<()> {
@@ -819,6 +1048,7 @@ impl App {
                 graphics_changed = true;
             }
         }
+        self.windows[index].command_output.process(&parsed.terminal);
         self.windows[index].terminal.process(&parsed.terminal);
         let screen = self.windows[index].terminal.screen();
         graphics_responses.extend_from_slice(&terminal_responses(
@@ -844,9 +1074,12 @@ impl App {
         Ok(())
     }
 
-    fn write_active(&self, bytes: &[u8]) -> Result<()> {
+    fn write_active(&mut self, bytes: &[u8]) -> Result<()> {
         if self.windows.is_empty() {
             return Ok(());
+        }
+        if bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+            self.windows[self.active].command_output.command_submitted();
         }
         write_fd(&self.windows[self.active].master, bytes)
     }
@@ -866,9 +1099,12 @@ impl App {
             return Ok(());
         }
         let window = self.windows.remove(self.active);
+        let return_to = window.return_to_window;
         terminate_window(window);
         if !self.windows.is_empty() {
-            self.active = self.active.min(self.windows.len() - 1);
+            self.active = return_to
+                .and_then(|id| self.windows.iter().position(|window| window.id == id))
+                .unwrap_or_else(|| self.active.min(self.windows.len() - 1));
             self.renderer.invalidate();
             self.redraw()?;
         }
@@ -928,7 +1164,7 @@ impl App {
         if let Some(mut client) = self.client.as_ref() {
             let result = write!(
                 client,
-                "\r\n\x1b[1m[rustmux] Ctrl-b commands:\x1b[0m c=new  n=next  p=previous  [=history  &=close  d=detach  Ctrl-b=send prefix\r\n"
+                "\r\n\x1b[1m[rustmux] Ctrl-b commands:\x1b[0m c=new  n=next  p=previous  [=history  h=history-editor  e=output-editor  y=copy-output  &=close  d=detach\r\n"
             );
             if result.is_err() {
                 return Ok(());
@@ -971,8 +1207,19 @@ impl App {
                 WaitStatus::StillAlive => index += 1,
                 _ => {
                     removed_any = true;
-                    self.windows.remove(index);
-                    if index < self.active {
+                    let window = self.windows.remove(index);
+                    if let Some(path) = window.temporary_file {
+                        let _ = fs::remove_file(path);
+                    }
+                    if index == self.active {
+                        if let Some(return_to) = window.return_to_window {
+                            self.active = self
+                                .windows
+                                .iter()
+                                .position(|window| window.id == return_to)
+                                .unwrap_or(index);
+                        }
+                    } else if index < self.active {
                         self.active -= 1;
                     }
                 }
@@ -993,6 +1240,53 @@ impl App {
             terminate_window(window);
         }
     }
+}
+
+fn window_history(window: &mut Window) -> String {
+    let screen = window.terminal.screen_mut();
+    let original_offset = screen.scrollback();
+    let (_, columns) = screen.size();
+    screen.set_scrollback(usize::MAX);
+    let scrollback_rows = screen.scrollback();
+    let mut lines = Vec::with_capacity(scrollback_rows + usize::from(screen.size().0));
+
+    for row in 0..scrollback_rows {
+        screen.set_scrollback(scrollback_rows - row);
+        lines.push(screen.rows(0, columns).next().unwrap_or_default());
+    }
+    screen.set_scrollback(0);
+    lines.extend(screen.rows(0, columns));
+    screen.set_scrollback(original_offset);
+
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    let mut history = lines.join("\n");
+    history.push('\n');
+    history
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        encoded.push(char::from(TABLE[((value >> 18) & 0x3f) as usize]));
+        encoded.push(char::from(TABLE[((value >> 12) & 0x3f) as usize]));
+        encoded.push(if chunk.len() > 1 {
+            char::from(TABLE[((value >> 6) & 0x3f) as usize])
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            char::from(TABLE[(value & 0x3f) as usize])
+        } else {
+            '='
+        });
+    }
+    encoded
 }
 
 fn signal_window(window: &Window, signal: Signal) {
@@ -1019,16 +1313,18 @@ fn wait_for_child(child: Pid, timeout: Duration) -> bool {
 }
 
 fn terminate_window(window: Window) {
+    let temporary_file = window.temporary_file.clone();
     signal_window(&window, Signal::SIGHUP);
-    if wait_for_child(window.child, Duration::from_millis(200)) {
-        return;
+    if !wait_for_child(window.child, Duration::from_millis(200)) {
+        signal_window(&window, Signal::SIGTERM);
+        if !wait_for_child(window.child, Duration::from_millis(200)) {
+            signal_window(&window, Signal::SIGKILL);
+            let _ = wait_for_child(window.child, Duration::from_secs(1));
+        }
     }
-    signal_window(&window, Signal::SIGTERM);
-    if wait_for_child(window.child, Duration::from_millis(200)) {
-        return;
+    if let Some(path) = temporary_file {
+        let _ = fs::remove_file(path);
     }
-    signal_window(&window, Signal::SIGKILL);
-    let _ = wait_for_child(window.child, Duration::from_secs(1));
 }
 
 fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
@@ -2046,6 +2342,9 @@ mod tests {
             kitty_graphics: KittyGraphicsParser::default(),
             pending_graphics: Vec::new(),
             history_mode: false,
+            command_output: SemanticOutputCapture::default(),
+            temporary_file: None,
+            return_to_window: None,
         }
     }
 
@@ -2434,5 +2733,38 @@ mod tests {
 
         assert!(decoder.push(b"\x1b[").is_empty());
         assert_eq!(decoder.push(b"A"), b"\x1b[A");
+    }
+
+    #[test]
+    fn semantic_output_capture_tracks_the_previous_command() {
+        let mut capture = SemanticOutputCapture::default();
+        capture.process(b"\x1b]133;C\x07hello \x1b[31mred\x1b[0m\r\n");
+        capture.process(b"second line\x1b]133;D;0\x1b");
+        capture.process(b"\\prompt");
+
+        assert_eq!(capture.last_output(), "hello red\nsecond line");
+    }
+
+    #[test]
+    fn command_output_has_a_fallback_without_shell_integration() {
+        let mut capture = SemanticOutputCapture::default();
+        capture.command_submitted();
+        capture.process(b"printf test\r\ntest\r\n$ ");
+
+        assert_eq!(capture.last_output(), "test");
+    }
+
+    #[test]
+    fn history_export_includes_scrollback_and_visible_rows() {
+        let mut window = test_window(1, "fish", 3, 18);
+        window.terminal.process(b"one\r\ntwo\r\nthree\r\nfour");
+
+        assert_eq!(window_history(&mut window), "one\ntwo\nthree\nfour\n");
+    }
+
+    #[test]
+    fn osc_52_payload_uses_standard_base64() {
+        assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
+        assert_eq!(base64_encode("你好".as_bytes()), "5L2g5aW9");
     }
 }
