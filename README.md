@@ -8,9 +8,9 @@
 
 ## 快捷键
 
-所有命令均以 `Ctrl-b` 为前缀：
+默认按键采用类似 Zellij 的 mode：平时处于 `locked`，`Ctrl-b` 进入 `normal`，执行大多数动作后返回 `locked`。`normal` 和 `scroll` 等非 locked mode 会显示在活动窗口标签中。
 
-前缀兼容传统控制字符、Kitty keyboard protocol 和 xterm modified-key 编码，因此在 fish 启用扩展键盘模式后仍然有效。
+按键兼容传统控制字符、Kitty keyboard protocol 和 xterm modified-key 编码，因此在 fish 启用扩展键盘模式后仍然有效。
 
 - `c`：创建窗口
 - `n`：下一个窗口
@@ -35,6 +35,50 @@
 也可以直接使用鼠标滚轮：向上滚动会自动进入历史模式，向下滚动到最底部后会自动返回实时画面。
 
 上一条命令输出会优先使用 OSC 133 shell integration 提供的精确命令边界；fish 等现代 shell 可直接使用。没有 OSC 133 时，rustmux 会根据回车、命令回显和下一段提示符进行兼容性提取。OSC 52 剪贴板需要外层终端允许应用写入剪贴板。
+
+## 按键与 mode 配置
+
+rustmux 使用 TOML 配置，默认读取 `$XDG_CONFIG_HOME/rustmux/config.toml`；未设置 `XDG_CONFIG_HOME` 时读取 `~/.config/rustmux/config.toml`。可以生成一份包含所有默认绑定的配置：
+
+```sh
+mkdir -p ~/.config/rustmux
+rustmux default-config > ~/.config/rustmux/config.toml
+rustmux check-config
+```
+
+配置结构与 Zellij 的 mode 思路一致，但不使用 KDL：
+
+```toml
+default_mode = "locked"
+clear_defaults = false
+
+[keybinds.locked]
+"Ctrl b" = [{ action = "switch-mode", mode = "normal" }]
+
+[keybinds.normal]
+c = ["new-window", { action = "switch-mode", mode = "locked" }]
+n = ["next-window", { action = "switch-mode", mode = "locked" }]
+"1" = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
+enter = [{ action = "switch-mode", mode = "scroll" }]
+d = ["detach"]
+
+[keybinds.scroll]
+k = ["scroll-up"]
+j = ["scroll-down"]
+E = ["scroll-bottom", { action = "switch-mode", mode = "locked" }, "edit-history"]
+y = ["copy-last-output", "scroll-bottom", { action = "switch-mode", mode = "locked" }]
+esc = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
+```
+
+一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`next-window`、`previous-window`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
+
+```toml
+key = [{ action = "switch-mode", mode = "locked" }]
+key = [{ action = "go-to-window", index = 2 }]
+key = [{ action = "send-key", key = "Ctrl c" }]
+```
+
+可配置普通字符、`Ctrl a` 到 `Ctrl z`、`Alt <key>`、方向键、`enter`、`tab`、`backspace`、`esc`、`pageup` 和 `pagedown`。将某个绑定设为空数组可取消默认绑定；`clear_defaults = true` 会先移除全部默认绑定。配置在创建 session 时加载，修改后需要结束并重新创建 session。
 
 ## 运行
 

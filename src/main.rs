@@ -1,3 +1,5 @@
+mod config;
+
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
@@ -25,6 +27,8 @@ use nix::pty::{ForkptyResult, Winsize, forkpty};
 use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
+
+use config::{Action, Config, DEFAULT_CONFIG_TOML, config_path};
 
 const PREFIX: u8 = 0x02; // Ctrl-b
 const SCROLLBACK_LINES: usize = 1_000;
@@ -256,8 +260,6 @@ enum HistoryAction {
     Down(usize),
     Top,
     Bottom,
-    Exit,
-    Ignore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -575,8 +577,9 @@ struct App {
     windows: Vec<Window>,
     active: usize,
     next_id: usize,
-    prefix_pending: bool,
     input_decoder: InputDecoder,
+    config: Config,
+    mode: String,
     renderer: Renderer,
     terminal_size: (u16, u16),
     terminal_pixels: (u16, u16),
@@ -587,13 +590,15 @@ struct App {
 }
 
 impl App {
-    fn new(terminal_size: (u16, u16), terminal_pixels: (u16, u16)) -> Result<Self> {
+    fn new(terminal_size: (u16, u16), terminal_pixels: (u16, u16), config: Config) -> Result<Self> {
+        let mode = config.default_mode.clone();
         let mut app = Self {
             windows: Vec::new(),
             active: 0,
             next_id: 1,
-            prefix_pending: false,
             input_decoder: InputDecoder::default(),
+            config,
+            mode,
             renderer: Renderer::default(),
             terminal_size,
             terminal_pixels,
@@ -757,7 +762,7 @@ impl App {
         self.client = Some(stream);
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
-        self.prefix_pending = false;
+        self.reset_mode();
         self.renderer.invalidate();
         self.redraw()
     }
@@ -766,7 +771,7 @@ impl App {
         self.client = None;
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
-        self.prefix_pending = false;
+        self.reset_mode();
         self.redraw_deadline = None;
         self.renderer.invalidate();
     }
@@ -841,61 +846,94 @@ impl App {
         let mut passthrough = Vec::with_capacity(bytes.len());
         let mut index = 0;
         while index < bytes.len() {
-            let byte = bytes[index];
             if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
                 if !passthrough.is_empty() {
                     self.write_active(&passthrough)?;
                     passthrough.clear();
                 }
-                self.prefix_pending = false;
                 self.apply_mouse_action(mouse)?;
                 index += consumed;
                 continue;
-            } else if self.prefix_pending {
-                self.prefix_pending = false;
-                if !passthrough.is_empty() {
-                    self.write_active(&passthrough)?;
-                    passthrough.clear();
-                }
-                match byte {
-                    b'c' => self.create_window()?,
-                    b'n' => self.select_relative(1)?,
-                    b'p' => self.select_relative(-1)?,
-                    b'[' => self.enter_history_mode()?,
-                    b'h' => self.open_history_in_editor()?,
-                    b'e' => self.open_last_output_in_editor()?,
-                    b'y' => self.copy_last_output()?,
-                    b'&' => self.close_active()?,
-                    b'd' => return Ok(false),
-                    b'?' => self.show_help()?,
-                    PREFIX => passthrough.push(PREFIX),
-                    _ => {}
-                }
-            } else if byte == PREFIX {
-                if !passthrough.is_empty() {
-                    self.write_active(&passthrough)?;
-                    passthrough.clear();
-                }
-                self.prefix_pending = true;
-            } else if self.windows[self.active].history_mode {
-                if !passthrough.is_empty() {
-                    self.write_active(&passthrough)?;
-                    passthrough.clear();
-                }
-                let (action, consumed) =
-                    decode_history_action(&bytes[index..], self.history_page_rows());
-                self.apply_history_action(action)?;
-                index += consumed;
-                continue;
-            } else {
-                passthrough.push(byte);
             }
-            index += 1;
+
+            let (key, consumed) = decode_key(&bytes[index..]);
+            if let Some(actions) = self
+                .config
+                .actions(&self.mode, &key.name)
+                .map(<[Action]>::to_vec)
+            {
+                if !passthrough.is_empty() {
+                    self.write_active(&passthrough)?;
+                    passthrough.clear();
+                }
+                if !self.execute_actions(&actions)? {
+                    return Ok(false);
+                }
+            } else if self.mode == "locked" {
+                passthrough.extend_from_slice(&key.raw);
+            }
+            index += consumed;
         }
         if !passthrough.is_empty() && !self.windows.is_empty() {
             self.write_active(&passthrough)?;
         }
         Ok(true)
+    }
+
+    fn execute_actions(&mut self, actions: &[Action]) -> Result<bool> {
+        for action in actions {
+            match action {
+                Action::SwitchMode(mode) => self.switch_mode(mode)?,
+                Action::SendPrefix => self.write_active(&[PREFIX])?,
+                Action::SendKey(bytes) => self.write_active(bytes)?,
+                Action::NewWindow => self.create_window()?,
+                Action::NextWindow => self.select_relative(1)?,
+                Action::PreviousWindow => self.select_relative(-1)?,
+                Action::GoToWindow(index) => self.select_window(*index)?,
+                Action::CloseWindow => self.close_active()?,
+                Action::Detach => return Ok(false),
+                Action::ShowHelp => self.show_help()?,
+                Action::ScrollUp => self.apply_history_action(HistoryAction::Up(1))?,
+                Action::ScrollDown => self.apply_history_action(HistoryAction::Down(1))?,
+                Action::PageUp => {
+                    self.apply_history_action(HistoryAction::Up(self.history_page_rows()))?;
+                }
+                Action::PageDown => {
+                    self.apply_history_action(HistoryAction::Down(self.history_page_rows()))?;
+                }
+                Action::ScrollTop => self.apply_history_action(HistoryAction::Top)?,
+                Action::ScrollBottom => self.apply_history_action(HistoryAction::Bottom)?,
+                Action::EditHistory => self.open_history_in_editor()?,
+                Action::EditLastOutput => self.open_last_output_in_editor()?,
+                Action::CopyLastOutput => self.copy_last_output()?,
+            }
+        }
+        Ok(true)
+    }
+
+    fn switch_mode(&mut self, mode: &str) -> Result<()> {
+        if !self.config.has_mode(mode) {
+            return Err(format!("unknown mode '{mode}'").into());
+        }
+        if self.mode == "scroll" && mode != "scroll" && !self.windows.is_empty() {
+            let window = &mut self.windows[self.active];
+            window.history_mode = false;
+            window.terminal.screen_mut().set_scrollback(0);
+        }
+        self.mode = mode.to_owned();
+        if mode == "scroll" && !self.windows.is_empty() {
+            self.windows[self.active].history_mode = true;
+        }
+        self.renderer.invalidate();
+        self.redraw()
+    }
+
+    fn reset_mode(&mut self) {
+        self.mode = self.config.default_mode.clone();
+        for window in &mut self.windows {
+            window.history_mode = false;
+            window.terminal.screen_mut().set_scrollback(0);
+        }
     }
 
     fn history_page_rows(&self) -> usize {
@@ -966,36 +1004,17 @@ impl App {
         Ok(())
     }
 
-    fn enter_history_mode(&mut self) -> Result<()> {
-        let window = &mut self.windows[self.active];
-        if !window.history_mode {
-            window.history_mode = true;
-            self.redraw()?;
-        }
-        Ok(())
-    }
-
     fn apply_history_action(&mut self, action: HistoryAction) -> Result<()> {
         let window = &mut self.windows[self.active];
         let current = window.terminal.screen().scrollback();
-        let mut exit = false;
         let requested = match action {
             HistoryAction::Up(rows) => current.saturating_add(rows),
             HistoryAction::Down(rows) => current.saturating_sub(rows),
             HistoryAction::Top => usize::MAX,
             HistoryAction::Bottom => 0,
-            HistoryAction::Exit => {
-                exit = true;
-                0
-            }
-            HistoryAction::Ignore => return Ok(()),
         };
         window.terminal.screen_mut().set_scrollback(requested);
-        let changed = current != window.terminal.screen().scrollback() || exit;
-        if exit {
-            window.history_mode = false;
-        }
-        if changed {
+        if current != window.terminal.screen().scrollback() {
             self.redraw()?;
         }
         Ok(())
@@ -1008,6 +1027,9 @@ impl App {
         match action {
             MouseAction::ScrollUp => {
                 window.history_mode = true;
+                if self.config.has_mode("scroll") {
+                    self.mode = "scroll".to_owned();
+                }
                 window
                     .terminal
                     .screen_mut()
@@ -1020,6 +1042,7 @@ impl App {
                     .set_scrollback(current.saturating_sub(MOUSE_SCROLL_LINES));
                 if window.terminal.screen().scrollback() == 0 {
                     window.history_mode = false;
+                    self.mode = self.config.default_mode.clone();
                 }
             }
             MouseAction::ScrollDown | MouseAction::Other => return Ok(()),
@@ -1094,6 +1117,15 @@ impl App {
         Ok(())
     }
 
+    fn select_window(&mut self, index: usize) -> Result<()> {
+        if index <= self.windows.len() {
+            self.active = index - 1;
+            self.renderer.invalidate();
+            self.redraw()?;
+        }
+        Ok(())
+    }
+
     fn close_active(&mut self) -> Result<()> {
         if self.windows.is_empty() {
             return Ok(());
@@ -1117,9 +1149,13 @@ impl App {
             return Ok(());
         }
         let graphics = std::mem::take(&mut self.windows[self.active].pending_graphics);
-        let frame = self
-            .renderer
-            .render(&self.windows, self.active, self.terminal_size, &graphics);
+        let frame = self.renderer.render(
+            &self.windows,
+            self.active,
+            self.terminal_size,
+            &self.mode,
+            &graphics,
+        );
         if frame.is_empty() {
             return Ok(());
         }
@@ -1162,9 +1198,12 @@ impl App {
 
     fn show_help(&self) -> Result<()> {
         if let Some(mut client) = self.client.as_ref() {
+            let bindings = self.config.describe_mode(&self.mode).join("  ");
             let result = write!(
                 client,
-                "\r\n\x1b[1m[rustmux] Ctrl-b commands:\x1b[0m c=new  n=next  p=previous  [=history  h=history-editor  e=output-editor  y=copy-output  &=close  d=detach\r\n"
+                "\r\n\x1b[1m[rustmux] mode {}:\x1b[0m {bindings}\r\nconfig: {}\r\n",
+                self.mode,
+                config_path().display()
             );
             if result.is_err() {
                 return Ok(());
@@ -1327,6 +1366,103 @@ fn terminate_window(window: Window) {
     }
 }
 
+struct DecodedKey {
+    name: String,
+    raw: Vec<u8>,
+}
+
+fn decode_key(bytes: &[u8]) -> (DecodedKey, usize) {
+    let byte = bytes[0];
+    let single = |name: &str| DecodedKey {
+        name: name.to_owned(),
+        raw: vec![byte],
+    };
+    match byte {
+        b'\r' | b'\n' => (single("enter"), 1),
+        b'\t' => (single("tab"), 1),
+        0x7f => (single("backspace"), 1),
+        0x01..=0x1a => (single(&format!("ctrl {}", char::from(b'a' + byte - 1))), 1),
+        0x1b if bytes.get(1) == Some(&b'[') => {
+            let Some(final_offset) = bytes[2..]
+                .iter()
+                .position(|value| (0x40..=0x7e).contains(value))
+            else {
+                return (single("esc"), 1);
+            };
+            let consumed = final_offset + 3;
+            let raw = bytes[..consumed].to_vec();
+            let name = decode_csi_key_name(&raw).unwrap_or_else(|| "unbound-csi".to_owned());
+            (DecodedKey { name, raw }, consumed)
+        }
+        0x1b if bytes.get(1).is_some_and(u8::is_ascii_graphic) => {
+            let raw = bytes[..2].to_vec();
+            let name = format!("alt {}", char::from(bytes[1]));
+            (DecodedKey { name, raw }, 2)
+        }
+        0x1b => (single("esc"), 1),
+        0x20..=0x7e => (single(&char::from(byte).to_string()), 1),
+        _ => {
+            let width = std::str::from_utf8(bytes)
+                .ok()
+                .and_then(|text| text.chars().next())
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            let raw = bytes[..width.min(bytes.len())].to_vec();
+            let name = String::from_utf8_lossy(&raw).into_owned();
+            (DecodedKey { name, raw }, width.min(bytes.len()))
+        }
+    }
+}
+
+fn decode_csi_key_name(sequence: &[u8]) -> Option<String> {
+    let final_byte = *sequence.last()?;
+    let parameters = std::str::from_utf8(&sequence[2..sequence.len() - 1]).ok()?;
+    match (parameters, final_byte) {
+        ("", b'A') => Some("up".to_owned()),
+        ("", b'B') => Some("down".to_owned()),
+        ("", b'C') => Some("right".to_owned()),
+        ("", b'D') => Some("left".to_owned()),
+        ("5", b'~') => Some("pageup".to_owned()),
+        ("6", b'~') => Some("pagedown".to_owned()),
+        (_, b'u') => decode_kitty_key(parameters),
+        (_, b'~') if parameters.starts_with("27;") => decode_xterm_modified_key(parameters),
+        _ => None,
+    }
+}
+
+fn decode_kitty_key(parameters: &str) -> Option<String> {
+    let mut fields = parameters.split(';');
+    let codepoint = fields.next()?.split(':').next()?.parse::<u32>().ok()?;
+    let modifiers = fields
+        .next()
+        .and_then(|value| value.split(':').next())
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let character = char::from_u32(codepoint)?;
+    if modifiers & 4 != 0 && character.is_ascii_alphabetic() {
+        Some(format!("ctrl {}", character.to_ascii_lowercase()))
+    } else if modifiers & 2 != 0 {
+        Some(format!("alt {character}"))
+    } else {
+        Some(character.to_string())
+    }
+}
+
+fn decode_xterm_modified_key(parameters: &str) -> Option<String> {
+    let mut fields = parameters.split(';');
+    (fields.next()? == "27").then_some(())?;
+    let modifiers = fields.next()?.parse::<u8>().ok()?.saturating_sub(1);
+    let character = char::from_u32(fields.next()?.parse().ok()?)?;
+    if modifiers & 4 != 0 && character.is_ascii_alphabetic() {
+        Some(format!("ctrl {}", character.to_ascii_lowercase()))
+    } else if modifiers & 2 != 0 {
+        Some(format!("alt {character}"))
+    } else {
+        Some(character.to_string())
+    }
+}
+
 fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
     if !bytes.starts_with(b"\x1b[<") {
         return None;
@@ -1353,45 +1489,6 @@ fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
     Some((action, final_index + 1))
 }
 
-fn decode_history_action(bytes: &[u8], page_rows: usize) -> (HistoryAction, usize) {
-    match bytes[0] {
-        b'k' | 0x10 => (HistoryAction::Up(1), 1),
-        b'j' | 0x0e => (HistoryAction::Down(1), 1),
-        b'u' | 0x15 => (HistoryAction::Up(page_rows), 1),
-        b'd' | 0x04 => (HistoryAction::Down(page_rows), 1),
-        b'g' => (HistoryAction::Top, 1),
-        b'G' => (HistoryAction::Bottom, 1),
-        b'q' => (HistoryAction::Exit, 1),
-        0x1b if bytes.len() == 1 || bytes.get(1) != Some(&b'[') => (HistoryAction::Exit, 1),
-        0x1b => {
-            let Some(final_offset) = bytes[2..]
-                .iter()
-                .position(|byte| (0x40..=0x7e).contains(byte))
-            else {
-                return (HistoryAction::Ignore, bytes.len());
-            };
-            let final_index = final_offset + 2;
-            let consumed = final_index + 1;
-            let action = match bytes[final_index] {
-                b'A' => HistoryAction::Up(1),
-                b'B' => HistoryAction::Down(1),
-                b'H' => HistoryAction::Top,
-                b'F' => HistoryAction::Bottom,
-                b'~' => match bytes[2..final_index].split(|byte| *byte == b';').next() {
-                    Some(b"5") => HistoryAction::Up(page_rows),
-                    Some(b"6") => HistoryAction::Down(page_rows),
-                    Some(b"1" | b"7") => HistoryAction::Top,
-                    Some(b"4" | b"8") => HistoryAction::Bottom,
-                    _ => HistoryAction::Ignore,
-                },
-                _ => HistoryAction::Ignore,
-            };
-            (action, consumed)
-        }
-        _ => (HistoryAction::Ignore, 1),
-    }
-}
-
 #[derive(Default)]
 struct Renderer {
     previous: Option<FrameSnapshot>,
@@ -1407,11 +1504,12 @@ impl Renderer {
         windows: &[Window],
         active: usize,
         terminal_size: (u16, u16),
+        mode: &str,
         graphics: &[Vec<u8>],
     ) -> Vec<u8> {
-        let current = FrameSnapshot::capture(windows, active, terminal_size);
+        let current = FrameSnapshot::capture(windows, active, terminal_size, mode);
         let Some(previous) = &self.previous else {
-            let output = render_frame(windows, active, terminal_size, graphics);
+            let output = render_frame(windows, active, terminal_size, mode, graphics);
             self.previous = Some(current);
             return output;
         };
@@ -1421,7 +1519,7 @@ impl Renderer {
             || previous.tabs != current.tabs
             || previous.cells.len() != current.cells.len()
         {
-            let output = render_frame(windows, active, terminal_size, graphics);
+            let output = render_frame(windows, active, terminal_size, mode, graphics);
             self.previous = Some(current);
             return output;
         }
@@ -1452,6 +1550,7 @@ impl Renderer {
         let graphics_changed = !graphics.is_empty();
         let history_changed = previous.history_mode != current.history_mode
             || previous.history_offset != current.history_offset;
+        let mode_changed = previous.mode != current.mode;
         let title_changed = previous.terminal_title != current.terminal_title;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
@@ -1462,7 +1561,13 @@ impl Renderer {
             output.extend_from_slice(b"\x1b[?25l");
         }
         append_graphics(&mut output, graphics, &current.terminal_state);
-        if cells_changed || state_changed || graphics_changed || history_changed || title_changed {
+        if cells_changed
+            || state_changed
+            || graphics_changed
+            || history_changed
+            || mode_changed
+            || title_changed
+        {
             // DEC synchronized output makes the terminal display this diff as one
             // frame. Unknown DEC private modes are safely ignored by terminals
             // which do not implement mode 2026.
@@ -1474,9 +1579,9 @@ impl Renderer {
         {
             output.extend_from_slice(b"\x1b[?25l");
         }
-        if history_changed {
+        if history_changed || mode_changed {
             let _ = write!(output, "\x1b[1;1H\x1b[32m");
-            draw_window_bar(&mut output, windows, active, terminal_size.0);
+            draw_window_bar(&mut output, windows, active, terminal_size.0, mode);
         }
         if title_changed {
             let _ = write!(output, "\x1b[2;1H\x1b[32m");
@@ -1501,12 +1606,22 @@ impl Renderer {
             }
         }
 
-        if cells_changed || state_changed || graphics_changed || history_changed || title_changed {
+        if cells_changed
+            || state_changed
+            || graphics_changed
+            || history_changed
+            || mode_changed
+            || title_changed
+        {
             append_terminal_state_diff(
                 &mut output,
                 &previous.terminal_state,
                 &current.terminal_state,
-                cells_changed || graphics_changed || history_changed || title_changed,
+                cells_changed
+                    || graphics_changed
+                    || history_changed
+                    || mode_changed
+                    || title_changed,
             );
             output.extend_from_slice(b"\x1b[?2026l");
         }
@@ -1520,6 +1635,7 @@ struct FrameSnapshot {
     terminal_size: (u16, u16),
     active_id: usize,
     tabs: Vec<(usize, String)>,
+    mode: String,
     terminal_title: String,
     history_mode: bool,
     history_offset: usize,
@@ -1528,7 +1644,7 @@ struct FrameSnapshot {
 }
 
 impl FrameSnapshot {
-    fn capture(windows: &[Window], active: usize, terminal_size: (u16, u16)) -> Self {
+    fn capture(windows: &[Window], active: usize, terminal_size: (u16, u16), mode: &str) -> Self {
         let screen = windows[active].terminal.screen();
         let (columns, rows) = content_size(terminal_size);
         let mut cells = Vec::with_capacity(usize::from(columns) * usize::from(rows));
@@ -1549,6 +1665,7 @@ impl FrameSnapshot {
                 .iter()
                 .map(|window| (window.id, window.name.clone()))
                 .collect(),
+            mode: mode.to_owned(),
             terminal_title: windows[active].terminal_title().to_owned(),
             history_mode: windows[active].history_mode,
             history_offset: screen.scrollback(),
@@ -1619,6 +1736,7 @@ fn render_frame(
     windows: &[Window],
     active: usize,
     terminal_size: (u16, u16),
+    mode: &str,
     graphics: &[Vec<u8>],
 ) -> Vec<u8> {
     let (width, height) = terminal_size;
@@ -1634,7 +1752,7 @@ fn render_frame(
     );
     append_graphics(&mut output, graphics, &state);
     output.extend_from_slice(b"\x1b[H");
-    draw_window_bar(&mut output, windows, active, width);
+    draw_window_bar(&mut output, windows, active, width, mode);
     let _ = write!(output, "\x1b[2;1H\x1b[32m");
     draw_terminal_border(&mut output, windows[active].terminal_title(), width);
 
@@ -1738,7 +1856,13 @@ fn append_terminal_state_diff(
     }
 }
 
-fn draw_window_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, width: u16) {
+fn draw_window_bar(
+    output: &mut Vec<u8>,
+    windows: &[Window],
+    active: usize,
+    width: u16,
+    mode: &str,
+) {
     if width == 0 {
         return;
     }
@@ -1754,11 +1878,13 @@ fn draw_window_bar(output: &mut Vec<u8>, windows: &[Window], active: usize, widt
         }
         let label = if index == active && window.history_mode {
             format!(
-                " {} {} [history {}] ",
+                " {} {} [{mode} {}] ",
                 window.id,
                 window.name,
                 window.terminal.screen().scrollback()
             )
+        } else if index == active && mode != "locked" {
+            format!(" {} {} [{mode}] ", window.id, window.name)
         } else {
             format!(" {} {} ", window.id, window.name)
         };
@@ -2170,6 +2296,7 @@ fn connect_with_retry(socket: &Path) -> Result<UnixStream> {
 }
 
 fn attach_or_create(name: &str, create: bool) -> Result<()> {
+    Config::load().map_err(|error| format!("configuration error: {error}"))?;
     let socket = session_socket(name)?;
     let stream = match UnixStream::connect(&socket) {
         Ok(stream) => stream,
@@ -2209,7 +2336,8 @@ fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     let _socket_guard = SocketGuard(socket);
-    let mut app = App::new((columns, rows), (width, height))?;
+    let config = Config::load().map_err(|error| format!("configuration error: {error}"))?;
+    let mut app = App::new((columns, rows), (width, height), config)?;
     let result = app.run_server(listener);
     app.shutdown();
     result
@@ -2275,8 +2403,9 @@ fn kill_session(name: &str) -> Result<()> {
 
 fn print_help() {
     println!(
-        "rustmux {}\n\nA minimal terminal multiplexer.\n\nUSAGE:\n    rustmux [new-session [-s NAME]]\n    rustmux attach-session [-t NAME]\n    rustmux list-sessions\n    rustmux kill-session [-t NAME]\n\nInside rustmux, press Ctrl-b ? for key bindings.",
-        env!("CARGO_PKG_VERSION")
+        "rustmux {}\n\nA minimal terminal multiplexer.\n\nUSAGE:\n    rustmux [new-session [-s NAME]]\n    rustmux attach-session [-t NAME]\n    rustmux list-sessions\n    rustmux kill-session [-t NAME]\n    rustmux check-config\n    rustmux default-config\n\nConfig: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        config_path().display(),
     );
 }
 
@@ -2290,6 +2419,20 @@ fn main() -> Result<()> {
         }
         [flag] if flag == "-V" || flag == "--version" => {
             println!("rustmux {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        [command] if command == "default-config" => {
+            print!("{DEFAULT_CONFIG_TOML}");
+            Ok(())
+        }
+        [command] if command == "check-config" => {
+            Config::load().map_err(|error| format!("configuration error: {error}"))?;
+            let path = config_path();
+            if path.exists() {
+                println!("{}: ok", path.display());
+            } else {
+                println!("{}: not found; built-in defaults are valid", path.display());
+            }
             Ok(())
         }
         [command] if command == "new" || command == "new-session" => {
@@ -2358,22 +2501,13 @@ mod tests {
     }
 
     #[test]
-    fn history_keys_support_lines_pages_and_boundaries() {
-        assert_eq!(decode_history_action(b"k", 20), (HistoryAction::Up(1), 1));
-        assert_eq!(
-            decode_history_action(b"\x1b[B", 20),
-            (HistoryAction::Down(1), 3)
-        );
-        assert_eq!(
-            decode_history_action(b"\x1b[5~", 20),
-            (HistoryAction::Up(20), 4)
-        );
-        assert_eq!(
-            decode_history_action(b"\x1b[6~", 20),
-            (HistoryAction::Down(20), 4)
-        );
-        assert_eq!(decode_history_action(b"g", 20), (HistoryAction::Top, 1));
-        assert_eq!(decode_history_action(b"\x1b", 20), (HistoryAction::Exit, 1));
+    fn key_decoder_names_control_navigation_and_modified_keys() {
+        assert_eq!(decode_key(b"\x02").0.name, "ctrl b");
+        assert_eq!(decode_key(b"\x1b[B").0.name, "down");
+        assert_eq!(decode_key(b"\x1b[5~").0.name, "pageup");
+        assert_eq!(decode_key(b"\x1b[103;5u").0.name, "ctrl g");
+        assert_eq!(decode_key(b"\x1b[27;3;120~").0.name, "alt x");
+        assert_eq!(decode_key(b"G").0.name, "G");
     }
 
     #[test]
@@ -2403,21 +2537,21 @@ mod tests {
         window.terminal.process(b"one\r\ntwo\r\nthree\r\nfour");
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
-        renderer.render(&windows, 0, (20, 5), &[]);
+        renderer.render(&windows, 0, (20, 5), "locked", &[]);
 
         windows[0].history_mode = true;
         windows[0].terminal.screen_mut().set_scrollback(1);
-        let history = renderer.render(&windows, 0, (20, 5), &[]);
+        let history = renderer.render(&windows, 0, (20, 5), "scroll", &[]);
         let history_text = String::from_utf8_lossy(&history);
-        assert!(history_text.contains("[history 1"));
+        assert!(history_text.contains("[scroll 1"));
         assert!(history_text.contains("\x1b[?25l"));
         assert!(!history.windows(4).any(|part| part == b"\x1b[2J"));
 
         windows[0].history_mode = false;
         windows[0].terminal.screen_mut().set_scrollback(0);
-        let live = renderer.render(&windows, 0, (20, 5), &[]);
+        let live = renderer.render(&windows, 0, (20, 5), "locked", &[]);
         let live_text = String::from_utf8_lossy(&live);
-        assert!(!live_text.contains("[history"));
+        assert!(!live_text.contains("[scroll"));
         assert!(live_text.contains("\x1b[?25h"));
         assert!(!live.windows(4).any(|part| part == b"\x1b[2J"));
     }
@@ -2429,7 +2563,7 @@ mod tests {
         first.terminal.process(b"\x1b]2;nvim project\x07");
         let second = test_window(2, "fish", 3, 18);
 
-        let frame = render_frame(&[first, second], 0, (20, 5), &[]);
+        let frame = render_frame(&[first, second], 0, (20, 5), "locked", &[]);
         let frame = String::from_utf8(frame).expect("rendered frame is UTF-8");
 
         assert!(frame.contains("\x1b[32m"));
@@ -2452,21 +2586,25 @@ mod tests {
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
 
-        let initial = renderer.render(&windows, 0, (20, 5), &[]);
+        let initial = renderer.render(&windows, 0, (20, 5), "locked", &[]);
         assert!(initial.windows(4).any(|part| part == b"\x1b[2J"));
 
         windows[0].terminal.process(b"x");
-        let update = renderer.render(&windows, 0, (20, 5), &[]);
+        let update = renderer.render(&windows, 0, (20, 5), "locked", &[]);
         assert!(!update.windows(4).any(|part| part == b"\x1b[2J"));
         assert!(update.starts_with(b"\x1b[?2026h"));
         assert!(update.ends_with(b"\x1b[?2026l"));
         assert!(update.contains(&b'x'));
         assert!(update.len() < initial.len());
 
-        assert!(renderer.render(&windows, 0, (20, 5), &[]).is_empty());
+        assert!(
+            renderer
+                .render(&windows, 0, (20, 5), "locked", &[])
+                .is_empty()
+        );
 
         windows[0].terminal.process(b"\x1b]2;nvim\x07");
-        let title_update = renderer.render(&windows, 0, (20, 5), &[]);
+        let title_update = renderer.render(&windows, 0, (20, 5), "locked", &[]);
         let title_update = String::from_utf8(title_update).expect("title update is UTF-8");
         assert!(title_update.contains("\x1b[2;1H"));
         assert!(title_update.contains("─ nvim "));
@@ -2478,10 +2616,10 @@ mod tests {
         let window = test_window(1, "fish", 3, 18);
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
-        renderer.render(&windows, 0, (20, 5), &[]);
+        renderer.render(&windows, 0, (20, 5), "locked", &[]);
 
         windows[0].terminal.process(b"abcdef");
-        let update = renderer.render(&windows, 0, (20, 5), &[]);
+        let update = renderer.render(&windows, 0, (20, 5), "locked", &[]);
 
         // One CUP starts the changed run and one restores the application cursor.
         assert_eq!(update.iter().filter(|&&byte| byte == b'H').count(), 2);
@@ -2508,10 +2646,10 @@ mod tests {
         let window = test_window(1, "fish", 3, 18);
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
-        renderer.render(&windows, 0, (20, 5), &[]);
+        renderer.render(&windows, 0, (20, 5), "locked", &[]);
 
         windows[0].cursor_style.process(b"\x1b[6 q");
-        let update = renderer.render(&windows, 0, (20, 5), &[]);
+        let update = renderer.render(&windows, 0, (20, 5), "locked", &[]);
 
         assert!(update.windows(5).any(|part| part == b"\x1b[6 q"));
     }
@@ -2600,7 +2738,7 @@ mod tests {
         let window = test_window(1, "fish", 3, 18);
         let mut windows = vec![window];
         let mut renderer = Renderer::default();
-        renderer.render(&windows, 0, (20, 5), &[]);
+        renderer.render(&windows, 0, (20, 5), "locked", &[]);
 
         let placeholder = "\u{10eeee}\u{0305}\u{0305}";
         let contents = format!("\x1b[38;2;0;0;42m{placeholder}");
@@ -2608,7 +2746,7 @@ mod tests {
         let delete = b"\x1b_Gq=2,a=d,d=A;\x1b\\";
         let graphics = b"\x1b_Ga=T,t=s,U=1,i=42,c=1,r=1;/rustmux-image\x1b\\";
         let graphics_commands = vec![delete.to_vec(), graphics.to_vec()];
-        let update = renderer.render(&windows, 0, (20, 5), &graphics_commands);
+        let update = renderer.render(&windows, 0, (20, 5), "locked", &graphics_commands);
 
         let delete_at = update
             .windows(delete.len())
