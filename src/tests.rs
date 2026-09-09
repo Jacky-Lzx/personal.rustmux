@@ -95,6 +95,26 @@ fn terminal_size_validation_bounds_frame_allocations() {
 }
 
 #[test]
+fn terminal_guard_isolates_rustmux_from_shell_scrollback() {
+    assert!(TERMINAL_ENTER_SEQUENCE.starts_with(b"\x1b[?1049h"));
+    assert!(TERMINAL_EXIT_SEQUENCE.ends_with(b"\x1b[?1049l"));
+    assert_eq!(
+        TERMINAL_ENTER_SEQUENCE
+            .windows(b"\x1b[?1049h".len())
+            .filter(|window| *window == b"\x1b[?1049h")
+            .count(),
+        1
+    );
+    assert_eq!(
+        TERMINAL_EXIT_SEQUENCE
+            .windows(b"\x1b[?1049l".len())
+            .filter(|window| *window == b"\x1b[?1049l")
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn floating_layout_is_centered_and_has_a_smaller_pty() {
     let layout = floating_layout_for((80, 24), false);
     let winsize = window_winsize_for((80, 24), (800, 480), true, false);

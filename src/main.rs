@@ -33,6 +33,8 @@ const SERVER_SWITCH_SESSION_PREFIX: &[u8] = b"\x1b]777;rustmux-switch-session=";
 const MAX_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
 const CLIPBOARD_STATUS: &str = "copied to system clipboard";
 const CLIPBOARD_STATUS_DURATION: Duration = Duration::from_secs(2);
+const TERMINAL_ENTER_SEQUENCE: &[u8] = b"\x1b[?1049h\x1b[?1002h\x1b[?1006h";
+const TERMINAL_EXIT_SEQUENCE: &[u8] = b"\x1b[?2026l\x1b[0 q\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b>\x1b[?1049l";
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -43,7 +45,7 @@ impl TerminalGuard {
         enable_raw_mode()?;
         let guard = Self;
         let mut stdout = io::stdout().lock();
-        stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
+        stdout.write_all(TERMINAL_ENTER_SEQUENCE)?;
         stdout.flush()?;
         Ok(guard)
     }
@@ -52,12 +54,10 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         // Inner programs such as fish and Vim may change cursor visibility.
-        // Do not manage the alternate screen here: terminal alternate buffers
-        // are not nestable, so an inner program leaving one would also eject
-        // rustmux from its own buffer.
-        let _ = io::stdout().write_all(
-            b"\x1b[?2026l\x1b[0 q\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b>",
-        );
+        // Inner alternate-screen commands are consumed by the VT parser, so the
+        // client owns this outer buffer and can restore the shell without adding
+        // rustmux's rendered frame to its scrollback.
+        let _ = io::stdout().write_all(TERMINAL_EXIT_SEQUENCE);
         let _ = execute!(io::stdout(), Show);
         let _ = disable_raw_mode();
     }
