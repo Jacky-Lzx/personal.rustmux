@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use nix::pty::Winsize;
 
+use super::ESCAPE_SEQUENCE_TIMEOUT;
+
 const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_KITTY_COMMAND_BYTES: usize = 64 * 1024 * 1024;
 const MAX_KITTY_DND_SEQUENCE_BYTES: usize = 16 * 1024;
@@ -230,6 +232,7 @@ pub(super) fn fallback_command_output(bytes: &[u8]) -> String {
 #[derive(Default)]
 pub(super) struct KittyDndParser {
     pending: Vec<u8>,
+    pending_since: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -270,7 +273,34 @@ impl KittyDndParser {
             output.commands.push(self.pending.drain(..length).collect());
         }
 
+        if self.pending.is_empty() || self.pending.starts_with(KITTY_DND_PREFIX) {
+            self.pending_since = None;
+        } else if self.pending_since.is_none() {
+            self.pending_since = Some(Instant::now());
+        }
+
         output
+    }
+
+    pub(super) fn flush_if_expired(&mut self) -> Vec<u8> {
+        if self
+            .pending_since
+            .is_some_and(|since| since.elapsed() >= ESCAPE_SEQUENCE_TIMEOUT)
+        {
+            self.flush()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub(super) fn flush_deadline(&self) -> Option<Instant> {
+        self.pending_since
+            .and_then(|since| since.checked_add(ESCAPE_SEQUENCE_TIMEOUT))
+    }
+
+    pub(super) fn flush(&mut self) -> Vec<u8> {
+        self.pending_since = None;
+        std::mem::take(&mut self.pending)
     }
 }
 

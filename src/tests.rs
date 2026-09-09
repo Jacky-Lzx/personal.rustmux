@@ -858,10 +858,12 @@ fn kitty_dnd_parser_extracts_fragmented_osc_72_sequences() {
     let first = parser.process(b"before\x1b]7");
     assert_eq!(first.terminal, b"before");
     assert!(first.commands.is_empty());
+    assert!(parser.flush_deadline().is_some());
 
     let second = parser.process(b"2;t=a;text/uri-list\x1b");
     assert!(second.terminal.is_empty());
     assert!(second.commands.is_empty());
+    assert!(parser.flush_deadline().is_none());
 
     let third = parser.process(b"\\after");
     assert_eq!(third.commands, [b"\x1b]72;t=a;text/uri-list\x1b\\"]);
@@ -870,6 +872,18 @@ fn kitty_dnd_parser_extracts_fragmented_osc_72_sequences() {
     let ordinary = parser.process(b"\x1b]2;title\x1b\\");
     assert_eq!(ordinary.terminal, b"\x1b]2;title\x1b\\");
     assert!(ordinary.commands.is_empty());
+}
+
+#[test]
+fn kitty_dnd_parser_releases_an_ambiguous_escape() {
+    let mut parser = KittyDndParser::default();
+
+    let output = parser.process(b"\x1b");
+    assert!(output.terminal.is_empty());
+    assert!(output.commands.is_empty());
+    assert!(parser.flush_deadline().is_some());
+    assert_eq!(parser.flush(), b"\x1b");
+    assert!(parser.flush_deadline().is_none());
 }
 
 #[test]

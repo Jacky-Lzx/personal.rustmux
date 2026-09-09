@@ -429,7 +429,15 @@ impl App {
             self.reload_config_if_changed()?;
             self.track_foreground_applications();
             self.flush_scheduled_redraw()?;
-            let expired_input = self.input_decoder.flush_if_expired();
+            let mut expired_input = Vec::new();
+            let expired_dnd = self.dnd_input.flush_if_expired();
+            if !expired_dnd.is_empty() {
+                expired_input.extend(self.input_decoder.push(&expired_dnd));
+                // The DnD parser already waited long enough to disambiguate its
+                // partial OSC prefix, so do not impose a second Esc timeout.
+                expired_input.extend(self.input_decoder.flush());
+            }
+            expired_input.extend(self.input_decoder.flush_if_expired());
             if !expired_input.is_empty() && !self.handle_decoded_input(&expired_input)? {
                 self.detach_client();
             }
@@ -2354,6 +2362,7 @@ impl App {
         let deadline = [
             self.redraw_deadline,
             self.clipboard_status_until,
+            self.dnd_input.flush_deadline(),
             self.input_decoder.flush_deadline(),
         ]
         .into_iter()
