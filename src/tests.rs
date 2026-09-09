@@ -5,8 +5,9 @@ use nix::unistd::Pid;
 
 use super::*;
 use crate::app::{
-    RenameEdit, TextSelection, Window, edit_window_name, matching_history_lines, matching_sessions,
-    pane_at, process_name, rename_tab, selected_text, selection_contains, window_history,
+    RenameEdit, TextSelection, Window, edit_window_name, matching_history_lines,
+    matching_session_info, pane_at, process_name, rename_tab, selected_text, selection_contains,
+    window_history,
 };
 use crate::input::{
     DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
@@ -22,6 +23,7 @@ use crate::render::{
     styled_text_cells, truncate_to_display_width,
 };
 use crate::session::ServerOutputDecoder;
+use crate::session::SessionInfo;
 use crate::terminal::{
     CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
     SemanticOutputCapture, TerminalMetadata, base64_encode, kitty_dnd_for_child, kitty_dnd_id,
@@ -155,6 +157,7 @@ fn key_decoder_names_control_navigation_and_modified_keys() {
     assert_eq!(decode_key(b"\x02").0.name, "ctrl b");
     assert_eq!(decode_key(b"\x1b[B").0.name, "down");
     assert_eq!(decode_key(b"\x1b[5~").0.name, "pageup");
+    assert_eq!(decode_key(b"\x1b[3~").0.name, "delete");
     assert_eq!(decode_key(b"\x1b[103;5u").0.name, "ctrl g");
     assert_eq!(decode_key(b"\x1b[27;3;120~").0.name, "alt x");
     assert_eq!(decode_key(b"G").0.name, "G");
@@ -1099,10 +1102,16 @@ fn server_output_decoder_intercepts_split_session_switch_messages() {
 
 #[test]
 fn session_manager_searches_case_insensitively() {
-    let sessions = vec!["alpha".to_owned(), "Personal".to_owned(), "work".to_owned()];
-    assert_eq!(matching_sessions(&sessions, "son"), vec!["Personal"]);
-    assert_eq!(matching_sessions(&sessions, "W"), vec!["work"]);
-    assert!(matching_sessions(&sessions, "new").is_empty());
+    let sessions = ["alpha", "Personal", "work"].map(|name| SessionInfo {
+        name: name.to_owned(),
+        tabs: 1,
+        panes: 1,
+        connected: false,
+        created_at: 1,
+    });
+    assert_eq!(matching_session_info(&sessions, "son")[0].name, "Personal");
+    assert_eq!(matching_session_info(&sessions, "W")[0].name, "work");
+    assert!(matching_session_info(&sessions, "new").is_empty());
 }
 
 #[test]
@@ -1112,9 +1121,16 @@ fn session_manager_renders_search_results_and_actions() {
     let mut renderer = Renderer::default();
     renderer.set_session_manager(Some(SessionManagerView {
         query: "wo".to_owned(),
-        sessions: vec!["work".to_owned()],
+        sessions: vec![SessionInfo {
+            name: "work".to_owned(),
+            tabs: 2,
+            panes: 3,
+            connected: false,
+            created_at: 1,
+        }],
         selected: 0,
         current: "personal".to_owned(),
+        rename_input: None,
     }));
 
     let frame = renderer.render(&windows, 0, (60, 12), "normal", None, &[]);
@@ -1122,9 +1138,33 @@ fn session_manager_renders_search_results_and_actions() {
 
     assert!(frame.contains("Session Manager"));
     assert!(frame.contains("Session: wo_"));
-    assert!(frame.contains(">   work"));
+    assert!(frame.contains(">   work  2 tabs, 3 panes  detached"));
     assert!(frame.contains("ATTACH / CREATE"));
     assert!(frame.contains("\x1b[?25l"));
+}
+
+#[test]
+fn session_manager_renders_rename_input() {
+    let windows = vec![test_window(1, "fish", 8, 58)];
+    let mut renderer = Renderer::default();
+    renderer.set_session_manager(Some(SessionManagerView {
+        query: String::new(),
+        sessions: vec![SessionInfo {
+            name: "work".to_owned(),
+            tabs: 1,
+            panes: 1,
+            connected: true,
+            created_at: 1,
+        }],
+        selected: 0,
+        current: "work".to_owned(),
+        rename_input: Some("renamed".to_owned()),
+    }));
+
+    let frame = renderer.render(&windows, 0, (60, 12), "normal", None, &[]);
+    let frame = String::from_utf8_lossy(&frame);
+
+    assert!(frame.contains("Rename: renamed_"));
 }
 
 #[test]

@@ -16,7 +16,7 @@
 - `,`：重命名当前窗口；输入时顶部标签会实时预览，Enter 确认，Esc 取消并恢复原名
 - `n`：下一个窗口
 - `p`：上一个窗口
-- `s`：打开 Session Manager；输入名称搜索，使用 `↑` / `↓` 选择、Tab 补全、Enter 进入、Esc 取消。没有匹配项时，Enter 会以当前输入创建新 session
+- `s`：打开 Session Manager；输入名称搜索，使用 `↑` / `↓` 选择、Tab 补全、Enter 进入、Esc 取消。没有匹配项时，Enter 会以当前输入创建新 session。列表会显示 tab/pane 数、连接状态和创建时间；`Ctrl-r` 重命名、Delete 删除、`Ctrl-x` 强制断开所选 session 的客户端
 - `[`：进入当前窗口的历史模式
 - `h`：用 `$VISUAL` 或 `$EDITOR`（默认 `vi`）打开当前窗口的完整历史
 - `e`：用编辑器打开上一条命令的输出

@@ -161,6 +161,7 @@ fn decode_csi_key_name(sequence: &[u8]) -> Option<String> {
         ("", b'D') => Some("left".to_owned()),
         ("5", b'~') => Some("pageup".to_owned()),
         ("6", b'~') => Some("pagedown".to_owned()),
+        ("3", b'~') => Some("delete".to_owned()),
         (_, b'u') => decode_kitty_key(parameters),
         (_, b'~') if parameters.starts_with("27;") => decode_xterm_modified_key(parameters),
         _ => None,

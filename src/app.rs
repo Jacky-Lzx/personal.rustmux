@@ -6,7 +6,7 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
@@ -27,7 +27,10 @@ use crate::layout::{
     resize_pane, split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
 use crate::render::{Renderer, SessionManagerView, render_base_index};
-use crate::session::{available_sessions, ensure_session_dir, validate_session_name};
+use crate::session::{
+    SessionInfo, available_session_info, disconnect_session, ensure_session_dir, kill_session,
+    rename_session, validate_session_name,
+};
 use crate::terminal::{
     CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
     SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration, kitty_dnd_for_child,
@@ -36,9 +39,10 @@ use crate::terminal::{
     terminal_responses,
 };
 use crate::{
-    CLIENT_INPUT, CLIENT_RESIZE, CLIENT_SHUTDOWN, CLIPBOARD_STATUS, CLIPBOARD_STATUS_DURATION,
-    FRAME_INTERVAL, MAX_CLIENT_MESSAGE_BYTES, MAX_PTY_READS_PER_TICK, MOUSE_SCROLL_LINES, PREFIX,
-    Result, SERVER_SWITCH_SESSION_PREFIX,
+    CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
+    CLIENT_SHUTDOWN, CLIPBOARD_STATUS, CLIPBOARD_STATUS_DURATION, FRAME_INTERVAL,
+    MAX_CLIENT_MESSAGE_BYTES, MAX_PTY_READS_PER_TICK, MOUSE_SCROLL_LINES, PREFIX, Result,
+    SERVER_SWITCH_SESSION_PREFIX,
 };
 
 pub(super) struct Window {
@@ -163,15 +167,16 @@ struct RenameState {
 
 struct SessionManagerState {
     query: String,
-    sessions: Vec<String>,
+    sessions: Vec<SessionInfo>,
     selected: usize,
+    rename_input: Option<String>,
 }
 
-pub(super) fn matching_sessions(sessions: &[String], query: &str) -> Vec<String> {
+pub(super) fn matching_session_info(sessions: &[SessionInfo], query: &str) -> Vec<SessionInfo> {
     let query = query.to_ascii_lowercase();
     sessions
         .iter()
-        .filter(|name| name.to_ascii_lowercase().contains(&query))
+        .filter(|session| session.name.to_ascii_lowercase().contains(&query))
         .cloned()
         .collect()
 }
@@ -190,6 +195,8 @@ pub(super) struct App {
     selection: Option<TextSelection>,
     renderer: Renderer,
     session_name: String,
+    socket_path: PathBuf,
+    created_at: u64,
     terminal_size: (u16, u16),
     terminal_pixels: (u16, u16),
     terminal_identity: String,
@@ -209,6 +216,7 @@ impl App {
         terminal_pixels: (u16, u16),
         config: Config,
         session_name: &str,
+        socket_path: PathBuf,
     ) -> Result<Self> {
         let mode = config.default_mode.clone();
         let config_reloader = ConfigReloader::new(config_path());
@@ -228,6 +236,11 @@ impl App {
             selection: None,
             renderer,
             session_name: session_name.to_owned(),
+            socket_path,
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
             terminal_size,
             terminal_pixels,
             terminal_identity: outer_terminal_identity(),
@@ -485,7 +498,11 @@ impl App {
             }
             if listener_ready {
                 match listener.accept() {
-                    Ok((stream, _)) => self.attach_client(stream)?,
+                    Ok((stream, _)) => {
+                        if !self.accept_connection(stream)? {
+                            break;
+                        }
+                    }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                     Err(error) => return Err(error.into()),
                 }
@@ -558,6 +575,50 @@ impl App {
         self.reset_mode();
         self.renderer.invalidate();
         self.redraw()
+    }
+
+    fn accept_connection(&mut self, mut stream: UnixStream) -> Result<bool> {
+        stream.set_read_timeout(Some(Duration::from_millis(250)))?;
+        let mut kind = [0_u8; 1];
+        stream.read_exact(&mut kind)?;
+        match kind[0] {
+            CLIENT_QUERY_STATUS => {
+                let tabs = self.tabs.len();
+                let panes = self
+                    .windows
+                    .iter()
+                    .filter(|window| !window.floating)
+                    .count();
+                let connected = u8::from(self.client.is_some());
+                writeln!(stream, "{tabs}\t{panes}\t{connected}\t{}", self.created_at)?;
+                Ok(true)
+            }
+            CLIENT_DISCONNECT => {
+                self.detach_client();
+                stream.write_all(b"OK")?;
+                Ok(true)
+            }
+            CLIENT_RENAME_SESSION => {
+                let mut length = [0_u8; 1];
+                stream.read_exact(&mut length)?;
+                let mut name = vec![0_u8; usize::from(length[0])];
+                stream.read_exact(&mut name)?;
+                let name = std::str::from_utf8(&name)?;
+                let result = self.rename_current_session(name);
+                match result {
+                    Ok(()) => stream.write_all(b"OK")?,
+                    Err(error) => write!(stream, "{error}")?,
+                }
+                Ok(true)
+            }
+            CLIENT_SHUTDOWN => Ok(false),
+            kind => {
+                stream.set_read_timeout(None)?;
+                self.attach_client(stream)?;
+                self.client_input.push(kind);
+                Ok(true)
+            }
+        }
     }
 
     fn detach_client(&mut self) {
@@ -945,21 +1006,29 @@ impl App {
     }
 
     fn open_session_manager(&mut self) -> Result<()> {
-        let sessions = available_sessions()?;
+        let sessions = available_session_info(Some(self.local_session_info()))?;
         let selected = sessions
             .iter()
-            .position(|name| name == &self.session_name)
+            .position(|session| session.name == self.session_name)
             .unwrap_or(0);
         self.session_manager = Some(SessionManagerState {
             query: String::new(),
             sessions,
             selected,
+            rename_input: None,
         });
         self.sync_session_manager();
         self.redraw()
     }
 
     fn handle_session_manager_key(&mut self, key: &DecodedKey) -> Result<bool> {
+        if self
+            .session_manager
+            .as_ref()
+            .is_some_and(|state| state.rename_input.is_some())
+        {
+            return self.handle_session_rename_key(key);
+        }
         match key.name.as_str() {
             "esc" => {
                 self.close_session_manager();
@@ -970,7 +1039,7 @@ impl App {
                     .session_manager
                     .as_mut()
                     .expect("session manager is open");
-                let count = matching_sessions(&state.sessions, &state.query).len();
+                let count = matching_session_info(&state.sessions, &state.query).len();
                 if count > 0 {
                     state.selected = if key.name == "up" {
                         state.selected.checked_sub(1).unwrap_or(count - 1)
@@ -986,9 +1055,9 @@ impl App {
                     .session_manager
                     .as_mut()
                     .expect("session manager is open");
-                let matches = matching_sessions(&state.sessions, &state.query);
-                if let Some(name) = matches.get(state.selected) {
-                    state.query.clone_from(name);
+                let matches = matching_session_info(&state.sessions, &state.query);
+                if let Some(session) = matches.get(state.selected) {
+                    state.query.clone_from(&session.name);
                     state.selected = 0;
                 }
                 self.sync_session_manager();
@@ -999,10 +1068,10 @@ impl App {
                     .session_manager
                     .as_ref()
                     .expect("session manager is open");
-                let matches = matching_sessions(&state.sessions, &state.query);
+                let matches = matching_session_info(&state.sessions, &state.query);
                 let target = matches
                     .get(state.selected)
-                    .cloned()
+                    .map(|session| session.name.clone())
                     .unwrap_or_else(|| state.query.clone());
                 if target.is_empty() {
                     return Ok(true);
@@ -1015,6 +1084,46 @@ impl App {
                 }
                 self.request_session_switch(&target)?;
                 return Ok(false);
+            }
+            "ctrl r" => {
+                let Some(target) = self.selected_session_name() else {
+                    return Ok(true);
+                };
+                self.session_manager
+                    .as_mut()
+                    .expect("session manager is open")
+                    .rename_input = Some(target);
+                self.sync_session_manager();
+                self.redraw()?;
+            }
+            "delete" => {
+                let Some(target) = self.selected_session_name() else {
+                    return Ok(true);
+                };
+                if target == self.session_name {
+                    for window in self.windows.drain(..) {
+                        terminate_window(window);
+                    }
+                    return Ok(false);
+                }
+                kill_session(&target)?;
+                self.session_manager
+                    .as_mut()
+                    .expect("session manager is open")
+                    .query
+                    .clear();
+                self.refresh_session_manager()?;
+                self.redraw()?;
+            }
+            "ctrl x" => {
+                let Some(target) = self.selected_session_name() else {
+                    return Ok(true);
+                };
+                if target != self.session_name {
+                    disconnect_session(&target)?;
+                    self.refresh_session_manager()?;
+                    self.redraw()?;
+                }
             }
             "backspace" => {
                 let state = self
@@ -1050,16 +1159,122 @@ impl App {
 
     fn sync_session_manager(&mut self) {
         let view = self.session_manager.as_mut().map(|state| {
-            let sessions = matching_sessions(&state.sessions, &state.query);
+            let sessions = matching_session_info(&state.sessions, &state.query);
             state.selected = state.selected.min(sessions.len().saturating_sub(1));
             SessionManagerView {
                 query: state.query.clone(),
                 sessions,
                 selected: state.selected,
                 current: self.session_name.clone(),
+                rename_input: state.rename_input.clone(),
             }
         });
         self.renderer.set_session_manager(view);
+    }
+
+    fn selected_session_name(&self) -> Option<String> {
+        let state = self.session_manager.as_ref()?;
+        matching_session_info(&state.sessions, &state.query)
+            .get(state.selected)
+            .map(|session| session.name.clone())
+    }
+
+    fn refresh_session_manager(&mut self) -> Result<()> {
+        let sessions = available_session_info(Some(self.local_session_info()))?;
+        if let Some(state) = self.session_manager.as_mut() {
+            state.sessions = sessions;
+            state.selected = state.selected.min(state.sessions.len().saturating_sub(1));
+        }
+        self.sync_session_manager();
+        Ok(())
+    }
+
+    fn local_session_info(&self) -> SessionInfo {
+        SessionInfo {
+            name: self.session_name.clone(),
+            tabs: self.tabs.len(),
+            panes: self
+                .windows
+                .iter()
+                .filter(|window| !window.floating)
+                .count(),
+            connected: self.client.is_some(),
+            created_at: self.created_at,
+        }
+    }
+
+    fn handle_session_rename_key(&mut self, key: &DecodedKey) -> Result<bool> {
+        match key.name.as_str() {
+            "esc" => {
+                self.session_manager
+                    .as_mut()
+                    .expect("session manager is open")
+                    .rename_input = None;
+            }
+            "enter" => {
+                let old_name = self.selected_session_name().unwrap_or_default();
+                let new_name = self
+                    .session_manager
+                    .as_ref()
+                    .and_then(|state| state.rename_input.clone())
+                    .unwrap_or_default();
+                validate_session_name(&new_name)?;
+                if old_name != new_name {
+                    if old_name == self.session_name {
+                        self.rename_current_session(&new_name)?;
+                    } else {
+                        rename_session(&old_name, &new_name)?;
+                    }
+                }
+                if let Some(state) = self.session_manager.as_mut() {
+                    state.query.clone_from(&new_name);
+                    state.rename_input = None;
+                }
+                self.refresh_session_manager()?;
+            }
+            "backspace" => {
+                self.session_manager
+                    .as_mut()
+                    .expect("session manager is open")
+                    .rename_input
+                    .as_mut()
+                    .expect("rename input exists")
+                    .pop();
+            }
+            _ => {
+                if let Ok(text) = std::str::from_utf8(&key.raw)
+                    && text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                {
+                    let input = self
+                        .session_manager
+                        .as_mut()
+                        .expect("session manager is open")
+                        .rename_input
+                        .as_mut()
+                        .expect("rename input exists");
+                    if input.len() + text.len() <= 64 {
+                        input.push_str(text);
+                    }
+                }
+            }
+        }
+        self.sync_session_manager();
+        self.redraw()?;
+        Ok(true)
+    }
+
+    fn rename_current_session(&mut self, new_name: &str) -> Result<()> {
+        let new_path = self.socket_path.with_file_name(format!("{new_name}.sock"));
+        if new_path.exists() {
+            return Err(format!("session '{new_name}' already exists").into());
+        }
+        fs::rename(&self.socket_path, &new_path)?;
+        self.socket_path = new_path;
+        self.session_name = new_name.to_owned();
+        self.renderer.set_session_name(new_name);
+        Ok(())
     }
 
     fn close_session_manager(&mut self) {
@@ -2253,6 +2468,7 @@ impl App {
         for window in self.windows.drain(..) {
             terminate_window(window);
         }
+        let _ = fs::remove_file(&self.socket_path);
     }
 }
 

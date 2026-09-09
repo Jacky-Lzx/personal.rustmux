@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -7,6 +8,7 @@ use crate::app::{TextSelection, Window, selection_contains};
 use crate::layout::{
     FloatingLayout, content_size_for, floating_layout_for, pane_pty_size, tiled_content_rect_for,
 };
+use crate::session::SessionInfo;
 
 type Rgb = (u8, u8, u8);
 
@@ -24,9 +26,10 @@ const POWERLINE_RIGHT: &str = "";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SessionManagerView {
     pub(super) query: String,
-    pub(super) sessions: Vec<String>,
+    pub(super) sessions: Vec<SessionInfo>,
     pub(super) selected: usize,
     pub(super) current: String,
+    pub(super) rename_input: Option<String>,
 }
 
 pub(super) fn session_manager_rect((columns, rows): (u16, u16)) -> (u16, u16, u16, u16) {
@@ -1070,6 +1073,12 @@ fn status_segments(snapshot: &FrameSnapshot) -> Vec<(String, Rgb)> {
             ("ATTACH / CREATE".to_owned(), MOCHA_LAVENDER),
             ("Esc".to_owned(), MOCHA_PINK),
             ("CANCEL".to_owned(), MOCHA_BLUE),
+            ("Ctrl-r".to_owned(), MOCHA_PINK),
+            ("RENAME".to_owned(), MOCHA_LAVENDER),
+            ("Del".to_owned(), MOCHA_PINK),
+            ("DELETE".to_owned(), MOCHA_BLUE),
+            ("Ctrl-x".to_owned(), MOCHA_PINK),
+            ("DISCONNECT".to_owned(), MOCHA_LAVENDER),
         ];
     }
     if let Some(name) = &snapshot.rename_prompt {
@@ -1166,7 +1175,11 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         "─".repeat(inner_width)
     );
 
-    let query = format!("Session: {}_", manager.query);
+    let query = if let Some(name) = &manager.rename_input {
+        format!("Rename: {name}_")
+    } else {
+        format!("Session: {}_", manager.query)
+    };
     let (query, _) = truncate_to_display_width(&query, inner_width.saturating_sub(2));
     let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
     write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
@@ -1176,7 +1189,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let first_visible = manager
         .selected
         .saturating_sub(available_rows.saturating_sub(1));
-    for (visible_index, (index, name)) in manager
+    for (visible_index, (index, session)) in manager
         .sessions
         .iter()
         .enumerate()
@@ -1184,10 +1197,23 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         .take(available_rows)
         .enumerate()
     {
-        let marker = if name == &manager.current { "*" } else { " " };
+        let marker = if session.name == manager.current {
+            "*"
+        } else {
+            " "
+        };
+        let state = if session.connected {
+            "attached"
+        } else {
+            "detached"
+        };
+        let created = session_created(session.created_at);
         let label = format!(
-            "{} {marker} {name}",
-            if index == manager.selected { ">" } else { " " }
+            "{} {marker} {}  {} tabs, {} panes  {state}  {created}",
+            if index == manager.selected { ">" } else { " " },
+            session.name,
+            session.tabs,
+            session.panes,
         );
         let (label, _) = truncate_to_display_width(&label, inner_width.saturating_sub(2));
         let _ = write!(
@@ -1207,6 +1233,26 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             index == manager.selected,
         );
         output.extend_from_slice(label.as_bytes());
+    }
+}
+
+fn session_created(created_at: u64) -> String {
+    if created_at == 0 {
+        return "created unknown".to_owned();
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let seconds = now.saturating_sub(created_at);
+    if seconds < 60 {
+        format!("created {seconds}s ago")
+    } else if seconds < 3_600 {
+        format!("created {}m ago", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("created {}h ago", seconds / 3_600)
+    } else {
+        format!("created {}d ago", seconds / 86_400)
     }
 }
 

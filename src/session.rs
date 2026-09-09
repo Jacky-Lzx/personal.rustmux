@@ -16,8 +16,9 @@ use nix::poll::{PollFd, PollFlags, poll};
 use nix::unistd::read;
 
 use super::{
-    CLIENT_INPUT, CLIENT_RESIZE, CLIENT_SHUTDOWN, Config, EARLY_DISCONNECT_RETRY, Result,
-    SERVER_SWITCH_SESSION_PREFIX, TerminalGuard,
+    CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
+    CLIENT_SHUTDOWN, Config, EARLY_DISCONNECT_RETRY, Result, SERVER_SWITCH_SESSION_PREFIX,
+    TerminalGuard,
 };
 use crate::app::App;
 use crate::layout::validate_terminal_size;
@@ -311,12 +312,89 @@ pub(super) fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
     ensure_session_dir()?;
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
-    let _socket_guard = SocketGuard(socket);
+    let _socket_guard = SocketGuard(socket.clone());
     let config = Config::load().map_err(|error| format!("configuration error: {error}"))?;
-    let mut app = App::new((columns, rows), (width, height), config, &session_name)?;
+    let mut app = App::new(
+        (columns, rows),
+        (width, height),
+        config,
+        &session_name,
+        socket.clone(),
+    )?;
     let result = app.run_server(listener);
     app.shutdown();
     result
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SessionInfo {
+    pub(super) name: String,
+    pub(super) tabs: usize,
+    pub(super) panes: usize,
+    pub(super) connected: bool,
+    pub(super) created_at: u64,
+}
+
+fn control_session(name: &str, request: &[u8]) -> Result<Vec<u8>> {
+    let socket = session_socket(name)?;
+    let mut stream = UnixStream::connect(&socket)
+        .map_err(|error| format!("session '{name}' not found: {error}"))?;
+    stream.write_all(request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    Ok(response)
+}
+
+pub(super) fn available_session_info(local: Option<SessionInfo>) -> Result<Vec<SessionInfo>> {
+    let mut sessions = Vec::new();
+    for name in available_sessions()? {
+        if let Some(info) = local.as_ref().filter(|info| info.name == name) {
+            sessions.push(info.clone());
+            continue;
+        }
+        let response = control_session(&name, &[CLIENT_QUERY_STATUS]).unwrap_or_default();
+        let fields = String::from_utf8_lossy(&response)
+            .trim()
+            .split('\t')
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        sessions.push(SessionInfo {
+            name,
+            tabs: fields
+                .first()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+            panes: fields
+                .get(1)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+            connected: fields.get(2).is_some_and(|value| value == "1"),
+            created_at: fields
+                .get(3)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+        });
+    }
+    Ok(sessions)
+}
+
+pub(super) fn disconnect_session(name: &str) -> Result<()> {
+    control_session(name, &[CLIENT_DISCONNECT]).map(|_| ())
+}
+
+pub(super) fn rename_session(name: &str, new_name: &str) -> Result<()> {
+    validate_session_name(new_name)?;
+    let length = u8::try_from(new_name.len())?;
+    let mut request = vec![CLIENT_RENAME_SESSION, length];
+    request.extend_from_slice(new_name.as_bytes());
+    let response = control_session(name, &request)?;
+    if response == b"OK" {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&response).into_owned().into())
+    }
 }
 
 pub(super) fn list_sessions() -> Result<()> {
@@ -357,26 +435,5 @@ pub(super) fn available_sessions() -> Result<Vec<String>> {
 }
 
 pub(super) fn kill_session(name: &str) -> Result<()> {
-    let socket = session_socket(name)?;
-    let mut stream = UnixStream::connect(&socket)
-        .map_err(|error| format!("session '{name}' not found: {error}"))?;
-    stream.write_all(&[CLIENT_SHUTDOWN])?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let mut response = [0_u8; 4096];
-    loop {
-        match stream.read(&mut response) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                break;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
+    control_session(name, &[CLIENT_SHUTDOWN]).map(|_| ())
 }
