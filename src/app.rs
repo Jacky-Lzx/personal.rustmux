@@ -38,7 +38,7 @@ use crate::terminal::{
 use crate::{
     CLIENT_INPUT, CLIENT_RESIZE, CLIENT_SHUTDOWN, CLIPBOARD_STATUS, CLIPBOARD_STATUS_DURATION,
     FRAME_INTERVAL, MAX_CLIENT_MESSAGE_BYTES, MAX_PTY_READS_PER_TICK, MOUSE_SCROLL_LINES, PREFIX,
-    Result, SCROLLBACK_LINES, SERVER_SWITCH_SESSION_PREFIX,
+    Result, SERVER_SWITCH_SESSION_PREFIX,
 };
 
 pub(super) struct Window {
@@ -99,12 +99,24 @@ pub(super) struct TextSelection {
     pub(super) window_id: usize,
     pub(super) start: MousePosition,
     pub(super) end: MousePosition,
+    pub(super) keyboard: bool,
 }
 
 impl TextSelection {
     pub(super) fn spans_multiple_cells(self) -> bool {
         self.start != self.end
     }
+
+    pub(super) fn is_visible(self) -> bool {
+        self.keyboard || self.spans_multiple_cells()
+    }
+}
+
+struct HistorySearchState {
+    query: String,
+    matches: Vec<usize>,
+    selected: usize,
+    editing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,6 +196,7 @@ pub(super) struct App {
     redraw_deadline: Option<Instant>,
     clipboard_status_until: Option<Instant>,
     rename_state: Option<RenameState>,
+    history_search: Option<HistorySearchState>,
     session_manager: Option<SessionManagerState>,
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
@@ -221,6 +234,7 @@ impl App {
             redraw_deadline: None,
             clipboard_status_until: None,
             rename_state: None,
+            history_search: None,
             session_manager: None,
             client: None,
             outer_dnd_window: None,
@@ -361,7 +375,7 @@ impl App {
                     terminal: vt100::Parser::new_with_callbacks(
                         rows,
                         columns,
-                        SCROLLBACK_LINES,
+                        self.config.scrollback_lines(),
                         TerminalMetadata::default(),
                     ),
                     cursor_style: CursorStyleTracker::default(),
@@ -797,6 +811,16 @@ impl App {
                 index += consumed;
                 continue;
             }
+            if self
+                .history_search
+                .as_ref()
+                .is_some_and(|search| search.editing)
+            {
+                let (key, consumed) = decode_key(&bytes[index..]);
+                self.handle_history_search_key(&key)?;
+                index += consumed;
+                continue;
+            }
             if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
                 if self.windows[self.active].history_mode {
                     if !passthrough.is_empty() {
@@ -882,9 +906,11 @@ impl App {
                 Action::ScrollUp => self.apply_history_action(HistoryAction::Up(1))?,
                 Action::ScrollDown => self.apply_history_action(HistoryAction::Down(1))?,
                 Action::PageUp => {
+                    self.selection = None;
                     self.apply_history_action(HistoryAction::Up(self.history_page_rows()))?;
                 }
                 Action::PageDown => {
+                    self.selection = None;
                     self.apply_history_action(HistoryAction::Down(self.history_page_rows()))?;
                 }
                 Action::ScrollTop => self.apply_history_action(HistoryAction::Top)?,
@@ -906,6 +932,13 @@ impl App {
                 Action::ResizePaneUp => self.resize_active_pane(Direction::Up)?,
                 Action::ResizePaneDown => self.resize_active_pane(Direction::Down)?,
                 Action::TogglePaneZoom => self.toggle_pane_zoom()?,
+                Action::SearchHistory => self.begin_history_search()?,
+                Action::NextSearchMatch => self.select_history_match(1)?,
+                Action::PreviousSearchMatch => self.select_history_match(-1)?,
+                Action::ToggleHistorySelection => self.toggle_history_selection()?,
+                Action::SelectionLeft => self.move_history_selection(-1)?,
+                Action::SelectionRight => self.move_history_selection(1)?,
+                Action::CopySelection => self.copy_history_selection()?,
             }
         }
         Ok(true)
@@ -1121,6 +1154,8 @@ impl App {
             window.history_mode = false;
             window.terminal.screen_mut().set_scrollback(0);
             self.selection = None;
+            self.history_search = None;
+            self.renderer.set_history_search_prompt(None);
         }
         self.mode = mode.to_owned();
         if mode == "scroll" && !self.windows.is_empty() {
@@ -1147,6 +1182,8 @@ impl App {
         }
         self.renderer.set_border_status(None);
         self.renderer.set_rename_prompt(None);
+        self.history_search = None;
+        self.renderer.set_history_search_prompt(None);
         self.session_manager = None;
         self.renderer.set_session_manager(None);
         for window in &mut self.windows {
@@ -1247,6 +1284,22 @@ impl App {
     }
 
     fn apply_history_action(&mut self, action: HistoryAction) -> Result<()> {
+        if self.selection.is_some_and(|selection| selection.keyboard) {
+            let columns = isize::try_from(self.active_content_size().0).unwrap_or(isize::MAX);
+            match action {
+                HistoryAction::Up(rows) => {
+                    return self.move_history_selection_cells(
+                        -isize::try_from(rows).unwrap_or(isize::MAX) * columns,
+                    );
+                }
+                HistoryAction::Down(rows) => {
+                    return self.move_history_selection_cells(
+                        isize::try_from(rows).unwrap_or(isize::MAX) * columns,
+                    );
+                }
+                HistoryAction::Top | HistoryAction::Bottom => self.selection = None,
+            }
+        }
         let window = &mut self.windows[self.active];
         let current = window.terminal.screen().scrollback();
         let requested = match action {
@@ -1262,6 +1315,182 @@ impl App {
         Ok(())
     }
 
+    fn begin_history_search(&mut self) -> Result<()> {
+        if !self.windows[self.active].history_mode {
+            return Ok(());
+        }
+        self.selection = None;
+        self.history_search = Some(HistorySearchState {
+            query: String::new(),
+            matches: Vec::new(),
+            selected: 0,
+            editing: true,
+        });
+        self.renderer.set_history_search_prompt(Some(""));
+        self.redraw()
+    }
+
+    fn handle_history_search_key(&mut self, key: &DecodedKey) -> Result<()> {
+        match key.name.as_str() {
+            "esc" => {
+                self.history_search = None;
+                self.renderer.set_history_search_prompt(None);
+            }
+            "enter" => {
+                if let Some(search) = self.history_search.as_mut() {
+                    search.editing = false;
+                }
+                self.renderer.set_history_search_prompt(None);
+            }
+            "backspace" => {
+                self.history_search
+                    .as_mut()
+                    .expect("history search is active")
+                    .query
+                    .pop();
+                self.refresh_history_search();
+            }
+            _ => {
+                if let Ok(text) = std::str::from_utf8(&key.raw)
+                    && !text.chars().any(char::is_control)
+                {
+                    let search = self
+                        .history_search
+                        .as_mut()
+                        .expect("history search is active");
+                    if search.query.len() + text.len() <= 256 {
+                        search.query.push_str(text);
+                        self.refresh_history_search();
+                    }
+                }
+            }
+        }
+        self.sync_history_search_prompt();
+        self.redraw()
+    }
+
+    fn refresh_history_search(&mut self) {
+        let query = self
+            .history_search
+            .as_ref()
+            .map(|search| search.query.clone())
+            .unwrap_or_default();
+        let lines = history_lines(&mut self.windows[self.active]);
+        let matches = matching_history_lines(&lines, &query);
+        if let Some(search) = self.history_search.as_mut() {
+            search.matches = matches;
+            search.selected = 0;
+        }
+        self.jump_to_history_match(lines.len());
+    }
+
+    fn select_history_match(&mut self, offset: isize) -> Result<()> {
+        self.selection = None;
+        let Some(search) = self.history_search.as_mut() else {
+            return Ok(());
+        };
+        if search.matches.is_empty() {
+            return Ok(());
+        }
+        search.selected =
+            (search.selected as isize + offset).rem_euclid(search.matches.len() as isize) as usize;
+        let line_count = history_lines(&mut self.windows[self.active]).len();
+        self.jump_to_history_match(line_count);
+        self.redraw()
+    }
+
+    fn jump_to_history_match(&mut self, line_count: usize) {
+        let Some(line) = self
+            .history_search
+            .as_ref()
+            .and_then(|search| search.matches.get(search.selected).copied())
+        else {
+            return;
+        };
+        let visible_rows = usize::from(self.windows[self.active].terminal.screen().size().0);
+        let scrollback_rows = line_count.saturating_sub(visible_rows);
+        self.windows[self.active]
+            .terminal
+            .screen_mut()
+            .set_scrollback(scrollback_rows.saturating_sub(line.min(scrollback_rows)));
+    }
+
+    fn sync_history_search_prompt(&mut self) {
+        self.renderer.set_history_search_prompt(
+            self.history_search
+                .as_ref()
+                .filter(|search| search.editing)
+                .map(|search| search.query.as_str()),
+        );
+    }
+
+    fn toggle_history_selection(&mut self) -> Result<()> {
+        if self.selection.is_some_and(|selection| selection.keyboard) {
+            self.selection = None;
+        } else {
+            let (row, column) = self.windows[self.active]
+                .terminal
+                .screen()
+                .cursor_position();
+            let (columns, rows) = self.active_content_size();
+            let position = MousePosition {
+                column: column.min(columns.saturating_sub(1)),
+                row: row.min(rows.saturating_sub(1)),
+            };
+            self.selection = Some(TextSelection {
+                window_id: self.windows[self.active].id,
+                start: position,
+                end: position,
+                keyboard: true,
+            });
+        }
+        self.redraw()
+    }
+
+    fn move_history_selection(&mut self, offset: isize) -> Result<()> {
+        if self.selection.is_none() {
+            return self.toggle_history_selection();
+        }
+        self.move_history_selection_cells(offset)
+    }
+
+    fn move_history_selection_cells(&mut self, offset: isize) -> Result<()> {
+        let (columns, rows) = self.active_content_size();
+        let Some(mut selection) = self.selection.filter(|selection| selection.keyboard) else {
+            return Ok(());
+        };
+        let width = usize::from(columns);
+        let last = width.saturating_mul(usize::from(rows)).saturating_sub(1);
+        let current = usize::from(selection.end.row)
+            .saturating_mul(width)
+            .saturating_add(usize::from(selection.end.column));
+        let updated = current.saturating_add_signed(offset).min(last);
+        selection.end = MousePosition {
+            column: u16::try_from(updated % width).unwrap_or(u16::MAX),
+            row: u16::try_from(updated / width).unwrap_or(u16::MAX),
+        };
+        self.selection = Some(selection);
+        self.redraw()
+    }
+
+    fn copy_history_selection(&mut self) -> Result<()> {
+        let Some(selection) = self.selection.filter(|selection| selection.keyboard) else {
+            return self.notify("no history selection; press v to start selecting");
+        };
+        let text = selected_text(
+            &self.windows[self.active],
+            selection,
+            self.active_content_size(),
+        );
+        if !text.is_empty() {
+            self.copy_to_clipboard(&text)?;
+            self.clipboard_status_until = Some(Instant::now() + CLIPBOARD_STATUS_DURATION);
+            self.renderer.set_border_status(Some(CLIPBOARD_STATUS));
+        }
+        let mode = self.config.default_mode.clone();
+        self.switch_mode(&mode)
+    }
+
     fn apply_mouse_action(&mut self, action: MouseAction) -> Result<()> {
         if let MouseAction::SelectStart(position) = action {
             let Some(position) = self.content_position(position, false) else {
@@ -1274,6 +1503,7 @@ impl App {
                 window_id: self.windows[self.active].id,
                 start: position,
                 end: position,
+                keyboard: false,
             });
             return self.redraw();
         }
@@ -2048,6 +2278,16 @@ pub(super) fn pane_at(windows: &[Window], active: usize, position: MousePosition
 }
 
 pub(super) fn window_history(window: &mut Window) -> String {
+    let mut lines = history_lines(window);
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    let mut history = lines.join("\n");
+    history.push('\n');
+    history
+}
+
+pub(super) fn history_lines(window: &mut Window) -> Vec<String> {
     let screen = window.terminal.screen_mut();
     let original_offset = screen.scrollback();
     let (_, columns) = screen.size();
@@ -2063,12 +2303,19 @@ pub(super) fn window_history(window: &mut Window) -> String {
     lines.extend(screen.rows(0, columns));
     screen.set_scrollback(original_offset);
 
-    while lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
+    lines
+}
+
+pub(super) fn matching_history_lines(lines: &[String], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
     }
-    let mut history = lines.join("\n");
-    history.push('\n');
-    history
+    let query = query.to_lowercase();
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.to_lowercase().contains(&query).then_some(index))
+        .collect()
 }
 
 pub(super) fn selected_text(
@@ -2135,7 +2382,7 @@ pub(super) fn selection_contains(
     let Some(selection) = selection.filter(|selection| selection.window_id == window_id) else {
         return false;
     };
-    if !selection.spans_multiple_cells() {
+    if !selection.is_visible() {
         return false;
     }
     let position = usize::from(row) * usize::from(columns) + usize::from(column);

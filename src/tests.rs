@@ -5,8 +5,8 @@ use nix::unistd::Pid;
 
 use super::*;
 use crate::app::{
-    RenameEdit, TextSelection, Window, edit_window_name, matching_sessions, pane_at, process_name,
-    rename_tab, selected_text, selection_contains, window_history,
+    RenameEdit, TextSelection, Window, edit_window_name, matching_history_lines, matching_sessions,
+    pane_at, process_name, rename_tab, selected_text, selection_contains, window_history,
 };
 use crate::input::{
     DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
@@ -261,6 +261,7 @@ fn selected_text_spans_rows_and_ignores_terminal_padding() {
         window_id: 7,
         start: MousePosition { column: 0, row: 0 },
         end: MousePosition { column: 5, row: 1 },
+        keyboard: false,
     };
 
     assert_eq!(
@@ -289,6 +290,7 @@ fn selected_text_does_not_insert_newlines_at_soft_wraps() {
         window_id: 9,
         start: MousePosition { column: 0, row: 0 },
         end: MousePosition { column: 0, row: 1 },
+        keyboard: false,
     };
 
     assert_eq!(selected_text(&window, selection, (5, 2)), "abcdef");
@@ -300,6 +302,7 @@ fn selection_must_span_multiple_cells_before_copying() {
         window_id: 9,
         start: MousePosition { column: 2, row: 1 },
         end: MousePosition { column: 2, row: 1 },
+        keyboard: false,
     };
     let multiple_cells = TextSelection {
         end: MousePosition { column: 3, row: 1 },
@@ -311,6 +314,24 @@ fn selection_must_span_multiple_cells_before_copying() {
     assert!(!selection_contains(Some(&single_cell), 9, 1, 2, 5));
     assert!(selection_contains(Some(&multiple_cells), 9, 1, 2, 5));
     assert!(selection_contains(Some(&multiple_cells), 9, 1, 3, 5));
+
+    let keyboard_cell = TextSelection {
+        keyboard: true,
+        ..single_cell
+    };
+    assert!(keyboard_cell.is_visible());
+    assert!(selection_contains(Some(&keyboard_cell), 9, 1, 2, 5));
+}
+
+#[test]
+fn history_search_matches_lines_case_insensitively() {
+    let lines = vec![
+        "cargo check".to_owned(),
+        "Finished release".to_owned(),
+        "cargo test".to_owned(),
+    ];
+    assert_eq!(matching_history_lines(&lines, "CARGO"), vec![0, 2]);
+    assert!(matching_history_lines(&lines, "").is_empty());
 }
 
 #[test]
@@ -324,6 +345,7 @@ fn selection_highlight_is_rendered_incrementally() {
         window_id: 3,
         start: MousePosition { column: 0, row: 0 },
         end: MousePosition { column: 5, row: 0 },
+        keyboard: false,
     };
 
     let update = renderer.render(&windows, 0, (20, 6), "locked", Some(&selection), &[]);
@@ -386,6 +408,20 @@ fn rename_prompt_replaces_bottom_key_hints() {
 
     assert!(frame.contains("RENAME: editor_"));
     assert!(!frame.contains("Ctrl b"));
+}
+
+#[test]
+fn history_search_prompt_replaces_bottom_key_hints() {
+    let window = test_window(1, "fish", 2, 18);
+    let windows = vec![window];
+    let mut renderer = Renderer::default();
+    renderer.set_ui(false, vec!["q=quit".to_owned()]);
+    renderer.set_history_search_prompt(Some("cargo"));
+
+    let frame = renderer.render(&windows, 0, (20, 5), "scroll", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+    assert!(frame.contains("SEARCH: cargo_"));
+    assert!(!frame.contains("QUIT"));
 }
 
 #[test]

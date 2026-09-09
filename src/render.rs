@@ -48,6 +48,7 @@ pub(super) struct Renderer {
     mode_hints: Vec<String>,
     session_name: String,
     rename_prompt: Option<String>,
+    history_search_prompt: Option<String>,
     session_manager: Option<SessionManagerView>,
 }
 
@@ -66,6 +67,10 @@ impl Renderer {
 
     pub(super) fn set_rename_prompt(&mut self, name: Option<&str>) {
         self.rename_prompt = name.map(str::to_owned);
+    }
+
+    pub(super) fn set_history_search_prompt(&mut self, query: Option<&str>) {
+        self.history_search_prompt = query.map(str::to_owned);
     }
 
     pub(super) fn set_session_manager(&mut self, view: Option<SessionManagerView>) {
@@ -97,6 +102,7 @@ impl Renderer {
                 border_status: self.border_status.as_deref(),
                 session_name: &self.session_name,
                 rename_prompt: self.rename_prompt.as_deref(),
+                history_search_prompt: self.history_search_prompt.as_deref(),
                 session_manager: self.session_manager.as_ref(),
             },
             selection,
@@ -153,6 +159,7 @@ impl Renderer {
         let status_changed = previous.border_status != current.border_status
             || previous.mode_hints != current.mode_hints
             || previous.rename_prompt != current.rename_prompt
+            || previous.history_search_prompt != current.history_search_prompt
             || previous.session_manager != current.session_manager;
         let manager_changed = previous.session_manager != current.session_manager;
         let mut output = Vec::new();
@@ -274,6 +281,7 @@ pub(super) struct FrameSnapshot {
     mode_hints: Vec<String>,
     session_name: String,
     rename_prompt: Option<String>,
+    history_search_prompt: Option<String>,
     session_manager: Option<SessionManagerView>,
     history_mode: bool,
     history_offset: usize,
@@ -302,6 +310,7 @@ impl FrameSnapshot {
                 border_status,
                 session_name: "",
                 rename_prompt: None,
+                history_search_prompt: None,
                 session_manager: None,
             },
             selection,
@@ -322,6 +331,7 @@ impl FrameSnapshot {
             border_status,
             session_name,
             rename_prompt,
+            history_search_prompt,
             session_manager,
         } = ui;
         let base = render_base_index(windows, active);
@@ -439,6 +449,7 @@ impl FrameSnapshot {
             mode_hints: mode_hints.to_vec(),
             session_name: session_name.to_owned(),
             rename_prompt: rename_prompt.map(str::to_owned),
+            history_search_prompt: history_search_prompt.map(str::to_owned),
             session_manager: session_manager.cloned(),
             history_mode: windows[active].history_mode,
             history_offset: active_screen.scrollback(),
@@ -456,6 +467,7 @@ struct RenderUi<'a> {
     border_status: Option<&'a str>,
     session_name: &'a str,
     rename_prompt: Option<&'a str>,
+    history_search_prompt: Option<&'a str>,
     session_manager: Option<&'a SessionManagerView>,
 }
 
@@ -967,6 +979,9 @@ fn draw_window_bar(
         if let Some(name) = &snapshot.rename_prompt {
             return format!("RENAME: {name}_");
         }
+        if let Some(query) = &snapshot.history_search_prompt {
+            return format!("SEARCH: {query}_");
+        }
         let mode = mode_label(&snapshot.mode, snapshot.history_offset);
         snapshot
             .border_status
@@ -1059,6 +1074,9 @@ fn status_segments(snapshot: &FrameSnapshot) -> Vec<(String, Rgb)> {
     }
     if let Some(name) = &snapshot.rename_prompt {
         return vec![(format!("RENAME: {name}_"), MOCHA_YELLOW)];
+    }
+    if let Some(query) = &snapshot.history_search_prompt {
+        return vec![(format!("SEARCH: {query}_"), MOCHA_YELLOW)];
     }
     let mut segments = Vec::new();
     if snapshot.mode != "locked" {

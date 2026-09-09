@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::SCROLLBACK_LINES;
+
 const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +59,7 @@ pub const DEFAULT_CONFIG_TOML: &str = r#"
 default_mode = "locked"
 clear_defaults = false
 compact = false
+scrollback_lines = 1000
 
 [notifications]
 enabled = true
@@ -117,6 +120,14 @@ q = [{ action = "switch-mode", mode = "locked" }]
 esc = [{ action = "switch-mode", mode = "locked" }]
 
 [keybinds.scroll]
+"/" = ["search-history"]
+n = ["next-search-match"]
+N = ["previous-search-match"]
+v = ["toggle-history-selection"]
+left = ["selection-left"]
+h = ["selection-left"]
+right = ["selection-right"]
+l = ["selection-right"]
 up = ["scroll-up"]
 k = ["scroll-up"]
 down = ["scroll-down"]
@@ -133,7 +144,7 @@ g = ["scroll-top"]
 G = ["scroll-bottom"]
 E = ["scroll-bottom", { action = "switch-mode", mode = "locked" }, "edit-history"]
 e = ["scroll-bottom", { action = "switch-mode", mode = "locked" }, "edit-last-output"]
-y = ["copy-last-output", "scroll-bottom", { action = "switch-mode", mode = "locked" }]
+y = ["copy-selection"]
 q = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
 esc = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
 "#;
@@ -175,12 +186,20 @@ pub enum Action {
     ResizePaneUp,
     ResizePaneDown,
     TogglePaneZoom,
+    SearchHistory,
+    NextSearchMatch,
+    PreviousSearchMatch,
+    ToggleHistorySelection,
+    SelectionLeft,
+    SelectionRight,
+    CopySelection,
 }
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub default_mode: String,
     compact: bool,
+    scrollback_lines: usize,
     notifications_enabled: bool,
     command_duration_seconds: u64,
     notification_excluded_applications: Vec<String>,
@@ -194,6 +213,7 @@ struct ConfigFile {
     #[serde(default)]
     clear_defaults: bool,
     compact: Option<bool>,
+    scrollback_lines: Option<usize>,
     notifications: Option<NotificationsFile>,
     #[serde(default)]
     keybinds: HashMap<String, HashMap<String, Vec<ActionSpec>>>,
@@ -256,6 +276,9 @@ impl Config {
         if let Some(compact) = user.compact {
             self.compact = compact;
         }
+        if let Some(lines) = user.scrollback_lines {
+            self.scrollback_lines = validate_scrollback_lines(lines)?;
+        }
         if let Some(notifications) = user.notifications {
             if let Some(enabled) = notifications.enabled {
                 self.notifications_enabled = enabled;
@@ -282,6 +305,9 @@ impl Config {
         let mut config = Self {
             default_mode,
             compact: file.compact.unwrap_or(false),
+            scrollback_lines: validate_scrollback_lines(
+                file.scrollback_lines.unwrap_or(SCROLLBACK_LINES),
+            )?,
             notifications_enabled: notifications.enabled.unwrap_or(true),
             command_duration_seconds: notifications.command_duration_seconds.unwrap_or(10),
             notification_excluded_applications: normalize_applications(
@@ -380,6 +406,10 @@ impl Config {
         self.compact
     }
 
+    pub fn scrollback_lines(&self) -> usize {
+        self.scrollback_lines
+    }
+
     pub fn describe_mode(&self, mode: &str) -> Vec<String> {
         let Some(bindings) = self.bindings.get(mode) else {
             return Vec::new();
@@ -438,6 +468,13 @@ impl Action {
             Self::ResizePaneUp => "resize-up".to_owned(),
             Self::ResizePaneDown => "resize-down".to_owned(),
             Self::TogglePaneZoom => "zoom-pane".to_owned(),
+            Self::SearchHistory => "search".to_owned(),
+            Self::NextSearchMatch => "next-match".to_owned(),
+            Self::PreviousSearchMatch => "previous-match".to_owned(),
+            Self::ToggleHistorySelection => "select".to_owned(),
+            Self::SelectionLeft => "select-left".to_owned(),
+            Self::SelectionRight => "select-right".to_owned(),
+            Self::CopySelection => "copy-selection".to_owned(),
         }
     }
 }
@@ -629,6 +666,34 @@ fn parse_action(
             no_arguments()?;
             Action::TogglePaneZoom
         }
+        "search-history" => {
+            no_arguments()?;
+            Action::SearchHistory
+        }
+        "next-search-match" => {
+            no_arguments()?;
+            Action::NextSearchMatch
+        }
+        "previous-search-match" => {
+            no_arguments()?;
+            Action::PreviousSearchMatch
+        }
+        "toggle-history-selection" => {
+            no_arguments()?;
+            Action::ToggleHistorySelection
+        }
+        "selection-left" => {
+            no_arguments()?;
+            Action::SelectionLeft
+        }
+        "selection-right" => {
+            no_arguments()?;
+            Action::SelectionRight
+        }
+        "copy-selection" => {
+            no_arguments()?;
+            Action::CopySelection
+        }
         _ => return Err(format!("unknown action '{name}'")),
     };
     Ok(action)
@@ -644,6 +709,13 @@ fn normalize_mode(mode: &str) -> Result<String, String> {
         return Err(format!("invalid mode name '{mode}'"));
     }
     Ok(mode)
+}
+
+fn validate_scrollback_lines(lines: usize) -> Result<usize, String> {
+    (1..=1_000_000)
+        .contains(&lines)
+        .then_some(lines)
+        .ok_or_else(|| "scrollback_lines must be between 1 and 1000000".to_owned())
 }
 
 fn normalize_applications(applications: Vec<String>) -> Result<Vec<String>, String> {
@@ -945,6 +1017,18 @@ exclude_applications = ["  "]
         config.apply_user(user).unwrap();
 
         assert!(config.compact());
+    }
+
+    #[test]
+    fn user_can_configure_scrollback_capacity() {
+        let defaults: ConfigFile = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
+        let mut config = Config::from_file(defaults, None).unwrap();
+        let user: ConfigFile = toml::from_str("scrollback_lines = 25000").unwrap();
+        config.apply_user(user).unwrap();
+        assert_eq!(config.scrollback_lines(), 25_000);
+
+        let invalid: ConfigFile = toml::from_str("scrollback_lines = 0").unwrap();
+        assert!(config.apply_user(invalid).is_err());
     }
 
     #[test]

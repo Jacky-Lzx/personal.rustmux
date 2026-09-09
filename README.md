@@ -45,6 +45,9 @@ Pane mode 下可以使用：
 - PageUp / `u`：向上滚动一页
 - PageDown / `d`：向下滚动一页
 - `g` / `G`：跳到最早记录 / 返回底部
+- `/`：输入文本搜索历史，Enter 确认；之后用 `n` / `N` 跳到下一个 / 上一个匹配行
+- `v`：从当前光标开始键盘选择；使用 `h` / `l` 或左右方向键横向扩展，`j` / `k` 或上下方向键纵向扩展
+- `y`：复制键盘选区并退出 history 模式
 - `q` / Esc：退出历史模式并返回实时画面
 
 在 history 模式中也可以使用鼠标滚轮浏览；向下滚动到最底部后会自动返回实时画面。
@@ -71,6 +74,7 @@ rustmux check-config
 default_mode = "locked"
 clear_defaults = false
 compact = false
+scrollback_lines = 1000
 
 [notifications]
 enabled = true
@@ -92,10 +96,16 @@ enter = [{ action = "switch-mode", mode = "scroll" }]
 d = ["detach"]
 
 [keybinds.scroll]
+"/" = ["search-history"]
+n = ["next-search-match"]
+N = ["previous-search-match"]
+v = ["toggle-history-selection"]
+h = ["selection-left"]
+l = ["selection-right"]
 k = ["scroll-up"]
 j = ["scroll-down"]
 E = ["scroll-bottom", { action = "switch-mode", mode = "locked" }, "edit-history"]
-y = ["copy-last-output", "scroll-bottom", { action = "switch-mode", mode = "locked" }]
+y = ["copy-selection"]
 esc = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
 
 [keybinds.pane]
@@ -113,7 +123,7 @@ z = ["toggle-pane-zoom"]
 x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 ```
 
-一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`switch-session`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`resize-pane-left`、`resize-pane-right`、`resize-pane-up`、`resize-pane-down`、`toggle-pane-zoom`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
+一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`switch-session`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`resize-pane-left`、`resize-pane-right`、`resize-pane-up`、`resize-pane-down`、`toggle-pane-zoom`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`search-history`、`next-search-match`、`previous-search-match`、`toggle-history-selection`、`selection-left`、`selection-right`、`copy-selection`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
 
 ```toml
 key = [{ action = "switch-mode", mode = "locked" }]
@@ -128,6 +138,8 @@ compact = true
 ```
 
 可配置普通字符、`Ctrl a` 到 `Ctrl z`、`Alt <key>`、方向键、`enter`、`tab`、`backspace`、`esc`、`pageup` 和 `pagedown`。将某个绑定设为空数组可取消默认绑定；`clear_defaults = true` 会先移除全部默认绑定。server 会每 500ms 检查一次配置变化并自动热重载；无效配置不会替换上一份有效配置，修正后会自动恢复，删除配置文件则恢复内置默认值。
+
+`scrollback_lines` 控制新建 pane 保存的历史行数，范围为 1 到 1,000,000；热重载后会应用于之后创建的 pane。
 
 ## 长命令完成通知
 
