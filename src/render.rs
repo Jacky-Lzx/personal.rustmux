@@ -3,9 +3,9 @@ use std::io::Write;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::{
-    FloatingLayout, TextSelection, Window, content_size, floating_layout, pane_pty_size,
-    selection_contains, tiled_content_rect,
+use super::{TextSelection, Window, selection_contains};
+use crate::layout::{
+    FloatingLayout, content_size, floating_layout, pane_pty_size, tiled_content_rect,
 };
 
 #[derive(Default)]
