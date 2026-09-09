@@ -7,8 +7,9 @@ use super::*;
 use crate::app::{TextSelection, Window, selected_text, window_history};
 use crate::input::{InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse};
 use crate::layout::{
-    FloatingLayout, PaneNode, PaneRect, SplitAxis, content_winsize, floating_layout, pane_ids,
-    pane_rects, remove_pane, split_pane, validate_terminal_size, window_winsize,
+    FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for, content_winsize_for,
+    floating_layout_for, pane_ids, pane_rects, remove_pane, split_pane, tiled_content_rect_for,
+    validate_terminal_size, window_winsize_for,
 };
 use crate::render::{
     CellStyle, FrameSnapshot, Renderer, render_frame, styled_text_cells, truncate_to_display_width,
@@ -57,7 +58,7 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
 
 #[test]
 fn content_winsize_excludes_border_cells_and_preserves_cell_pixels() {
-    let value = content_winsize((218, 62), (3706, 2046));
+    let value = content_winsize_for((218, 62), (3706, 2046), false);
     assert_eq!(value.ws_col, 216);
     assert_eq!(value.ws_row, 59);
     assert_eq!(value.ws_xpixel, 3672);
@@ -76,8 +77,8 @@ fn terminal_size_validation_bounds_frame_allocations() {
 
 #[test]
 fn floating_layout_is_centered_and_has_a_smaller_pty() {
-    let layout = floating_layout((80, 24));
-    let winsize = window_winsize((80, 24), (800, 480), true);
+    let layout = floating_layout_for((80, 24), false);
+    let winsize = window_winsize_for((80, 24), (800, 480), true, false);
 
     assert_eq!(
         layout,
@@ -213,7 +214,7 @@ fn clipboard_status_is_drawn_in_the_bottom_border_incrementally() {
     let shown = renderer.render(&windows, 0, (40, 6), "locked", None, &[]);
     let shown = String::from_utf8(shown).unwrap();
     assert!(shown.contains("\x1b[6;1H"));
-    assert!(shown.contains("└─ copied to system clipboard "));
+    assert!(shown.contains("└─ LOCKED │ copied to system clipboard "));
     assert!(!shown.contains("\x1b[2J"));
 
     renderer.set_border_status(None);
@@ -221,6 +222,39 @@ fn clipboard_status_is_drawn_in_the_bottom_border_incrementally() {
     let cleared = String::from_utf8(cleared).unwrap();
     assert!(cleared.contains("\x1b[6;1H"));
     assert!(!cleared.contains(CLIPBOARD_STATUS));
+}
+
+#[test]
+fn status_line_shows_mode_and_key_hints() {
+    let window = test_window(1, "fish", 2, 18);
+    let windows = vec![window];
+    let mut renderer = Renderer::default();
+    renderer.set_ui(false, vec!["Ctrl b=mode:normal".to_owned()]);
+
+    let frame = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+
+    assert!(frame.contains("LOCKED │ Ctrl b="));
+    assert!(frame.contains("\x1b[5;1H"));
+}
+
+#[test]
+fn compact_layout_reclaims_status_row_and_shows_mode_at_top_right() {
+    assert_eq!(content_size_for((20, 5), false), (18, 2));
+    assert_eq!(content_size_for((20, 5), true), (18, 3));
+    assert_eq!(tiled_content_rect_for((20, 5), false).height, 3);
+    assert_eq!(tiled_content_rect_for((20, 5), true).height, 4);
+
+    let window = test_window(1, "fish", 3, 18);
+    let windows = vec![window];
+    let mut renderer = Renderer::default();
+    renderer.set_ui(true, Vec::new());
+
+    let frame = renderer.render(&windows, 0, (20, 5), "normal", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+
+    assert!(frame.contains("\x1b[1;13H\x1b[1;30;42m NORMAL "));
+    assert!(!frame.contains('└'));
 }
 
 #[test]
@@ -235,7 +269,7 @@ fn history_mode_renders_offset_without_clearing_the_screen() {
     windows[0].terminal.screen_mut().set_scrollback(1);
     let history = renderer.render(&windows, 0, (20, 5), "scroll", None, &[]);
     let history_text = String::from_utf8_lossy(&history);
-    assert!(history_text.contains("[scroll 1"));
+    assert!(history_text.contains("SCROLL 1"));
     assert!(history_text.contains("\x1b[?25l"));
     assert!(!history.windows(4).any(|part| part == b"\x1b[2J"));
 
@@ -394,7 +428,7 @@ fn tiled_panes_are_composited_inside_one_tab() {
     assert!(!frame.contains(" 2 fish "));
     assert_eq!(snapshot.tabs, vec![(1, "fish".to_owned())]);
     assert!(!snapshot.outer_border);
-    assert_eq!(snapshot.content_size, (40, 14));
+    assert_eq!(snapshot.content_size, (40, 13));
     assert_eq!(snapshot.content_origin, (1, 2));
 }
 
@@ -517,7 +551,7 @@ fn kitty_graphics_query_is_acknowledged_before_device_attributes() {
     let mut responses = kitty_graphics_query_response(query).expect("query response");
     responses.extend_from_slice(&terminal_responses(
         b"\x1b[c",
-        content_winsize((80, 24), (1360, 792)),
+        content_winsize_for((80, 24), (1360, 792), false),
         "kitty 0.40.0",
         (0, 0),
         false,
@@ -598,7 +632,7 @@ fn renderer_preserves_kitty_delete_upload_and_placeholder_order() {
 fn terminal_queries_receive_local_responses() {
     let responses = terminal_responses(
         b"\x1b[?2004$p\x1b[?2026$p\x1bP$qm\x1b\\\x1b[?u\x1b[5n\x1b[6n\x1b[>q\x1b]11;?\x1b\\\x1b[0c\x1b[14t\x1b[16t",
-        content_winsize((80, 24), (1360, 792)),
+        content_winsize_for((80, 24), (1360, 792), false),
         "kitty 0.40.0",
         (7, 11),
         false,
@@ -640,7 +674,7 @@ fn terminal_queries_receive_local_responses() {
     );
     let bell_background = terminal_responses(
         b"\x1b]11;?\x07",
-        content_winsize((80, 24), (1360, 792)),
+        content_winsize_for((80, 24), (1360, 792), false),
         "kitty 0.40.0",
         (0, 0),
         false,

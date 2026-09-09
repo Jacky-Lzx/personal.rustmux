@@ -8,6 +8,7 @@ use serde::Deserialize;
 pub const DEFAULT_CONFIG_TOML: &str = r#"
 default_mode = "locked"
 clear_defaults = false
+compact = false
 
 [notifications]
 enabled = true
@@ -116,6 +117,7 @@ pub enum Action {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub default_mode: String,
+    compact: bool,
     notifications_enabled: bool,
     command_duration_seconds: u64,
     bindings: HashMap<String, HashMap<String, Vec<Action>>>,
@@ -127,6 +129,7 @@ struct ConfigFile {
     default_mode: Option<String>,
     #[serde(default)]
     clear_defaults: bool,
+    compact: Option<bool>,
     notifications: Option<NotificationsFile>,
     #[serde(default)]
     keybinds: HashMap<String, HashMap<String, Vec<ActionSpec>>>,
@@ -175,6 +178,9 @@ impl Config {
         if let Some(mode) = user.default_mode {
             self.default_mode = normalize_mode(&mode)?;
         }
+        if let Some(compact) = user.compact {
+            self.compact = compact;
+        }
         if let Some(notifications) = user.notifications {
             if let Some(enabled) = notifications.enabled {
                 self.notifications_enabled = enabled;
@@ -197,6 +203,7 @@ impl Config {
         let notifications = file.notifications.unwrap_or_default();
         let mut config = Self {
             default_mode,
+            compact: file.compact.unwrap_or(false),
             notifications_enabled: notifications.enabled.unwrap_or(true),
             command_duration_seconds: notifications.command_duration_seconds.unwrap_or(10),
             bindings: HashMap::new(),
@@ -264,6 +271,10 @@ impl Config {
     pub fn command_notification_seconds(&self) -> Option<u64> {
         self.notifications_enabled
             .then_some(self.command_duration_seconds)
+    }
+
+    pub fn compact(&self) -> bool {
+        self.compact
     }
 
     pub fn describe_mode(&self, mode: &str) -> Vec<String> {
@@ -576,6 +587,7 @@ mod tests {
         let config = Config::from_file(file, None).unwrap();
 
         assert_eq!(config.default_mode, "locked");
+        assert!(!config.compact());
         assert_eq!(
             config.actions("locked", "ctrl b"),
             Some(&[Action::SwitchMode("normal".to_owned())][..])
@@ -702,5 +714,16 @@ enabled = false
         .unwrap();
         config.apply_user(disabled).unwrap();
         assert_eq!(config.command_notification_seconds(), None);
+    }
+
+    #[test]
+    fn user_can_enable_compact_layout() {
+        let defaults: ConfigFile = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
+        let mut config = Config::from_file(defaults, None).unwrap();
+        let user: ConfigFile = toml::from_str("compact = true").unwrap();
+
+        config.apply_user(user).unwrap();
+
+        assert!(config.compact());
     }
 }

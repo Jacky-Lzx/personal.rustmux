@@ -36,10 +36,10 @@ pub(super) struct PaneRect {
     pub(super) height: u16,
 }
 
-pub(super) fn content_size((columns, rows): (u16, u16)) -> (u16, u16) {
+pub(super) fn content_size_for((columns, rows): (u16, u16), compact: bool) -> (u16, u16) {
     (
         columns.saturating_sub(2).max(1),
-        rows.saturating_sub(3).max(1),
+        rows.saturating_sub(if compact { 2 } else { 3 }).max(1),
     )
 }
 
@@ -56,8 +56,8 @@ pub(super) fn validate_terminal_size((columns, rows): (u16, u16)) -> Result<()> 
     Ok(())
 }
 
-pub(super) fn content_rect(terminal_size: (u16, u16)) -> PaneRect {
-    let (width, height) = content_size(terminal_size);
+pub(super) fn content_rect_for(terminal_size: (u16, u16), compact: bool) -> PaneRect {
+    let (width, height) = content_size_for(terminal_size, compact);
     PaneRect {
         column: 0,
         row: 0,
@@ -66,12 +66,12 @@ pub(super) fn content_rect(terminal_size: (u16, u16)) -> PaneRect {
     }
 }
 
-pub(super) fn tiled_content_rect((columns, rows): (u16, u16)) -> PaneRect {
+pub(super) fn tiled_content_rect_for((columns, rows): (u16, u16), compact: bool) -> PaneRect {
     PaneRect {
         column: 0,
         row: 0,
         width: columns.max(1),
-        height: rows.saturating_sub(1).max(1),
+        height: rows.saturating_sub(if compact { 1 } else { 2 }).max(1),
     }
 }
 
@@ -244,8 +244,8 @@ impl FloatingLayout {
     }
 }
 
-pub(super) fn floating_layout(terminal_size: (u16, u16)) -> FloatingLayout {
-    let (available_width, available_height) = content_size(terminal_size);
+pub(super) fn floating_layout_for(terminal_size: (u16, u16), compact: bool) -> FloatingLayout {
+    let (available_width, available_height) = content_size_for(terminal_size, compact);
     let width = available_width
         .saturating_mul(3)
         .checked_div(4)
@@ -266,15 +266,16 @@ pub(super) fn floating_layout(terminal_size: (u16, u16)) -> FloatingLayout {
     }
 }
 
-pub(super) fn window_winsize(
+pub(super) fn window_winsize_for(
     terminal_size: (u16, u16),
     terminal_pixels: (u16, u16),
     floating: bool,
+    compact: bool,
 ) -> Winsize {
     if !floating {
-        return content_winsize(terminal_size, terminal_pixels);
+        return content_winsize_for(terminal_size, terminal_pixels, compact);
     }
-    let (columns, rows) = floating_layout(terminal_size).content_size();
+    let (columns, rows) = floating_layout_for(terminal_size, compact).content_size();
     let (outer_columns, outer_rows) = terminal_size;
     let cell_width = terminal_pixels.0.checked_div(outer_columns).unwrap_or(0);
     let cell_height = terminal_pixels.1.checked_div(outer_rows).unwrap_or(0);
@@ -286,8 +287,12 @@ pub(super) fn window_winsize(
     }
 }
 
-pub(super) fn content_winsize(terminal_size: (u16, u16), terminal_pixels: (u16, u16)) -> Winsize {
-    let (columns, rows) = content_size(terminal_size);
+pub(super) fn content_winsize_for(
+    terminal_size: (u16, u16),
+    terminal_pixels: (u16, u16),
+    compact: bool,
+) -> Winsize {
+    let (columns, rows) = content_size_for(terminal_size, compact);
     let (outer_columns, outer_rows) = terminal_size;
     let (outer_width, outer_height) = terminal_pixels;
     let cell_width = outer_width.checked_div(outer_columns).unwrap_or(0);

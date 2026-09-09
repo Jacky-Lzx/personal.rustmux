@@ -64,6 +64,7 @@ rustmux check-config
 ```toml
 default_mode = "locked"
 clear_defaults = false
+compact = false
 
 [notifications]
 enabled = true
@@ -104,6 +105,12 @@ x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 key = [{ action = "switch-mode", mode = "locked" }]
 key = [{ action = "go-to-window", index = 2 }]
 key = [{ action = "send-key", key = "Ctrl c" }]
+```
+
+默认布局会在最下面一行显示当前 mode 以及该 mode 的快捷键提示。设置 `compact = true` 后不会保留底部状态栏，pane 会使用腾出的空间，当前 mode 则显示在顶部标签栏右侧：
+
+```toml
+compact = true
 ```
 
 可配置普通字符、`Ctrl a` 到 `Ctrl z`、`Alt <key>`、方向键、`enter`、`tab`、`backspace`、`esc`、`pageup` 和 `pagedown`。将某个绑定设为空数组可取消默认绑定；`clear_defaults = true` 会先移除全部默认绑定。配置在创建 session 时加载，修改后需要结束并重新创建 session。

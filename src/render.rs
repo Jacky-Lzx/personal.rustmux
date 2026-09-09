@@ -5,13 +5,15 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{TextSelection, Window, selection_contains};
 use crate::layout::{
-    FloatingLayout, content_size, floating_layout, pane_pty_size, tiled_content_rect,
+    FloatingLayout, content_size_for, floating_layout_for, pane_pty_size, tiled_content_rect_for,
 };
 
 #[derive(Default)]
 pub(super) struct Renderer {
     previous: Option<FrameSnapshot>,
     border_status: Option<String>,
+    compact: bool,
+    mode_hints: Vec<String>,
 }
 
 impl Renderer {
@@ -23,6 +25,11 @@ impl Renderer {
         self.border_status = status.map(str::to_owned);
     }
 
+    pub(super) fn set_ui(&mut self, compact: bool, mode_hints: Vec<String>) {
+        self.compact = compact;
+        self.mode_hints = mode_hints;
+    }
+
     pub(super) fn render(
         &mut self,
         windows: &[Window],
@@ -32,13 +39,17 @@ impl Renderer {
         selection: Option<&TextSelection>,
         graphics: &[Vec<u8>],
     ) -> Vec<u8> {
-        let current = FrameSnapshot::capture(
+        let current = FrameSnapshot::capture_with_ui(
             windows,
             active,
             terminal_size,
-            mode,
+            RenderUi {
+                mode,
+                compact: self.compact,
+                mode_hints: &self.mode_hints,
+                border_status: self.border_status.as_deref(),
+            },
             selection,
-            self.border_status.as_deref(),
         );
         let Some(previous) = &self.previous else {
             let output = render_frame(windows, active, &current, graphics);
@@ -50,6 +61,7 @@ impl Renderer {
             || previous.content_size != current.content_size
             || previous.content_origin != current.content_origin
             || previous.outer_border != current.outer_border
+            || previous.compact != current.compact
             || previous.active_id != current.active_id
             || previous.tabs != current.tabs
             || previous.cells.len() != current.cells.len()
@@ -87,7 +99,8 @@ impl Renderer {
             || previous.history_offset != current.history_offset;
         let mode_changed = previous.mode != current.mode;
         let title_changed = previous.terminal_title != current.terminal_title;
-        let status_changed = previous.border_status != current.border_status;
+        let status_changed = previous.border_status != current.border_status
+            || previous.mode_hints != current.mode_hints;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
         // text updates. Some terminals cap or time out synchronized buffers;
@@ -121,21 +134,19 @@ impl Renderer {
         {
             output.extend_from_slice(b"\x1b[?25l");
         }
-        if history_changed || mode_changed {
+        if history_changed || mode_changed || (status_changed && current.compact) {
             let _ = write!(output, "\x1b[1;1H\x1b[32m");
-            draw_window_bar(&mut output, windows, active, terminal_size.0, mode);
+            draw_window_bar(&mut output, windows, active, terminal_size.0, &current);
         }
         if title_changed && current.outer_border {
             let _ = write!(output, "\x1b[2;1H\x1b[32m");
             draw_terminal_border(&mut output, &current.terminal_title, terminal_size.0);
         }
-        if status_changed && current.outer_border && terminal_size.1 > 1 {
-            let _ = write!(output, "\x1b[{};1H\x1b[32m", terminal_size.1);
-            draw_bottom_border(
-                &mut output,
-                terminal_size.0,
-                current.border_status.as_deref(),
-            );
+        if (status_changed || mode_changed || history_changed)
+            && !current.compact
+            && terminal_size.1 > 1
+        {
+            draw_bottom_status(&mut output, &current);
         }
         for (row, first, last) in changes {
             let _ = write!(
@@ -199,6 +210,8 @@ pub(super) struct FrameSnapshot {
     mode: String,
     terminal_title: String,
     border_status: Option<String>,
+    compact: bool,
+    mode_hints: Vec<String>,
     history_mode: bool,
     history_offset: usize,
     cells: Vec<CellSnapshot>,
@@ -206,6 +219,7 @@ pub(super) struct FrameSnapshot {
 }
 
 impl FrameSnapshot {
+    #[cfg(test)]
     pub(super) fn capture(
         windows: &[Window],
         active: usize,
@@ -214,6 +228,33 @@ impl FrameSnapshot {
         selection: Option<&TextSelection>,
         border_status: Option<&str>,
     ) -> Self {
+        Self::capture_with_ui(
+            windows,
+            active,
+            terminal_size,
+            RenderUi {
+                mode,
+                compact: false,
+                mode_hints: &[],
+                border_status,
+            },
+            selection,
+        )
+    }
+
+    fn capture_with_ui(
+        windows: &[Window],
+        active: usize,
+        terminal_size: (u16, u16),
+        ui: RenderUi<'_>,
+        selection: Option<&TextSelection>,
+    ) -> Self {
+        let RenderUi {
+            mode,
+            compact,
+            mode_hints,
+            border_status,
+        } = ui;
         let base = render_base_index(windows, active);
         let tab_id = windows[base].tab_id;
         let tab_panes = windows
@@ -223,9 +264,9 @@ impl FrameSnapshot {
             .collect::<Vec<_>>();
         let outer_border = tab_panes.len() == 1;
         let (columns, rows) = if outer_border {
-            content_size(terminal_size)
+            content_size_for(terminal_size, compact)
         } else {
-            let rect = tiled_content_rect(terminal_size);
+            let rect = tiled_content_rect_for(terminal_size, compact);
             (rect.width, rect.height)
         };
         let content_origin = if outer_border { (2, 3) } else { (1, 2) };
@@ -240,8 +281,6 @@ impl FrameSnapshot {
                     window,
                     index == base,
                     selection,
-                    mode,
-                    (index == base).then_some(border_status).flatten(),
                 );
             } else {
                 let screen = window.terminal.screen();
@@ -267,9 +306,8 @@ impl FrameSnapshot {
                 &mut cells,
                 (columns, rows),
                 &windows[active],
-                floating_layout(terminal_size),
+                floating_layout_for(terminal_size, compact),
                 selection,
-                mode,
                 content_origin,
             );
         }
@@ -280,7 +318,7 @@ impl FrameSnapshot {
             windows[active].history_mode,
         );
         if windows[active].floating {
-            let layout = floating_layout(terminal_size);
+            let layout = floating_layout_for(terminal_size, compact);
             terminal_state.cursor.0 = terminal_state.cursor.0.saturating_add(
                 layout
                     .row
@@ -321,12 +359,22 @@ impl FrameSnapshot {
             mode: mode.to_owned(),
             terminal_title: windows[base].terminal_title().to_owned(),
             border_status: border_status.map(str::to_owned),
+            compact,
+            mode_hints: mode_hints.to_vec(),
             history_mode: windows[active].history_mode,
             history_offset: active_screen.scrollback(),
             cells,
             terminal_state,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct RenderUi<'a> {
+    mode: &'a str,
+    compact: bool,
+    mode_hints: &'a [String],
+    border_status: Option<&'a str>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -357,8 +405,6 @@ fn overlay_pane_cells(
     window: &Window,
     active: bool,
     selection: Option<&TextSelection>,
-    mode: &str,
-    border_status: Option<&str>,
 ) {
     let (columns, rows) = canvas_size;
     let rect = window.pane_rect;
@@ -394,17 +440,7 @@ fn overlay_pane_cells(
             }
         }
     }
-    let title = if window.history_mode {
-        format!(
-            "─ {} [{mode} {}] ",
-            window.terminal_title(),
-            window.terminal.screen().scrollback()
-        )
-    } else if active && mode != "locked" {
-        format!("─ {} [{mode}] ", window.terminal_title())
-    } else {
-        format!("─ {} ", window.terminal_title())
-    };
+    let title = format!("─ {} ", window.terminal_title());
     let title_cells = styled_text_cells(
         &title,
         usize::from(rect.width.saturating_sub(2)),
@@ -416,22 +452,6 @@ fn overlay_pane_cells(
     );
     for (offset, cell) in title_cells.into_iter().enumerate() {
         replace(cells, 0, offset as u16 + 1, cell);
-    }
-    if let Some(status) = border_status {
-        let label = format!("─ {status} ");
-        let label_cells = styled_text_cells(
-            &label,
-            usize::from(rect.width.saturating_sub(2)),
-            CellStyle::active_border(),
-        );
-        for (offset, cell) in label_cells.into_iter().enumerate() {
-            replace(
-                cells,
-                rect.height.saturating_sub(1),
-                offset as u16 + 1,
-                cell,
-            );
-        }
     }
     let screen = window.terminal.screen();
     let (content_columns, content_rows) = pane_pty_size(rect, true);
@@ -464,7 +484,6 @@ fn overlay_floating_cells(
     window: &Window,
     layout: FloatingLayout,
     selection: Option<&TextSelection>,
-    mode: &str,
     content_origin: (u16, u16),
 ) {
     let (columns, rows) = canvas_size;
@@ -529,17 +548,7 @@ fn overlay_floating_cells(
         }
     }
 
-    let title = if window.history_mode {
-        format!(
-            "─ {} [{mode} {}] ",
-            window.terminal_title(),
-            window.terminal.screen().scrollback()
-        )
-    } else if mode != "locked" {
-        format!("─ {} [{mode}] ", window.terminal_title())
-    } else {
-        format!("─ {} ", window.terminal_title())
-    };
+    let title = format!("─ {} ", window.terminal_title());
     let title_cells = styled_text_cells(
         &title,
         usize::from(layout.width.saturating_sub(2)),
@@ -719,7 +728,7 @@ pub(super) fn render_frame(
         snapshot.content_origin,
     );
     output.extend_from_slice(b"\x1b[H");
-    draw_window_bar(&mut output, windows, active, width, &snapshot.mode);
+    draw_window_bar(&mut output, windows, active, width, snapshot);
     if snapshot.outer_border {
         let _ = write!(output, "\x1b[2;1H\x1b[32m");
         draw_terminal_border(&mut output, &snapshot.terminal_title, width);
@@ -761,9 +770,8 @@ pub(super) fn render_frame(
         }
     }
 
-    if snapshot.outer_border && height > 1 {
-        let _ = write!(output, "\x1b[{height};1H\x1b[32m");
-        draw_bottom_border(&mut output, width, snapshot.border_status.as_deref());
+    if !snapshot.compact && height > 1 {
+        draw_bottom_status(&mut output, snapshot);
     }
 
     append_terminal_state(
@@ -855,7 +863,7 @@ fn draw_window_bar(
     windows: &[Window],
     active: usize,
     width: u16,
-    mode: &str,
+    snapshot: &FrameSnapshot,
 ) {
     if width == 0 {
         return;
@@ -865,6 +873,20 @@ fn draw_window_bar(
     // application's grey background into the transparent tab-bar cells.
     output.extend_from_slice(b"\x1b[0;49m\x1b[2K");
     let inner_width = usize::from(width);
+    let compact_status = snapshot.compact.then(|| {
+        let mode = mode_label(&snapshot.mode, snapshot.history_offset);
+        snapshot
+            .border_status
+            .as_deref()
+            .map(|status| format!("{mode} │ {status}"))
+            .unwrap_or(mode)
+    });
+    let compact_width = compact_status
+        .as_deref()
+        .map(|status| UnicodeWidthStr::width(status) + 2)
+        .unwrap_or(0)
+        .min(inner_width);
+    let tabs_width = inner_width.saturating_sub(compact_width);
     let mut used = 0;
     let base = render_base_index(windows, active);
     let active_tab = windows[base].tab_id;
@@ -875,22 +897,11 @@ fn draw_window_bar(
         }
         seen.push(window.tab_id);
         let display_index = seen.len();
-        if used >= inner_width {
+        if used >= tabs_width {
             break;
         }
-        let label = if window.tab_id == active_tab && windows[active].history_mode {
-            format!(
-                " {} {} [{mode} {}] ",
-                display_index,
-                window.name,
-                windows[active].terminal.screen().scrollback()
-            )
-        } else if window.tab_id == active_tab && mode != "locked" {
-            format!(" {} {} [{mode}] ", display_index, window.name)
-        } else {
-            format!(" {} {} ", display_index, window.name)
-        };
-        let available = inner_width.saturating_sub(used).saturating_sub(1);
+        let label = format!(" {} {} ", display_index, window.name);
+        let available = tabs_width.saturating_sub(used).saturating_sub(1);
         let (label, label_width) = truncate_to_display_width(&label, available);
         if window.tab_id == active_tab {
             output.extend_from_slice(b"\x1b[1;30;42m");
@@ -901,7 +912,46 @@ fn draw_window_bar(
         output.extend_from_slice(b"\x1b[0;49m ");
         used += label_width + 1;
     }
+    if let Some(status) = compact_status {
+        let label = format!(" {status} ");
+        let (label, label_width) = truncate_to_display_width(&label, compact_width);
+        let column = inner_width.saturating_sub(label_width) + 1;
+        let _ = write!(output, "\x1b[1;{column}H\x1b[1;30;42m");
+        output.extend_from_slice(label.as_bytes());
+    }
     output.extend_from_slice(b"\x1b[0m");
+}
+
+fn mode_label(mode: &str, history_offset: usize) -> String {
+    if mode == "scroll" && history_offset > 0 {
+        format!("{} {history_offset}", mode.to_ascii_uppercase())
+    } else {
+        mode.to_ascii_uppercase()
+    }
+}
+
+fn status_text(snapshot: &FrameSnapshot) -> String {
+    let mut parts = vec![mode_label(&snapshot.mode, snapshot.history_offset)];
+    if let Some(status) = &snapshot.border_status {
+        parts.push(status.clone());
+    }
+    parts.extend(snapshot.mode_hints.iter().cloned());
+    format!(" {} ", parts.join(" │ "))
+}
+
+fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
+    let (width, height) = snapshot.terminal_size;
+    let status = status_text(snapshot);
+    let _ = write!(output, "\x1b[{height};1H");
+    if snapshot.outer_border {
+        output.extend_from_slice(b"\x1b[32m");
+        draw_bottom_border(output, width, Some(status.trim()));
+    } else {
+        output.extend_from_slice(b"\x1b[0;49m\x1b[2K\x1b[1;30;42m");
+        let (status, _) = truncate_to_display_width(&status, usize::from(width));
+        output.extend_from_slice(status.as_bytes());
+        output.extend_from_slice(b"\x1b[0m");
+    }
 }
 
 fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {

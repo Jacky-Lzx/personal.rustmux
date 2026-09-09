@@ -19,9 +19,9 @@ use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
 use crate::config::{Action, Config, config_path};
 use crate::input::{InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse};
 use crate::layout::{
-    Direction, PaneNode, PaneRect, SplitAxis, content_rect, directional_distance, floating_layout,
-    pane_ids, pane_pty_size, pane_rects, rect_in_direction, remove_pane, split_pane,
-    tiled_content_rect, validate_terminal_size, window_winsize,
+    Direction, PaneNode, PaneRect, SplitAxis, content_rect_for, directional_distance,
+    floating_layout_for, pane_ids, pane_pty_size, pane_rects, rect_in_direction, remove_pane,
+    split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
 use crate::render::{Renderer, render_base_index};
 use crate::session::ensure_session_dir;
@@ -218,7 +218,12 @@ impl App {
         arguments: Vec<CString>,
         options: SpawnOptions,
     ) -> Result<usize> {
-        let winsize = window_winsize(self.terminal_size, self.terminal_pixels, options.floating);
+        let winsize = window_winsize_for(
+            self.terminal_size,
+            self.terminal_pixels,
+            options.floating,
+            self.config.compact(),
+        );
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
 
         // SAFETY: the child immediately calls execvp and _exit, both of which are
@@ -242,7 +247,7 @@ impl App {
                     tab_id: options.tab_id,
                     name,
                     floating: options.floating,
-                    pane_rect: content_rect(self.terminal_size),
+                    pane_rect: content_rect_for(self.terminal_size, self.config.compact()),
                     pane_framed: false,
                     master,
                     child,
@@ -751,7 +756,7 @@ impl App {
 
     fn content_position(&self, position: MousePosition, clamp: bool) -> Option<MousePosition> {
         let (origin_column, origin_row, columns, rows) = if self.windows[self.active].floating {
-            let layout = floating_layout(self.terminal_size);
+            let layout = floating_layout_for(self.terminal_size, self.config.compact());
             let (columns, rows) = layout.content_size();
             (layout.column + 1, layout.row + 1, columns, rows)
         } else {
@@ -781,7 +786,7 @@ impl App {
 
     fn active_content_size(&self) -> (u16, u16) {
         if self.windows[self.active].floating {
-            floating_layout(self.terminal_size).content_size()
+            floating_layout_for(self.terminal_size, self.config.compact()).content_size()
         } else {
             let window = &self.windows[self.active];
             pane_pty_size(window.pane_rect, window.pane_framed)
@@ -980,7 +985,10 @@ impl App {
         let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
             return Ok(());
         };
-        let rects = pane_rects(&tab.root, content_rect(self.terminal_size));
+        let rects = pane_rects(
+            &tab.root,
+            content_rect_for(self.terminal_size, self.config.compact()),
+        );
         let Some((_, current)) = rects.iter().find(|(id, _)| *id == active_id) else {
             return Ok(());
         };
@@ -1038,9 +1046,9 @@ impl App {
             let pane_count = pane_ids(&tab.root).len();
             let framed = pane_count > 1;
             let content = if framed {
-                tiled_content_rect(self.terminal_size)
+                tiled_content_rect_for(self.terminal_size, self.config.compact())
             } else {
-                content_rect(self.terminal_size)
+                content_rect_for(self.terminal_size, self.config.compact())
             };
             let rects = pane_rects(&tab.root, content);
             for (id, rect) in rects {
@@ -1049,7 +1057,7 @@ impl App {
         }
         for index in 0..self.windows.len() {
             let (columns, rows) = if self.windows[index].floating {
-                floating_layout(self.terminal_size).content_size()
+                floating_layout_for(self.terminal_size, self.config.compact()).content_size()
             } else {
                 let (_, rect, framed, size) = sizes
                     .iter()
@@ -1164,6 +1172,8 @@ impl App {
         if self.windows.is_empty() || self.client.is_none() {
             return Ok(());
         }
+        self.renderer
+            .set_ui(self.config.compact(), self.config.describe_mode(&self.mode));
         let graphics = std::mem::take(&mut self.windows[self.active].pending_graphics);
         let frame = self.renderer.render(
             &self.windows,
