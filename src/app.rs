@@ -498,11 +498,14 @@ impl App {
             }
             if listener_ready {
                 match listener.accept() {
-                    Ok((stream, _)) => {
-                        if !self.accept_connection(stream)? {
-                            break;
-                        }
-                    }
+                    Ok((stream, _)) => match self.accept_connection(stream) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        // A client that disconnects before its first message or
+                        // sends a malformed control request must not stop the
+                        // entire session server.
+                        Err(_) => {}
+                    },
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                     Err(error) => return Err(error.into()),
                 }
@@ -578,6 +581,10 @@ impl App {
     }
 
     fn accept_connection(&mut self, mut stream: UnixStream) -> Result<bool> {
+        // The nonblocking listener can produce a nonblocking accepted socket on
+        // macOS. A client may be accepted just before its first resize message
+        // arrives, so switch to blocking mode before classifying the connection.
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_millis(250)))?;
         let mut kind = [0_u8; 1];
         stream.read_exact(&mut kind)?;
