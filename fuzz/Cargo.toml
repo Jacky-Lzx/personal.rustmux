@@ -1,0 +1,50 @@
+[package]
+name = "rustmux-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+members = ["."]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rustmux = { path = "..", features = ["fuzzing"] }
+
+[[bin]]
+name = "input-decode"
+path = "fuzz_targets/input_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kitty-graphics"
+path = "fuzz_targets/kitty_graphics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kitty-dnd"
+path = "fuzz_targets/kitty_dnd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "osc-terminal"
+path = "fuzz_targets/osc_terminal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "terminal-render"
+path = "fuzz_targets/terminal_render.rs"
+test = false
+doc = false
+bench = false

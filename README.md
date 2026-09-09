@@ -218,6 +218,22 @@ RUSTMUX_SHELL=zsh rustmux
 
 rustmux 会通过 OSC 7 shell integration 跟踪每个 pane 的当前工作目录。新建 window、pane 或浮动 terminal 时会继承当前 pane 的目录；如果 shell 尚未报告目录，则使用 session server 的启动目录。
 
+## 测试与模糊测试
+
+macOS 和 Linux CI 会运行格式检查、完整测试与 Clippy，并使用 nightly Rust 编译全部 libFuzzer target。Linux CI 还会对每个 target 做短时 smoke test。当前 fuzz target 覆盖输入与鼠标解码、Kitty graphics、Kitty drag-and-drop、OSC/终端响应和完整终端帧渲染。
+
+本地安装 `cargo-fuzz` 后可以选择任一 target 持续运行：
+
+```sh
+cargo install cargo-fuzz --locked
+cargo fuzz list
+cargo fuzz run input-decode
+cargo fuzz run kitty-graphics
+cargo fuzz run kitty-dnd
+cargo fuzz run osc-terminal
+cargo fuzz run terminal-render
+```
+
 ## MVP 边界
 
 当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 window 重排，以及 tab 内的水平/垂直 pane、pane resize、方向交换、全屏与鼠标点击聚焦、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。
