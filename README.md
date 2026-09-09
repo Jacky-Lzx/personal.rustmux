@@ -117,7 +117,7 @@ key = [{ action = "send-key", key = "Ctrl c" }]
 compact = true
 ```
 
-可配置普通字符、`Ctrl a` 到 `Ctrl z`、`Alt <key>`、方向键、`enter`、`tab`、`backspace`、`esc`、`pageup` 和 `pagedown`。将某个绑定设为空数组可取消默认绑定；`clear_defaults = true` 会先移除全部默认绑定。配置在创建 session 时加载，修改后需要结束并重新创建 session。
+可配置普通字符、`Ctrl a` 到 `Ctrl z`、`Alt <key>`、方向键、`enter`、`tab`、`backspace`、`esc`、`pageup` 和 `pagedown`。将某个绑定设为空数组可取消默认绑定；`clear_defaults = true` 会先移除全部默认绑定。server 会每 500ms 检查一次配置变化并自动热重载；无效配置不会替换上一份有效配置，修正后会自动恢复，删除配置文件则恢复内置默认值。
 
 ## 长命令完成通知
 

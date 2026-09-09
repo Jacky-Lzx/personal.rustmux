@@ -1,9 +1,57 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+
+const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ConfigSnapshot {
+    Missing,
+    Contents(Vec<u8>),
+    ReadError(String),
+}
+
+pub(super) struct ConfigReloader {
+    path: PathBuf,
+    snapshot: ConfigSnapshot,
+    next_check: Instant,
+}
+
+impl ConfigReloader {
+    pub(super) fn new(path: PathBuf) -> Self {
+        Self {
+            snapshot: config_snapshot(&path),
+            path,
+            next_check: Instant::now() + CONFIG_RELOAD_INTERVAL,
+        }
+    }
+
+    pub(super) fn poll(&mut self, now: Instant) -> Option<Result<Config, String>> {
+        if now < self.next_check {
+            return None;
+        }
+        self.next_check = now + CONFIG_RELOAD_INTERVAL;
+        let snapshot = config_snapshot(&self.path);
+        if snapshot == self.snapshot {
+            return None;
+        }
+        self.snapshot = snapshot.clone();
+        Some(Config::from_snapshot(&self.path, snapshot))
+    }
+}
+
+fn config_snapshot(path: &Path) -> ConfigSnapshot {
+    match fs::read(path) {
+        Ok(contents) => ConfigSnapshot::Contents(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ConfigSnapshot::Missing,
+        Err(error) => ConfigSnapshot::ReadError(error.to_string()),
+    }
+}
 
 pub const DEFAULT_CONFIG_TOML: &str = r#"
 default_mode = "locked"
@@ -160,14 +208,24 @@ enum ActionSpec {
 
 impl Config {
     pub fn load() -> Result<Self, String> {
+        Self::load_from_path(&config_path())
+    }
+
+    fn load_from_path(path: &Path) -> Result<Self, String> {
+        Self::from_snapshot(path, config_snapshot(path))
+    }
+
+    fn from_snapshot(path: &Path, snapshot: ConfigSnapshot) -> Result<Self, String> {
         let defaults: ConfigFile = toml::from_str(DEFAULT_CONFIG_TOML)
             .map_err(|error| format!("invalid built-in config: {error}"))?;
         let mut config = Self::from_file(defaults, None)?;
-        let path = config_path();
-        let source = match fs::read_to_string(&path) {
-            Ok(source) => source,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(config),
-            Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+        let source = match snapshot {
+            ConfigSnapshot::Missing => return Ok(config),
+            ConfigSnapshot::Contents(contents) => String::from_utf8(contents)
+                .map_err(|error| format!("invalid UTF-8 in {}: {error}", path.display()))?,
+            ConfigSnapshot::ReadError(error) => {
+                return Err(format!("could not read {}: {error}", path.display()));
+            }
         };
         let user: ConfigFile = toml::from_str(&source)
             .map_err(|error| format!("invalid {}: {error}", path.display()))?;
@@ -747,5 +805,45 @@ enabled = false
         config.apply_user(user).unwrap();
 
         assert!(config.compact());
+    }
+
+    #[test]
+    fn config_reloader_applies_changes_recovers_from_errors_and_handles_deletion() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "rustmux-config-reload-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        let mut reloader = ConfigReloader::new(path.clone());
+        let start = Instant::now();
+
+        fs::write(&path, "compact = true\n").unwrap();
+        let config = reloader
+            .poll(start + Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert!(config.compact());
+
+        fs::write(&path, "compact = [invalid\n").unwrap();
+        assert!(
+            reloader
+                .poll(start + Duration::from_secs(2))
+                .unwrap()
+                .is_err()
+        );
+        assert!(reloader.poll(start + Duration::from_secs(3)).is_none());
+
+        fs::remove_file(&path).unwrap();
+        let config = reloader
+            .poll(start + Duration::from_secs(4))
+            .unwrap()
+            .unwrap();
+        assert!(!config.compact());
+        fs::remove_dir(&directory).unwrap();
     }
 }

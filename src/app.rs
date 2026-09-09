@@ -16,7 +16,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
 
-use crate::config::{Action, Config, config_path};
+use crate::config::{Action, Config, ConfigReloader, config_path};
 use crate::input::{
     DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
 };
@@ -164,6 +164,7 @@ pub(super) struct App {
     next_notification_id: u64,
     input_decoder: InputDecoder,
     config: Config,
+    config_reloader: ConfigReloader,
     mode: String,
     selection: Option<TextSelection>,
     renderer: Renderer,
@@ -187,6 +188,7 @@ impl App {
         session_name: &str,
     ) -> Result<Self> {
         let mode = config.default_mode.clone();
+        let config_reloader = ConfigReloader::new(config_path());
         let mut renderer = Renderer::default();
         renderer.set_session_name(session_name);
         let mut app = Self {
@@ -197,6 +199,7 @@ impl App {
             next_notification_id: 1,
             input_decoder: InputDecoder::default(),
             config,
+            config_reloader,
             mode,
             selection: None,
             renderer,
@@ -356,6 +359,7 @@ impl App {
         let mut output = [0_u8; 64 * 1024];
 
         while !self.windows.is_empty() {
+            self.reload_config_if_changed()?;
             self.flush_scheduled_redraw()?;
             let expired_input = self.input_decoder.flush_if_expired();
             if !expired_input.is_empty() && !self.handle_decoded_input(&expired_input)? {
@@ -434,6 +438,34 @@ impl App {
             self.flush_scheduled_redraw()?;
         }
         Ok(())
+    }
+
+    fn reload_config_if_changed(&mut self) -> Result<()> {
+        let Some(result) = self.config_reloader.poll(Instant::now()) else {
+            return Ok(());
+        };
+        let config = match result {
+            Ok(config) => config,
+            Err(error) => {
+                let _ = self.notify(&format!("config reload failed: {error}"));
+                return Ok(());
+            }
+        };
+        let compact_changed = self.config.compact() != config.compact();
+        if !config.has_mode(&self.mode) {
+            if self.mode == "scroll" && !self.windows.is_empty() {
+                let window = &mut self.windows[self.active];
+                window.history_mode = false;
+                window.terminal.screen_mut().set_scrollback(0);
+            }
+            self.mode = config.default_mode.clone();
+        }
+        self.config = config;
+        if compact_changed {
+            self.resize_windows()?;
+            self.renderer.invalidate();
+        }
+        self.redraw()
     }
 
     fn attach_client(&mut self, stream: UnixStream) -> Result<()> {
