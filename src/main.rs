@@ -44,7 +44,7 @@ const CLIENT_RESIZE: u8 = b'R';
 const CLIENT_SHUTDOWN: u8 = b'Q';
 const MAX_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
-const CLIPBOARD_STATUS: &str = "clipped to system clipboard";
+const CLIPBOARD_STATUS: &str = "copied to system clipboard";
 const CLIPBOARD_STATUS_DURATION: Duration = Duration::from_secs(2);
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -2964,7 +2964,7 @@ mod tests {
         let shown = renderer.render(&windows, 0, (40, 6), "locked", None, &[]);
         let shown = String::from_utf8(shown).unwrap();
         assert!(shown.contains("\x1b[6;1H"));
-        assert!(shown.contains("└─ clipped to system clipboard "));
+        assert!(shown.contains("└─ copied to system clipboard "));
         assert!(!shown.contains("\x1b[2J"));
 
         renderer.set_border_status(None);
