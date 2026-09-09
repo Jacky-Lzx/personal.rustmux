@@ -30,7 +30,8 @@ use crate::terminal::{
     CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
     SemanticOutputCapture, TerminalMetadata, base64_encode, kitty_dnd_for_child, kitty_dnd_id,
     kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
-    kitty_graphics_uses_shared_memory, kitty_notification, osc7_path, terminal_responses,
+    kitty_graphics_uses_shared_memory, kitty_notification, osc7_path, terminal_parser_size,
+    terminal_responses,
 };
 
 fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
@@ -97,6 +98,16 @@ fn terminal_size_validation_bounds_frame_allocations() {
     assert!(validate_terminal_size((80, 0)).is_err());
     assert!(validate_terminal_size((1_001, 1_000)).is_err());
     assert!(validate_terminal_size((u16::MAX, u16::MAX)).is_err());
+}
+
+#[test]
+fn terminal_parser_has_a_safe_minimum_for_wrapping() {
+    assert_eq!(terminal_parser_size(1, 1), (2, 2));
+    assert_eq!(terminal_parser_size(80, 24), (80, 24));
+
+    let (columns, rows) = terminal_parser_size(1, 1);
+    let mut parser = vt100::Parser::new(rows, columns, 0);
+    parser.process(b"ttZ");
 }
 
 #[test]

@@ -15,6 +15,13 @@ const MAX_KITTY_DND_SEQUENCE_BYTES: usize = 16 * 1024;
 const KITTY_DND_PREFIX: &[u8] = b"\x1b]72;";
 const STRING_TERMINATOR: &[u8] = b"\x1b\\";
 
+pub(super) fn terminal_parser_size(columns: u16, rows: u16) -> (u16, u16) {
+    // vt100's wrapping logic requires room for a double-width character and
+    // for scrolling off the first row. Tiny outer terminals can otherwise
+    // produce a one-cell parser that panics on ordinary output.
+    (columns.max(2), rows.max(2))
+}
+
 #[derive(Default)]
 pub(super) struct TerminalMetadata {
     pub(super) title: String,

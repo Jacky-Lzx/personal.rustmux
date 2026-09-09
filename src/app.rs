@@ -40,7 +40,7 @@ use crate::terminal::{
     SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration, kitty_dnd_for_child,
     kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
     kitty_graphics_uses_shared_memory, kitty_notification, outer_terminal_identity,
-    terminal_responses,
+    terminal_parser_size, terminal_responses,
 };
 use crate::{
     CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
@@ -506,12 +506,13 @@ impl App {
         arguments: Vec<CString>,
         options: SpawnOptions,
     ) -> Result<usize> {
-        let winsize = window_winsize_for(
+        let mut winsize = window_winsize_for(
             self.terminal_size,
             self.terminal_pixels,
             options.floating,
             self.config.compact(),
         );
+        (winsize.ws_col, winsize.ws_row) = terminal_parser_size(winsize.ws_col, winsize.ws_row);
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
         let current_directory = options
             .current_directory
@@ -3001,6 +3002,7 @@ fn resize_window(
     terminal_size: (u16, u16),
     terminal_pixels: (u16, u16),
 ) -> Result<()> {
+    let (columns, rows) = terminal_parser_size(columns, rows);
     let cell_width = terminal_pixels.0 / terminal_size.0.max(1);
     let cell_height = terminal_pixels.1 / terminal_size.1.max(1);
     let winsize = Winsize {
