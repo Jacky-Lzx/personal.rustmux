@@ -57,10 +57,11 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
+        let guard = Self;
         let mut stdout = io::stdout().lock();
         stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
         stdout.flush()?;
-        Ok(Self)
+        Ok(guard)
     }
 }
 
@@ -793,8 +794,16 @@ impl App {
         // async-signal-safe; all application bookkeeping remains in the parent.
         match unsafe { forkpty(&winsize, None) }? {
             ForkptyResult::Parent { child, master } => {
-                let flags = OFlag::from_bits_truncate(fcntl(&master, FcntlArg::F_GETFL)?);
-                fcntl(&master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+                let setup = (|| {
+                    let flags = OFlag::from_bits_truncate(fcntl(&master, FcntlArg::F_GETFL)?);
+                    fcntl(&master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+                    Ok::<(), Errno>(())
+                })();
+                if let Err(error) = setup {
+                    let _ = kill(child, Signal::SIGKILL);
+                    let _ = waitpid(child, None);
+                    return Err(error.into());
+                }
                 let id = self.next_id;
                 self.next_id += 1;
                 self.windows.push(Window {
