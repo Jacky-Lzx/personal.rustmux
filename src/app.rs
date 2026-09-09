@@ -41,8 +41,8 @@ use crate::terminal::{
 use crate::{
     CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
     CLIENT_SHUTDOWN, CLIPBOARD_STATUS, CLIPBOARD_STATUS_DURATION, FRAME_INTERVAL,
-    MAX_CLIENT_MESSAGE_BYTES, MAX_PTY_READS_PER_TICK, MOUSE_SCROLL_LINES, PREFIX, Result,
-    SERVER_SWITCH_SESSION_PREFIX,
+    MAX_CLIENT_MESSAGE_BYTES, MAX_PTY_READS_PER_TICK, MOUSE_SCROLL_LINES, NOTIFICATION_DURATION,
+    PREFIX, Result, SERVER_SWITCH_SESSION_PREFIX,
 };
 
 pub(super) struct Window {
@@ -202,6 +202,7 @@ pub(super) struct App {
     terminal_identity: String,
     redraw_deadline: Option<Instant>,
     clipboard_status_until: Option<Instant>,
+    notification_until: Option<Instant>,
     rename_state: Option<RenameState>,
     history_search: Option<HistorySearchState>,
     session_manager: Option<SessionManagerState>,
@@ -246,6 +247,7 @@ impl App {
             terminal_identity: outer_terminal_identity(),
             redraw_deadline: None,
             clipboard_status_until: None,
+            notification_until: None,
             rename_state: None,
             history_search: None,
             session_manager: None,
@@ -645,7 +647,9 @@ impl App {
         self.reset_mode();
         self.redraw_deadline = None;
         self.clipboard_status_until = None;
+        self.notification_until = None;
         self.renderer.set_border_status(None);
+        self.renderer.set_notification(None);
         self.renderer.invalidate();
     }
 
@@ -1399,6 +1403,7 @@ impl App {
         self.mode = self.config.default_mode.clone();
         self.selection = None;
         self.clipboard_status_until = None;
+        self.notification_until = None;
         if let Some(state) = self.rename_state.take() {
             for (window_id, name) in state.original_names {
                 if let Some(window) = self
@@ -1411,6 +1416,7 @@ impl App {
             }
         }
         self.renderer.set_border_status(None);
+        self.renderer.set_notification(None);
         self.renderer.set_rename_prompt(None);
         self.history_search = None;
         self.renderer.set_history_search_prompt(None);
@@ -1507,10 +1513,12 @@ impl App {
     }
 
     fn notify(&mut self, message: &str) -> Result<()> {
-        if let Some(client) = self.client.as_mut() {
-            writeln!(client, "\r\x1b[1m[rustmux]\x1b[0m {message}\r")?;
+        if self.client.is_none() {
+            return Ok(());
         }
-        Ok(())
+        self.notification_until = Some(Instant::now() + NOTIFICATION_DURATION);
+        self.renderer.set_notification(Some(message));
+        self.redraw()
     }
 
     fn apply_history_action(&mut self, action: HistoryAction) -> Result<()> {
@@ -2350,6 +2358,14 @@ impl App {
             self.redraw()?;
         }
         if self
+            .notification_until
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.notification_until = None;
+            self.renderer.set_notification(None);
+            self.redraw()?;
+        }
+        if self
             .redraw_deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
@@ -2362,6 +2378,7 @@ impl App {
         let deadline = [
             self.redraw_deadline,
             self.clipboard_status_until,
+            self.notification_until,
             self.dnd_input.flush_deadline(),
             self.input_decoder.flush_deadline(),
         ]

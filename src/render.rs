@@ -43,6 +43,24 @@ pub(super) fn session_manager_rect((columns, rows): (u16, u16)) -> (u16, u16, u1
     )
 }
 
+pub(super) fn notification_rect(
+    (columns, rows): (u16, u16),
+    message: &str,
+) -> (u16, u16, u16, u16) {
+    let message_width = UnicodeWidthStr::width(message).min(68);
+    let width = u16::try_from(message_width.saturating_add(4))
+        .unwrap_or(u16::MAX)
+        .max(14)
+        .min(columns);
+    let height = 3.min(rows);
+    (
+        columns.saturating_sub(width) / 2,
+        rows.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
 #[derive(Default)]
 pub(super) struct Renderer {
     previous: Option<FrameSnapshot>,
@@ -53,6 +71,7 @@ pub(super) struct Renderer {
     rename_prompt: Option<String>,
     history_search_prompt: Option<String>,
     session_manager: Option<SessionManagerView>,
+    notification: Option<String>,
 }
 
 impl Renderer {
@@ -78,6 +97,14 @@ impl Renderer {
 
     pub(super) fn set_session_manager(&mut self, view: Option<SessionManagerView>) {
         self.session_manager = view;
+    }
+
+    pub(super) fn set_notification(&mut self, notification: Option<&str>) {
+        let notification = notification.map(str::to_owned);
+        if self.notification != notification {
+            self.notification = notification;
+            self.invalidate();
+        }
     }
 
     pub(super) fn set_ui(&mut self, compact: bool, mode_hints: Vec<String>) {
@@ -107,6 +134,7 @@ impl Renderer {
                 rename_prompt: self.rename_prompt.as_deref(),
                 history_search_prompt: self.history_search_prompt.as_deref(),
                 session_manager: self.session_manager.as_ref(),
+                notification: self.notification.as_deref(),
             },
             selection,
         );
@@ -163,8 +191,10 @@ impl Renderer {
             || previous.mode_hints != current.mode_hints
             || previous.rename_prompt != current.rename_prompt
             || previous.history_search_prompt != current.history_search_prompt
-            || previous.session_manager != current.session_manager;
+            || previous.session_manager != current.session_manager
+            || previous.notification != current.notification;
         let manager_changed = previous.session_manager != current.session_manager;
+        let notification_changed = previous.notification != current.notification;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
         // text updates. Some terminals cap or time out synchronized buffers;
@@ -239,6 +269,9 @@ impl Renderer {
         if manager_changed || (cells_changed && current.session_manager.is_some()) {
             draw_session_manager(&mut output, &current);
         }
+        if notification_changed || (cells_changed && current.notification.is_some()) {
+            draw_notification(&mut output, &current);
+        }
 
         if cells_changed
             || state_changed
@@ -286,6 +319,7 @@ pub(super) struct FrameSnapshot {
     rename_prompt: Option<String>,
     history_search_prompt: Option<String>,
     session_manager: Option<SessionManagerView>,
+    notification: Option<String>,
     history_mode: bool,
     history_offset: usize,
     cells: Vec<CellSnapshot>,
@@ -315,6 +349,7 @@ impl FrameSnapshot {
                 rename_prompt: None,
                 history_search_prompt: None,
                 session_manager: None,
+                notification: None,
             },
             selection,
         )
@@ -336,6 +371,7 @@ impl FrameSnapshot {
             rename_prompt,
             history_search_prompt,
             session_manager,
+            notification,
         } = ui;
         let base = render_base_index(windows, active);
         let tab_id = windows[base].tab_id;
@@ -427,7 +463,7 @@ impl FrameSnapshot {
                 .1
                 .saturating_add(windows[active].pane_rect.column + 1);
         }
-        if session_manager.is_some() {
+        if session_manager.is_some() || notification.is_some() {
             terminal_state.hide_cursor = true;
         }
         Self {
@@ -454,6 +490,7 @@ impl FrameSnapshot {
             rename_prompt: rename_prompt.map(str::to_owned),
             history_search_prompt: history_search_prompt.map(str::to_owned),
             session_manager: session_manager.cloned(),
+            notification: notification.map(str::to_owned),
             history_mode: windows[active].history_mode,
             history_offset: active_screen.scrollback(),
             cells,
@@ -472,6 +509,7 @@ struct RenderUi<'a> {
     rename_prompt: Option<&'a str>,
     history_search_prompt: Option<&'a str>,
     session_manager: Option<&'a SessionManagerView>,
+    notification: Option<&'a str>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -872,6 +910,9 @@ pub(super) fn render_frame(
     if snapshot.session_manager.is_some() {
         draw_session_manager(&mut output, snapshot);
     }
+    if snapshot.notification.is_some() {
+        draw_notification(&mut output, snapshot);
+    }
 
     if !snapshot.compact && height > 1 {
         if snapshot.outer_border && height > 2 {
@@ -1254,6 +1295,60 @@ fn session_created(created_at: u64) -> String {
     } else {
         format!("created {}d ago", seconds / 86_400)
     }
+}
+
+fn draw_notification(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
+    let Some(message) = &snapshot.notification else {
+        return;
+    };
+    let (box_column, box_row, columns, rows) = notification_rect(snapshot.content_size, message);
+    if columns < 4 || rows < 3 {
+        return;
+    }
+    let origin_column = snapshot.content_origin.0 + box_column;
+    let origin_row = snapshot.content_origin.1 + box_row;
+    let inner_width = usize::from(columns - 2);
+
+    for row in 0..rows {
+        let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
+        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        output.extend_from_slice(" ".repeat(usize::from(columns)).as_bytes());
+    }
+
+    let title = "─ Rustmux Warning ";
+    let (title, title_width) = truncate_to_display_width(title, inner_width);
+    let _ = write!(output, "\x1b[{origin_row};{origin_column}H");
+    write_rgb_style(output, MOCHA_YELLOW, Some(MOCHA_BASE), true);
+    output.extend_from_slice("┌".as_bytes());
+    output.extend_from_slice(title.as_bytes());
+    for _ in title_width..inner_width {
+        output.extend_from_slice("─".as_bytes());
+    }
+    output.extend_from_slice("┐".as_bytes());
+
+    let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column);
+    write_rgb_style(output, MOCHA_YELLOW, Some(MOCHA_BASE), false);
+    output.extend_from_slice("│".as_bytes());
+    let (message, _) = truncate_to_display_width(message, inner_width.saturating_sub(2));
+    let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
+    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+    output.extend_from_slice(message.as_bytes());
+    let _ = write!(
+        output,
+        "\x1b[{};{}H",
+        origin_row + 1,
+        origin_column + columns - 1
+    );
+    write_rgb_style(output, MOCHA_YELLOW, Some(MOCHA_BASE), false);
+    output.extend_from_slice("│".as_bytes());
+
+    let _ = write!(
+        output,
+        "\x1b[{};{}H└{}┘",
+        origin_row + 2,
+        origin_column,
+        "─".repeat(inner_width)
+    );
 }
 
 fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {

@@ -19,8 +19,8 @@ use crate::layout::{
     split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
 use crate::render::{
-    CellStyle, FrameSnapshot, Renderer, SessionManagerView, render_frame, session_manager_rect,
-    styled_text_cells, truncate_to_display_width,
+    CellStyle, FrameSnapshot, Renderer, SessionManagerView, notification_rect, render_frame,
+    session_manager_rect, styled_text_cells, truncate_to_display_width,
 };
 use crate::session::ServerOutputDecoder;
 use crate::session::SessionInfo;
@@ -378,6 +378,24 @@ fn clipboard_status_is_drawn_below_the_bottom_border_incrementally() {
     let cleared = String::from_utf8(cleared).unwrap();
     assert!(cleared.contains("\x1b[6;1H"));
     assert!(!cleared.contains(CLIPBOARD_STATUS));
+}
+
+#[test]
+fn warning_is_drawn_in_a_centered_floating_box_and_clears_cleanly() {
+    let windows = vec![test_window(1, "fish", 8, 58)];
+    let mut renderer = Renderer::default();
+    renderer.render(&windows, 0, (60, 12), "scroll", None, &[]);
+    renderer.set_notification(Some("no previous command output"));
+
+    let warning = renderer.render(&windows, 0, (60, 12), "scroll", None, &[]);
+    let warning = String::from_utf8(warning).unwrap();
+    assert!(warning.contains("Rustmux Warning"));
+    assert!(warning.contains("no previous command output"));
+    assert_eq!(notification_rect((58, 8), "short"), (22, 2, 14, 3));
+
+    renderer.set_notification(None);
+    let cleared = renderer.render(&windows, 0, (60, 12), "scroll", None, &[]);
+    assert!(cleared.starts_with(b"\x1b[?25l\x1b[2J"));
 }
 
 #[test]
