@@ -2672,12 +2672,12 @@ pub(super) fn selection_contains(
     (start.min(end)..=start.max(end)).contains(&position)
 }
 
-fn signal_window(window: &Window, signal: Signal) {
-    if let Ok(foreground) = tcgetpgrp(&window.master) {
+fn signal_window_processes(foreground: Option<Pid>, child: Pid, signal: Signal) {
+    if let Some(foreground) = foreground {
         let _ = kill(Pid::from_raw(-foreground.as_raw()), signal);
     }
-    let _ = kill(Pid::from_raw(-window.child.as_raw()), signal);
-    let _ = kill(window.child, signal);
+    let _ = kill(Pid::from_raw(-child.as_raw()), signal);
+    let _ = kill(child, signal);
 }
 
 #[cfg(target_os = "macos")]
@@ -2731,18 +2731,29 @@ fn wait_for_child(child: Pid, timeout: Duration) -> bool {
 }
 
 fn terminate_window(window: Window) {
+    let child = window.child;
+    let foreground = tcgetpgrp(&window.master).ok();
     let temporary_file = window.temporary_file.clone();
-    signal_window(&window, Signal::SIGHUP);
-    if !wait_for_child(window.child, Duration::from_millis(200)) {
-        signal_window(&window, Signal::SIGTERM);
-        if !wait_for_child(window.child, Duration::from_millis(200)) {
-            signal_window(&window, Signal::SIGKILL);
-            let _ = wait_for_child(window.child, Duration::from_secs(1));
-        }
-    }
-    if let Some(path) = temporary_file {
-        let _ = fs::remove_file(path);
-    }
+    signal_window_processes(foreground, child, Signal::SIGHUP);
+    drop(window);
+
+    // Waiting for an interactive shell to acknowledge SIGHUP can take hundreds
+    // of milliseconds. Keep that work off the input/render loop so closing a
+    // window updates the UI immediately while the child is still reaped safely.
+    let _ = thread::Builder::new()
+        .name("rustmux-window-reaper".to_owned())
+        .spawn(move || {
+            if !wait_for_child(child, Duration::from_millis(200)) {
+                signal_window_processes(foreground, child, Signal::SIGTERM);
+                if !wait_for_child(child, Duration::from_millis(200)) {
+                    signal_window_processes(foreground, child, Signal::SIGKILL);
+                    let _ = wait_for_child(child, Duration::from_secs(1));
+                }
+            }
+            if let Some(path) = temporary_file {
+                let _ = fs::remove_file(path);
+            }
+        });
 }
 
 fn write_fd(fd: &OwnedFd, mut bytes: &[u8]) -> Result<()> {
