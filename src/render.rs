@@ -8,6 +8,19 @@ use crate::layout::{
     FloatingLayout, content_size_for, floating_layout_for, pane_pty_size, tiled_content_rect_for,
 };
 
+type Rgb = (u8, u8, u8);
+
+const MOCHA_CRUST: Rgb = (17, 17, 27);
+const MOCHA_BASE: Rgb = (30, 30, 46);
+const MOCHA_OVERLAY_0: Rgb = (108, 112, 134);
+const MOCHA_TEXT: Rgb = (205, 214, 244);
+const MOCHA_GREEN: Rgb = (166, 227, 161);
+const MOCHA_YELLOW: Rgb = (249, 226, 175);
+const MOCHA_BLUE: Rgb = (137, 180, 250);
+const MOCHA_LAVENDER: Rgb = (180, 190, 254);
+const MOCHA_PINK: Rgb = (245, 194, 231);
+const POWERLINE_RIGHT: &str = "";
+
 #[derive(Default)]
 pub(super) struct Renderer {
     previous: Option<FrameSnapshot>,
@@ -135,11 +148,11 @@ impl Renderer {
             output.extend_from_slice(b"\x1b[?25l");
         }
         if history_changed || mode_changed || (status_changed && current.compact) {
-            let _ = write!(output, "\x1b[1;1H\x1b[32m");
+            let _ = write!(output, "\x1b[1;1H");
             draw_window_bar(&mut output, windows, active, terminal_size.0, &current);
         }
         if title_changed && current.outer_border {
-            let _ = write!(output, "\x1b[2;1H\x1b[32m");
+            let _ = write!(output, "\x1b[2;1H");
             draw_terminal_border(&mut output, &current.terminal_title, terminal_size.0);
         }
         if (status_changed || mode_changed || history_changed)
@@ -695,14 +708,14 @@ impl CellStyle {
 
     pub(super) fn border() -> Self {
         Self {
-            foreground: vt100::Color::Idx(2),
+            foreground: vt100::Color::Rgb(MOCHA_OVERLAY_0.0, MOCHA_OVERLAY_0.1, MOCHA_OVERLAY_0.2),
             ..Self::plain()
         }
     }
 
     fn active_border() -> Self {
         Self {
-            foreground: vt100::Color::Idx(10),
+            foreground: vt100::Color::Rgb(MOCHA_GREEN.0, MOCHA_GREEN.1, MOCHA_GREEN.2),
             bold: true,
             ..Self::plain()
         }
@@ -730,7 +743,7 @@ pub(super) fn render_frame(
     output.extend_from_slice(b"\x1b[H");
     draw_window_bar(&mut output, windows, active, width, snapshot);
     if snapshot.outer_border {
-        let _ = write!(output, "\x1b[2;1H\x1b[32m");
+        let _ = write!(output, "\x1b[2;1H");
         draw_terminal_border(&mut output, &snapshot.terminal_title, width);
     }
 
@@ -746,7 +759,8 @@ pub(super) fn render_frame(
             }
         );
         if snapshot.outer_border {
-            output.extend_from_slice(b"\x1b[32m\xE2\x94\x82\x1b[0m");
+            write_rgb_style(&mut output, MOCHA_GREEN, None, false);
+            output.extend_from_slice("│\x1b[0m".as_bytes());
         }
         let mut previous_style = None;
         for column in 0..content_columns {
@@ -766,13 +780,14 @@ pub(super) fn render_frame(
             }
         }
         if snapshot.outer_border {
-            output.extend_from_slice("\x1b[0;32m│".as_bytes());
+            write_rgb_style(&mut output, MOCHA_GREEN, None, false);
+            output.extend_from_slice("│".as_bytes());
         }
     }
 
     if !snapshot.compact && height > 1 {
         if snapshot.outer_border && height > 2 {
-            let _ = write!(output, "\x1b[{};1H\x1b[32m", height - 1);
+            let _ = write!(output, "\x1b[{};1H", height - 1);
             draw_bottom_border(&mut output, width);
         }
         draw_bottom_status(&mut output, snapshot);
@@ -872,10 +887,8 @@ fn draw_window_bar(
     if width == 0 {
         return;
     }
-    // Reset to the outer terminal's default background before erasing. EL
-    // paints with the current background, which may otherwise leak a child
-    // application's grey background into the transparent tab-bar cells.
-    output.extend_from_slice(b"\x1b[0;49m\x1b[2K");
+    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+    output.extend_from_slice(b"\x1b[2K");
     let inner_width = usize::from(width);
     let compact_status = snapshot.compact.then(|| {
         let mode = mode_label(&snapshot.mode, snapshot.history_offset);
@@ -887,41 +900,40 @@ fn draw_window_bar(
     });
     let compact_width = compact_status
         .as_deref()
-        .map(|status| UnicodeWidthStr::width(status) + 2)
+        .map(|status| UnicodeWidthStr::width(status) + 4)
         .unwrap_or(0)
         .min(inner_width);
     let tabs_width = inner_width.saturating_sub(compact_width);
-    let mut used = 0;
     let base = render_base_index(windows, active);
     let active_tab = windows[base].tab_id;
     let mut seen = Vec::new();
+    let mut tabs = Vec::new();
     for window in windows.iter().filter(|window| !window.floating) {
         if seen.contains(&window.tab_id) {
             continue;
         }
         seen.push(window.tab_id);
         let display_index = seen.len();
-        if used >= tabs_width {
-            break;
-        }
-        let label = format!(" {} {} ", display_index, window.name);
-        let available = tabs_width.saturating_sub(used).saturating_sub(1);
-        let (label, label_width) = truncate_to_display_width(&label, available);
-        if window.tab_id == active_tab {
-            output.extend_from_slice(b"\x1b[1;30;42m");
+        let color = if window.tab_id == active_tab {
+            MOCHA_GREEN
         } else {
-            output.extend_from_slice(b"\x1b[1;30;48;2;205;214;244m");
-        }
-        output.extend_from_slice(label.as_bytes());
-        output.extend_from_slice(b"\x1b[0;49m ");
-        used += label_width + 1;
+            MOCHA_TEXT
+        };
+        tabs.push((format!("{display_index} {}", window.name), color));
     }
+    draw_powerline_segments(output, &tabs, tabs_width, MOCHA_BASE);
     if let Some(status) = compact_status {
         let label = format!(" {status} ");
-        let (label, label_width) = truncate_to_display_width(&label, compact_width);
-        let column = inner_width.saturating_sub(label_width) + 1;
-        let _ = write!(output, "\x1b[1;{column}H\x1b[1;30;42m");
+        let (label, label_width) =
+            truncate_to_display_width(&label, compact_width.saturating_sub(2));
+        let column = inner_width.saturating_sub(label_width + 2) + 1;
+        let _ = write!(output, "\x1b[1;{column}H");
+        write_rgb_style(output, MOCHA_BASE, Some(MOCHA_GREEN), false);
+        output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
+        write_rgb_style(output, MOCHA_CRUST, Some(MOCHA_GREEN), true);
         output.extend_from_slice(label.as_bytes());
+        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), false);
+        output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
     }
     output.extend_from_slice(b"\x1b[0m");
 }
@@ -934,22 +946,65 @@ fn mode_label(mode: &str, history_offset: usize) -> String {
     }
 }
 
-fn status_text(snapshot: &FrameSnapshot) -> String {
-    let mut parts = vec![mode_label(&snapshot.mode, snapshot.history_offset)];
-    if let Some(status) = &snapshot.border_status {
-        parts.push(status.clone());
+fn action_hint_label(action: &str) -> String {
+    action
+        .split(" + ")
+        .map(|action| match action.strip_prefix("mode:") {
+            Some("normal") => "UNLOCK".to_owned(),
+            Some("locked") => "LOCK".to_owned(),
+            Some(mode) => mode.to_ascii_uppercase(),
+            None => action.replace(['-', ':'], " ").to_ascii_uppercase(),
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn status_segments(snapshot: &FrameSnapshot) -> Vec<(String, Rgb)> {
+    let mut segments = Vec::new();
+    if snapshot.mode != "locked" {
+        segments.push((
+            mode_label(&snapshot.mode, snapshot.history_offset),
+            MOCHA_GREEN,
+        ));
     }
-    parts.extend(snapshot.mode_hints.iter().cloned());
-    format!(" {} ", parts.join(" │ "))
+    if let Some(status) = &snapshot.border_status {
+        segments.push((status.clone(), MOCHA_YELLOW));
+    }
+    for (index, hint) in snapshot.mode_hints.iter().enumerate() {
+        if let Some((key, action)) = hint.split_once('=') {
+            segments.push((key.to_owned(), MOCHA_PINK));
+            segments.push((
+                action_hint_label(action),
+                if index % 2 == 0 {
+                    MOCHA_LAVENDER
+                } else {
+                    MOCHA_BLUE
+                },
+            ));
+        } else {
+            segments.push((hint.clone(), MOCHA_LAVENDER));
+        }
+    }
+    if segments.is_empty() {
+        segments.push((
+            mode_label(&snapshot.mode, snapshot.history_offset),
+            MOCHA_GREEN,
+        ));
+    }
+    segments
 }
 
 fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let (width, height) = snapshot.terminal_size;
-    let status = status_text(snapshot);
     let _ = write!(output, "\x1b[{height};1H");
-    output.extend_from_slice(b"\x1b[0;49m\x1b[2K\x1b[1;30;42m");
-    let (status, _) = truncate_to_display_width(&status, usize::from(width));
-    output.extend_from_slice(status.as_bytes());
+    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+    output.extend_from_slice(b"\x1b[2K");
+    draw_powerline_segments(
+        output,
+        &status_segments(snapshot),
+        usize::from(width),
+        MOCHA_BASE,
+    );
     output.extend_from_slice(b"\x1b[0m");
 }
 
@@ -957,7 +1012,9 @@ fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
     if width == 0 {
         return;
     }
-    output.extend_from_slice("\x1b[0;49m\x1b[2K\x1b[32m┌".as_bytes());
+    output.extend_from_slice(b"\x1b[0;49m\x1b[2K");
+    write_rgb_style(output, MOCHA_GREEN, None, false);
+    output.extend_from_slice("┌".as_bytes());
     let inner_width = usize::from(width.saturating_sub(2));
     let decorated = format!("─ {title} ");
     let (title, title_width) = truncate_to_display_width(&decorated, inner_width);
@@ -974,6 +1031,7 @@ fn draw_bottom_border(output: &mut Vec<u8>, width: u16) {
     if width == 0 {
         return;
     }
+    write_rgb_style(output, MOCHA_GREEN, None, false);
     output.extend_from_slice("└".as_bytes());
     let inner_width = usize::from(width.saturating_sub(2));
     for _ in 0..inner_width {
@@ -981,6 +1039,51 @@ fn draw_bottom_border(output: &mut Vec<u8>, width: u16) {
     }
     if width > 1 {
         output.extend_from_slice("┘".as_bytes());
+    }
+}
+
+fn write_rgb_style(output: &mut Vec<u8>, foreground: Rgb, background: Option<Rgb>, bold: bool) {
+    let (foreground_red, foreground_green, foreground_blue) = foreground;
+    let _ = write!(
+        output,
+        "\x1b[{};38;2;{foreground_red};{foreground_green};{foreground_blue}",
+        if bold { 1 } else { 0 }
+    );
+    if let Some((background_red, background_green, background_blue)) = background {
+        let _ = write!(
+            output,
+            ";48;2;{background_red};{background_green};{background_blue}"
+        );
+    } else {
+        output.extend_from_slice(b";49");
+    }
+    output.push(b'm');
+}
+
+fn draw_powerline_segments(
+    output: &mut Vec<u8>,
+    segments: &[(String, Rgb)],
+    width: usize,
+    bar_background: Rgb,
+) {
+    let mut used = 0;
+    for (text, background) in segments {
+        if used >= width {
+            break;
+        }
+        let available = width.saturating_sub(used).saturating_sub(2);
+        let label = format!(" {text} ");
+        let (label, label_width) = truncate_to_display_width(&label, available);
+        if label_width == 0 {
+            break;
+        }
+        write_rgb_style(output, bar_background, Some(*background), false);
+        output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
+        write_rgb_style(output, MOCHA_CRUST, Some(*background), true);
+        output.extend_from_slice(label.as_bytes());
+        write_rgb_style(output, *background, Some(bar_background), false);
+        output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
+        used += label_width + 2;
     }
 }
 

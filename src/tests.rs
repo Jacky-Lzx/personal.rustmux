@@ -233,7 +233,8 @@ fn clipboard_status_is_drawn_below_the_bottom_border_incrementally() {
     let shown = renderer.render(&windows, 0, (40, 6), "locked", None, &[]);
     let shown = String::from_utf8(shown).unwrap();
     assert!(shown.contains("\x1b[6;1H"));
-    assert!(shown.contains("LOCKED │ copied to system clipboard"));
+    assert!(shown.contains("copied to system clipboard"));
+    assert!(shown.contains(''));
     assert!(!shown.contains('└'));
     assert!(!shown.contains("\x1b[2J"));
 
@@ -254,8 +255,11 @@ fn status_line_shows_mode_and_key_hints() {
     let frame = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
     let frame = String::from_utf8(frame).unwrap();
 
-    assert!(frame.contains("LOCKED │ Ctrl b="));
-    assert!(frame.contains("\x1b[4;1H\x1b[32m└"));
+    assert!(frame.contains("Ctrl b"));
+    assert!(frame.contains("UNLOCK"));
+    assert!(frame.contains(''));
+    assert!(!frame.contains(''));
+    assert!(frame.contains("\x1b[4;1H\x1b[0;38;2;166;227;161;49m└"));
     assert!(frame.contains("\x1b[5;1H"));
 }
 
@@ -274,7 +278,10 @@ fn compact_layout_reclaims_status_row_and_shows_mode_at_top_right() {
     let frame = renderer.render(&windows, 0, (20, 5), "normal", None, &[]);
     let frame = String::from_utf8(frame).unwrap();
 
-    assert!(frame.contains("\x1b[1;13H\x1b[1;30;42m NORMAL "));
+    assert!(frame.contains("\x1b[1;11H"));
+    assert!(frame.contains(""));
+    assert!(!frame.contains(""));
+    assert!(frame.contains(" NORMAL "));
     assert!(!frame.contains('└'));
 }
 
@@ -304,7 +311,7 @@ fn history_mode_renders_offset_without_clearing_the_screen() {
 }
 
 #[test]
-fn frame_has_green_border_tabs_and_terminal_contents() {
+fn frame_has_catppuccin_powerline_tabs_and_terminal_contents() {
     let mut first = test_window(1, "fish", 3, 18);
     first.terminal.process(b"hello \x1b[38;2;1;2;3mcolor");
     first.terminal.process(b"\x1b]2;nvim project\x07");
@@ -315,15 +322,18 @@ fn frame_has_green_border_tabs_and_terminal_contents() {
     let frame = render_frame(&windows, 0, &snapshot, &[]);
     let frame = String::from_utf8(frame).expect("rendered frame is UTF-8");
 
-    assert!(frame.contains("\x1b[32m"));
+    assert!(frame.contains("38;2;166;227;161"));
+    assert!(frame.contains("48;2;30;30;46"));
     assert!(frame.contains('┌'));
     assert!(frame.contains('┘'));
+    assert!(frame.contains(''));
+    assert!(!frame.contains(''));
+    assert!(frame.contains("\x1b[0;38;2;30;30;46;48;2;166;227;161m"));
+    assert!(frame.contains("\x1b[0;38;2;166;227;161;48;2;30;30;46m"));
     assert!(frame.contains(" 1 fish "));
     assert!(frame.contains(" 2 fish "));
-    assert!(frame.contains("\x1b[1;30;42m 1 fish \x1b[0;49m "));
-    assert!(frame.contains("\x1b[1;30;48;2;205;214;244m 2 fish \x1b[0;49m "));
-    assert!(!frame.contains(''));
-    assert!(!frame.contains(''));
+    assert!(frame.contains("48;2;166;227;161m 1 fish "));
+    assert!(frame.contains("48;2;205;214;244m 2 fish "));
     assert!(frame.contains("─ nvim project "));
     assert!(frame.contains("hello"));
     assert!(frame.contains("\x1b[38;2;1;2;3m"));
