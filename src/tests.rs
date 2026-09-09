@@ -1204,7 +1204,9 @@ fn decoder_keeps_split_arrow_sequence_together() {
     let mut decoder = InputDecoder::default();
 
     assert!(decoder.push(b"\x1b[").is_empty());
+    assert!(decoder.flush_deadline().is_some());
     assert_eq!(decoder.push(b"A"), b"\x1b[A");
+    assert!(decoder.flush_deadline().is_none());
 }
 
 #[test]

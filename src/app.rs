@@ -2351,11 +2351,14 @@ impl App {
     }
 
     fn poll_timeout(&self) -> u16 {
-        let deadline = match (self.redraw_deadline, self.clipboard_status_until) {
-            (Some(redraw), Some(status)) => Some(redraw.min(status)),
-            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-            (None, None) => None,
-        };
+        let deadline = [
+            self.redraw_deadline,
+            self.clipboard_status_until,
+            self.input_decoder.flush_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let Some(deadline) = deadline else {
             return 100;
         };

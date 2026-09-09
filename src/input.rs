@@ -60,6 +60,11 @@ impl InputDecoder {
         }
     }
 
+    pub(super) fn flush_deadline(&self) -> Option<Instant> {
+        self.pending_since
+            .and_then(|since| since.checked_add(ESCAPE_SEQUENCE_TIMEOUT))
+    }
+
     pub(super) fn flush(&mut self) -> Vec<u8> {
         self.pending_since = None;
         std::mem::take(&mut self.pending)
