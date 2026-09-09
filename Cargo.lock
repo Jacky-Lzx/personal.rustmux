@@ -274,6 +274,8 @@ dependencies = [
  "nix",
  "serde",
  "toml",
+ "unicode-segmentation",
+ "unicode-width",
  "vt100",
 ]
 

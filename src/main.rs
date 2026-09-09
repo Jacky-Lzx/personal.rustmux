@@ -27,6 +27,8 @@ use nix::pty::{ForkptyResult, Winsize, forkpty};
 use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use config::{Action, Config, DEFAULT_CONFIG_TOML, config_path};
 
@@ -2588,25 +2590,31 @@ fn overlay_pane_cells(
     } else {
         format!("─ {} ", window.terminal_title())
     };
-    for (offset, character) in title
-        .chars()
-        .take(usize::from(rect.width.saturating_sub(2)))
-        .enumerate()
-    {
-        replace(cells, 0, offset as u16 + 1, border_cell(character));
+    let title_cells = styled_text_cells(
+        &title,
+        usize::from(rect.width.saturating_sub(2)),
+        if active {
+            CellStyle::active_border()
+        } else {
+            CellStyle::border()
+        },
+    );
+    for (offset, cell) in title_cells.into_iter().enumerate() {
+        replace(cells, 0, offset as u16 + 1, cell);
     }
     if let Some(status) = border_status {
         let label = format!("─ {status} ");
-        for (offset, character) in label
-            .chars()
-            .take(usize::from(rect.width.saturating_sub(2)))
-            .enumerate()
-        {
+        let label_cells = styled_text_cells(
+            &label,
+            usize::from(rect.width.saturating_sub(2)),
+            CellStyle::active_border(),
+        );
+        for (offset, cell) in label_cells.into_iter().enumerate() {
             replace(
                 cells,
                 rect.height.saturating_sub(1),
                 offset as u16 + 1,
-                border_cell(character),
+                cell,
             );
         }
     }
@@ -2717,12 +2725,13 @@ fn overlay_floating_cells(
     } else {
         format!("─ {} ", window.terminal_title())
     };
-    for (offset, character) in title
-        .chars()
-        .take(usize::from(layout.width.saturating_sub(2)))
-        .enumerate()
-    {
-        replace(cells, 0, offset as u16 + 1, border_cell(character));
+    let title_cells = styled_text_cells(
+        &title,
+        usize::from(layout.width.saturating_sub(2)),
+        CellStyle::border(),
+    );
+    for (offset, cell) in title_cells.into_iter().enumerate() {
+        replace(cells, 0, offset as u16 + 1, cell);
     }
 
     let screen = window.terminal.screen();
@@ -2758,6 +2767,43 @@ impl CellSnapshot {
             wide_continuation: false,
         }
     }
+}
+
+fn styled_text_cells(text: &str, max_width: usize, style: CellStyle) -> Vec<CellSnapshot> {
+    let mut cells: Vec<CellSnapshot> = Vec::new();
+    for grapheme in text.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        if width == 0 {
+            if let Some(cell) = cells.iter_mut().rev().find(|cell| !cell.wide_continuation) {
+                cell.contents.push_str(grapheme);
+            }
+            continue;
+        }
+        if cells.len() + width > max_width {
+            break;
+        }
+        cells.push(CellSnapshot {
+            contents: grapheme.to_owned(),
+            style,
+            wide_continuation: false,
+        });
+        cells.extend((1..width).map(|_| CellSnapshot {
+            contents: String::new(),
+            style,
+            wide_continuation: true,
+        }));
+    }
+    cells
+}
+
+fn truncate_to_display_width(text: &str, max_width: usize) -> (String, usize) {
+    let cells = styled_text_cells(text, max_width, CellStyle::plain());
+    let value = cells
+        .iter()
+        .filter(|cell| !cell.wide_continuation)
+        .map(|cell| cell.contents.as_str())
+        .collect();
+    (value, cells.len())
 }
 
 #[derive(Eq, PartialEq)]
@@ -3026,7 +3072,7 @@ fn draw_window_bar(
             format!(" {} {} ", display_index, window.name)
         };
         let available = inner_width.saturating_sub(used).saturating_sub(1);
-        let label: String = label.chars().take(available).collect();
+        let (label, label_width) = truncate_to_display_width(&label, available);
         if window.tab_id == active_tab {
             output.extend_from_slice(b"\x1b[1;30;42m");
         } else {
@@ -3034,7 +3080,7 @@ fn draw_window_bar(
         }
         output.extend_from_slice(label.as_bytes());
         output.extend_from_slice(b"\x1b[0;49m ");
-        used += label.chars().count() + 1;
+        used += label_width + 1;
     }
     output.extend_from_slice(b"\x1b[0m");
 }
@@ -3046,9 +3092,9 @@ fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
     output.extend_from_slice("\x1b[0;49m\x1b[2K\x1b[32m┌".as_bytes());
     let inner_width = usize::from(width.saturating_sub(2));
     let decorated = format!("─ {title} ");
-    let title: String = decorated.chars().take(inner_width).collect();
+    let (title, title_width) = truncate_to_display_width(&decorated, inner_width);
     output.extend_from_slice(title.as_bytes());
-    for _ in title.chars().count()..inner_width {
+    for _ in title_width..inner_width {
         output.extend_from_slice("─".as_bytes());
     }
     if width > 1 {
@@ -3065,9 +3111,9 @@ fn draw_bottom_border(output: &mut Vec<u8>, width: u16, status: Option<&str>) {
     let label = status
         .map(|status| format!("─ {status} "))
         .unwrap_or_default();
-    let label = label.chars().take(inner_width).collect::<String>();
+    let (label, label_width) = truncate_to_display_width(&label, inner_width);
     output.extend_from_slice(label.as_bytes());
-    for _ in label.chars().count()..inner_width {
+    for _ in label_width..inner_width {
         output.extend_from_slice("─".as_bytes());
     }
     if width > 1 {
@@ -4132,6 +4178,19 @@ mod tests {
         assert!(frame.contains("─ nvim project "));
         assert!(frame.contains("hello"));
         assert!(frame.contains("\x1b[38;2;1;2;3m"));
+    }
+
+    #[test]
+    fn labels_are_truncated_by_terminal_column_width() {
+        let cells = styled_text_cells("a界b", 3, CellStyle::border());
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0].contents, "a");
+        assert_eq!(cells[1].contents, "界");
+        assert!(cells[2].wide_continuation);
+
+        let (label, width) = truncate_to_display_width("e\u{301}界x", 3);
+        assert_eq!(label, "e\u{301}界");
+        assert_eq!(width, 3);
     }
 
     #[test]
