@@ -23,10 +23,10 @@ use crate::input::{
     sgr_mouse_at,
 };
 use crate::layout::{
-    Direction, PaneNode, PaneRect, SplitAxis, content_rect_for, directional_distance,
-    floating_layout_for, move_item, pane_ids, pane_pty_size, pane_rects, rect_in_direction,
-    remove_pane, resize_pane, split_pane, swap_panes, tiled_content_rect_for,
-    validate_terminal_size, window_winsize_for,
+    Direction, PaneNode, PaneRect, PaneResizeHandle, SplitAxis, content_rect_for,
+    directional_distance, floating_layout_for, move_item, pane_ids, pane_pty_size, pane_rects,
+    pane_resize_handle, rect_in_direction, remove_pane, resize_pane, resize_pane_to, split_pane,
+    swap_panes, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
 use crate::render::{HelpView, Renderer, SessionManagerView, render_base_index};
 use crate::session::{
@@ -197,6 +197,15 @@ struct SessionManagerState {
     rename_input: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MouseDrag {
+    WindowBar,
+    PaneResize {
+        tab_id: usize,
+        handle: PaneResizeHandle,
+    },
+}
+
 pub(super) fn matching_session_info(sessions: &[SessionInfo], query: &str) -> Vec<SessionInfo> {
     let query = query.to_ascii_lowercase();
     sessions
@@ -232,6 +241,7 @@ pub(super) struct App {
     history_search: Option<HistorySearchState>,
     session_manager: Option<SessionManagerState>,
     help_mode: Option<String>,
+    mouse_drag: Option<MouseDrag>,
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
     client_input: Vec<u8>,
@@ -278,6 +288,7 @@ impl App {
             history_search: None,
             session_manager: None,
             help_mode: None,
+            mouse_drag: None,
             client: None,
             outer_dnd_window: None,
             client_input: Vec::new(),
@@ -1094,7 +1105,32 @@ impl App {
                 continue;
             }
             if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
-                if self.windows[self.active].history_mode {
+                if self.mouse_drag.is_some() {
+                    if !passthrough.is_empty() {
+                        self.write_active(&passthrough)?;
+                        passthrough.clear();
+                    }
+                    self.update_mouse_drag(mouse)?;
+                } else if matches!(mouse, MouseAction::SelectStart(_))
+                    && let Some(tab_id) = self
+                        .renderer
+                        .window_tab_at((mouse.position().column, mouse.position().row))
+                {
+                    if !passthrough.is_empty() {
+                        self.write_active(&passthrough)?;
+                        passthrough.clear();
+                    }
+                    self.mouse_drag = Some(MouseDrag::WindowBar);
+                    self.select_tab_id(tab_id)?;
+                } else if matches!(mouse, MouseAction::SelectStart(_))
+                    && let Some((tab_id, handle)) = self.pane_resize_at(mouse.position())
+                {
+                    if !passthrough.is_empty() {
+                        self.write_active(&passthrough)?;
+                        passthrough.clear();
+                    }
+                    self.mouse_drag = Some(MouseDrag::PaneResize { tab_id, handle });
+                } else if self.windows[self.active].history_mode {
                     if !passthrough.is_empty() {
                         self.write_active(&passthrough)?;
                         passthrough.clear();
@@ -1613,6 +1649,7 @@ impl App {
         self.selection = None;
         self.clipboard_status_until = None;
         self.notification_until = None;
+        self.mouse_drag = None;
         if let Some(state) = self.rename_state.take() {
             for (window_id, name) in state.original_names {
                 if let Some(window) = self
@@ -1938,6 +1975,40 @@ impl App {
         }
         let mode = self.config.default_mode.clone();
         self.switch_mode(&mode)
+    }
+
+    fn pane_resize_at(&self, position: MousePosition) -> Option<(usize, PaneResizeHandle)> {
+        let base = render_base_index(&self.windows, self.active);
+        let active = self.windows.get(base)?;
+        if active.floating || active.zoomed || !active.pane_framed {
+            return None;
+        }
+        let tab = self.tabs.iter().find(|tab| tab.id == active.tab_id)?;
+        let canvas_position = mouse_canvas_position(position)?;
+        let rect = tiled_content_rect_for(self.terminal_size, self.config.compact());
+        pane_resize_handle(&tab.root, rect, canvas_position).map(|handle| (tab.id, handle))
+    }
+
+    fn update_mouse_drag(&mut self, action: MouseAction) -> Result<()> {
+        let drag = self.mouse_drag.clone();
+        let finished = matches!(action, MouseAction::SelectEnd(_));
+        if let (
+            Some(MouseDrag::PaneResize { tab_id, handle }),
+            MouseAction::SelectExtend(position) | MouseAction::SelectEnd(position),
+        ) = (drag, action)
+            && let Some(position) = mouse_canvas_position(position)
+            && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id)
+            && resize_pane_to(&mut tab.root, &handle, position)
+        {
+            self.selection = None;
+            self.resize_windows()?;
+            self.renderer.invalidate();
+            self.redraw()?;
+        }
+        if finished {
+            self.mouse_drag = None;
+        }
+        Ok(())
     }
 
     fn apply_mouse_action(&mut self, action: MouseAction) -> Result<()> {
@@ -2504,17 +2575,38 @@ impl App {
 
     fn select_window(&mut self, index: usize) -> Result<()> {
         if let Some(tab) = self.tabs.get(index.saturating_sub(1)) {
-            let target = pane_ids(&tab.root)[0];
-            self.active = self
-                .windows
-                .iter()
-                .position(|window| window.id == target)
-                .unwrap();
-            self.selection = None;
-            self.renderer.invalidate();
-            self.redraw()?;
+            self.select_tab_id(tab.id)?;
         }
         Ok(())
+    }
+
+    fn select_tab_id(&mut self, tab_id: usize) -> Result<()> {
+        let base = render_base_index(&self.windows, self.active);
+        if self.windows[base].tab_id == tab_id {
+            return Ok(());
+        }
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return Ok(());
+        };
+        let target = pane_ids(&tab.root)[0];
+        if self.windows[self.active].history_mode {
+            self.windows[self.active].history_mode = false;
+            self.windows[self.active]
+                .terminal
+                .screen_mut()
+                .set_scrollback(0);
+            self.history_search = None;
+            self.renderer.set_history_search_prompt(None);
+            self.mode = self.config.default_mode.clone();
+        }
+        self.active = self
+            .windows
+            .iter()
+            .position(|window| window.id == target)
+            .expect("tab layout references an existing pane");
+        self.selection = None;
+        self.renderer.invalidate();
+        self.redraw()
     }
 
     fn close_active(&mut self) -> Result<()> {
@@ -2777,6 +2869,13 @@ pub(super) fn pane_at(windows: &[Window], active: usize, position: MousePosition
             && position.row < bottom)
             .then_some(index)
     })
+}
+
+fn mouse_canvas_position(position: MousePosition) -> Option<(u16, u16)> {
+    Some((
+        position.column.checked_sub(1)?,
+        position.row.checked_sub(2)?,
+    ))
 }
 
 pub(super) fn window_history(window: &mut Window) -> String {

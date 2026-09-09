@@ -40,6 +40,14 @@ pub(super) struct PaneRect {
     pub(super) height: u16,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PaneResizeHandle {
+    path: Vec<bool>,
+    axis: SplitAxis,
+    rect: PaneRect,
+    pointer_offset: i32,
+}
+
 pub(super) fn content_size_for((columns, rows): (u16, u16), compact: bool) -> (u16, u16) {
     (
         columns.saturating_sub(2).max(1),
@@ -189,36 +197,7 @@ pub(super) fn pane_rects(node: &PaneNode, rect: PaneRect) -> Vec<(usize, PaneRec
                 first,
                 second,
             } => {
-                let (a, b) = match axis {
-                    SplitAxis::Vertical => {
-                        let first_width = split_extent(rect.width, *ratio);
-                        (
-                            PaneRect {
-                                width: first_width,
-                                ..rect
-                            },
-                            PaneRect {
-                                column: rect.column + first_width,
-                                width: rect.width - first_width,
-                                ..rect
-                            },
-                        )
-                    }
-                    SplitAxis::Horizontal => {
-                        let first_height = split_extent(rect.height, *ratio);
-                        (
-                            PaneRect {
-                                height: first_height,
-                                ..rect
-                            },
-                            PaneRect {
-                                row: rect.row + first_height,
-                                height: rect.height - first_height,
-                                ..rect
-                            },
-                        )
-                    }
-                };
+                let (a, b) = split_rects(rect, *axis, *ratio);
                 layout(first, a, rects);
                 layout(second, b, rects);
             }
@@ -226,6 +205,137 @@ pub(super) fn pane_rects(node: &PaneNode, rect: PaneRect) -> Vec<(usize, PaneRec
     }
     layout(node, rect, &mut rects);
     rects
+}
+
+pub(super) fn pane_resize_handle(
+    node: &PaneNode,
+    rect: PaneRect,
+    position: (u16, u16),
+) -> Option<PaneResizeHandle> {
+    fn find(
+        node: &PaneNode,
+        rect: PaneRect,
+        position: (u16, u16),
+        path: &mut Vec<bool>,
+    ) -> Option<PaneResizeHandle> {
+        let PaneNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } = node
+        else {
+            return None;
+        };
+        let (first_rect, second_rect) = split_rects(rect, *axis, *ratio);
+        path.push(false);
+        let nested = find(first, first_rect, position, path);
+        path.pop();
+        if nested.is_some() {
+            return nested;
+        }
+        path.push(true);
+        let nested = find(second, second_rect, position, path);
+        path.pop();
+        if nested.is_some() {
+            return nested;
+        }
+
+        let boundary = match axis {
+            SplitAxis::Vertical => second_rect.column,
+            SplitAxis::Horizontal => second_rect.row,
+        };
+        let pointer = match axis {
+            SplitAxis::Vertical => position.0,
+            SplitAxis::Horizontal => position.1,
+        };
+        let on_boundary = pointer == boundary || pointer.saturating_add(1) == boundary;
+        let within_span = match axis {
+            SplitAxis::Vertical => {
+                position.1 >= rect.row && position.1 < rect.row.saturating_add(rect.height)
+            }
+            SplitAxis::Horizontal => {
+                position.0 >= rect.column && position.0 < rect.column.saturating_add(rect.width)
+            }
+        };
+        (on_boundary && within_span).then(|| PaneResizeHandle {
+            path: path.clone(),
+            axis: *axis,
+            rect,
+            pointer_offset: i32::from(boundary) - i32::from(pointer),
+        })
+    }
+
+    find(node, rect, position, &mut Vec::new())
+}
+
+pub(super) fn resize_pane_to(
+    node: &mut PaneNode,
+    handle: &PaneResizeHandle,
+    position: (u16, u16),
+) -> bool {
+    let mut split = node;
+    for second in &handle.path {
+        let PaneNode::Split {
+            first,
+            second: next,
+            ..
+        } = split
+        else {
+            return false;
+        };
+        split = if *second { next } else { first };
+    }
+    let PaneNode::Split { ratio, .. } = split else {
+        return false;
+    };
+    let (pointer, start, total) = match handle.axis {
+        SplitAxis::Vertical => (position.0, handle.rect.column, handle.rect.width),
+        SplitAxis::Horizontal => (position.1, handle.rect.row, handle.rect.height),
+    };
+    if total == 0 {
+        return false;
+    }
+    let boundary = (i32::from(pointer) + handle.pointer_offset)
+        .clamp(i32::from(start), i32::from(start.saturating_add(total)));
+    let extent = u32::try_from(boundary - i32::from(start)).unwrap_or_default();
+    let updated = ((extent * 1_000).div_ceil(u32::from(total)) as u16).clamp(100, 900);
+    let changed = *ratio != updated;
+    *ratio = updated;
+    changed
+}
+
+fn split_rects(rect: PaneRect, axis: SplitAxis, ratio: u16) -> (PaneRect, PaneRect) {
+    match axis {
+        SplitAxis::Vertical => {
+            let first_width = split_extent(rect.width, ratio);
+            (
+                PaneRect {
+                    width: first_width,
+                    ..rect
+                },
+                PaneRect {
+                    column: rect.column + first_width,
+                    width: rect.width - first_width,
+                    ..rect
+                },
+            )
+        }
+        SplitAxis::Horizontal => {
+            let first_height = split_extent(rect.height, ratio);
+            (
+                PaneRect {
+                    height: first_height,
+                    ..rect
+                },
+                PaneRect {
+                    row: rect.row + first_height,
+                    height: rect.height - first_height,
+                    ..rect
+                },
+            )
+        }
+    }
 }
 
 fn split_extent(total: u16, ratio: u16) -> u16 {

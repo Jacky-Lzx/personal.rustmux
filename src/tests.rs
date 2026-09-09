@@ -15,9 +15,9 @@ use crate::input::{
 };
 use crate::layout::{
     Direction, FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for,
-    content_winsize_for, floating_layout_for, move_item, pane_ids, pane_rects, remove_pane,
-    resize_pane, split_pane, swap_panes, tiled_content_rect_for, validate_terminal_size,
-    window_winsize_for,
+    content_winsize_for, floating_layout_for, move_item, pane_ids, pane_rects, pane_resize_handle,
+    remove_pane, resize_pane, resize_pane_to, split_pane, swap_panes, tiled_content_rect_for,
+    validate_terminal_size, window_winsize_for,
 };
 use crate::render::{
     CellStyle, FrameSnapshot, HelpView, Renderer, SessionManagerView, compact_status_hints,
@@ -549,6 +549,31 @@ fn window_bar_shows_the_session_name_before_the_first_window() {
 }
 
 #[test]
+fn window_bar_tabs_are_clickable_across_their_powerline_segments() {
+    let windows = vec![
+        test_window(11, "fish", 2, 78),
+        test_window(22, "editor", 2, 78),
+    ];
+    let mut renderer = Renderer::default();
+    renderer.set_session_name("work");
+    renderer.render(&windows, 0, (80, 6), "locked", None, &[]);
+
+    let hits = (1..=80)
+        .filter_map(|column| {
+            renderer
+                .window_tab_at((column, 1))
+                .map(|tab_id| (column, tab_id))
+        })
+        .collect::<Vec<_>>();
+    assert!(hits.iter().any(|(_, tab_id)| *tab_id == 11));
+    assert!(hits.iter().any(|(_, tab_id)| *tab_id == 22));
+    assert_eq!(hits.first().map(|(_, tab_id)| *tab_id), Some(11));
+    assert_eq!(hits.last().map(|(_, tab_id)| *tab_id), Some(22));
+    assert_eq!(renderer.window_tab_at((1, 1)), None);
+    assert_eq!(renderer.window_tab_at((20, 2)), None);
+}
+
+#[test]
 fn window_name_changes_redraw_the_bar_without_clearing_the_screen() {
     let window = test_window(1, "fish", 1, 38);
     let mut windows = vec![window];
@@ -846,6 +871,56 @@ fn pane_layout_resizes_the_nearest_boundary() {
             height: 9
         }
     );
+}
+
+#[test]
+fn pane_border_drag_resizes_from_either_shared_border_cell() {
+    let rect = PaneRect {
+        column: 0,
+        row: 0,
+        width: 80,
+        height: 20,
+    };
+    for grabbed_column in [39, 40] {
+        let mut root = PaneNode::Split {
+            axis: SplitAxis::Vertical,
+            ratio: 500,
+            first: Box::new(PaneNode::Leaf(1)),
+            second: Box::new(PaneNode::Leaf(2)),
+        };
+        let handle = pane_resize_handle(&root, rect, (grabbed_column, 10))
+            .expect("both copies of a shared border should be draggable");
+        assert!(resize_pane_to(
+            &mut root,
+            &handle,
+            (grabbed_column + 10, 10)
+        ));
+
+        let panes = pane_rects(&root, rect);
+        assert_eq!(panes[0].1.width, 50);
+        assert_eq!(panes[1].1.column, 50);
+        assert_eq!(panes[1].1.width, 30);
+    }
+    let root = PaneNode::Split {
+        axis: SplitAxis::Vertical,
+        ratio: 500,
+        first: Box::new(PaneNode::Leaf(1)),
+        second: Box::new(PaneNode::Leaf(2)),
+    };
+    assert_eq!(pane_resize_handle(&root, rect, (20, 10)), None);
+
+    let mut horizontal = PaneNode::Split {
+        axis: SplitAxis::Horizontal,
+        ratio: 500,
+        first: Box::new(PaneNode::Leaf(1)),
+        second: Box::new(PaneNode::Leaf(2)),
+    };
+    let handle = pane_resize_handle(&horizontal, rect, (20, 10))
+        .expect("a horizontal shared border should be draggable");
+    assert!(resize_pane_to(&mut horizontal, &handle, (20, 14)));
+    let panes = pane_rects(&horizontal, rect);
+    assert_eq!(panes[0].1.height, 14);
+    assert_eq!(panes[1].1.row, 14);
 }
 
 #[test]

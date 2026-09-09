@@ -142,6 +142,15 @@ impl Renderer {
         self.mode_hints = mode_hints;
     }
 
+    pub(super) fn window_tab_at(&self, position: (u16, u16)) -> Option<usize> {
+        if position.1 != 1 {
+            return None;
+        }
+        self.previous
+            .as_ref()
+            .and_then(|snapshot| window_tab_at(snapshot, position.0))
+    }
+
     pub(super) fn render(
         &mut self,
         windows: &[Window],
@@ -1091,20 +1100,7 @@ fn draw_window_bar(
     write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
     output.extend_from_slice(b"\x1b[2K");
     let inner_width = usize::from(width);
-    let compact_status = snapshot.compact.then(|| {
-        if let Some(name) = &snapshot.rename_prompt {
-            return format!("RENAME: {name}_");
-        }
-        if let Some(query) = &snapshot.history_search_prompt {
-            return format!("SEARCH: {query}_");
-        }
-        let mode = mode_label(&snapshot.mode, snapshot.history_offset);
-        snapshot
-            .border_status
-            .as_deref()
-            .map(|status| format!("{mode} │ {status}"))
-            .unwrap_or(mode)
-    });
+    let compact_status = compact_status(snapshot);
     let compact_width = compact_status
         .as_deref()
         .map(|status| UnicodeWidthStr::width(status) + 4)
@@ -1156,6 +1152,64 @@ fn draw_window_bar(
         output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
     }
     output.extend_from_slice(b"\x1b[0m");
+}
+
+fn compact_status(snapshot: &FrameSnapshot) -> Option<String> {
+    snapshot.compact.then(|| {
+        if let Some(name) = &snapshot.rename_prompt {
+            return format!("RENAME: {name}_");
+        }
+        if let Some(query) = &snapshot.history_search_prompt {
+            return format!("SEARCH: {query}_");
+        }
+        let mode = mode_label(&snapshot.mode, snapshot.history_offset);
+        snapshot
+            .border_status
+            .as_deref()
+            .map(|status| format!("{mode} │ {status}"))
+            .unwrap_or(mode)
+    })
+}
+
+fn window_tab_at(snapshot: &FrameSnapshot, column: u16) -> Option<usize> {
+    if column == 0 {
+        return None;
+    }
+    let inner_width = usize::from(snapshot.terminal_size.0);
+    let compact_width = compact_status(snapshot)
+        .as_deref()
+        .map(|status| UnicodeWidthStr::width(status) + 4)
+        .unwrap_or(0)
+        .min(inner_width);
+    let mut tabs_width = inner_width.saturating_sub(compact_width);
+    let session_width = (!snapshot.session_name.is_empty())
+        .then(|| format!(" Rustmux ({}) ", snapshot.session_name))
+        .map(|label| {
+            let available = tabs_width.saturating_sub(6);
+            truncate_to_display_width(&label, available).1
+        })
+        .unwrap_or(0);
+    tabs_width = tabs_width.saturating_sub(session_width);
+
+    let pointer = usize::from(column - 1);
+    let mut used = session_width;
+    for (index, (tab_id, name)) in snapshot.tabs.iter().enumerate() {
+        let available = tabs_width.saturating_sub(used.saturating_sub(session_width) + 2);
+        let (_, label_width) =
+            truncate_to_display_width(&format!(" {} {} ", index + 1, name), available);
+        if label_width == 0 {
+            break;
+        }
+        let segment_width = label_width + 2;
+        if pointer >= used && pointer < used.saturating_add(segment_width) {
+            return Some(*tab_id);
+        }
+        used = used.saturating_add(segment_width);
+        if used.saturating_sub(session_width) >= tabs_width {
+            break;
+        }
+    }
+    None
 }
 
 fn mode_label(mode: &str, history_offset: usize) -> String {

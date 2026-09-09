@@ -54,7 +54,7 @@ Pane mode 下可以使用：
 
 在 history 模式中也可以使用鼠标滚轮浏览；向下滚动到最底部后仍会留在 history 模式，使用 `q` 或 Esc 返回实时画面。
 
-进入 history（`scroll`）模式后，按住鼠标左键拖动可以选择当前窗口中的文本；选区会反色显示，松开左键后自动通过 OSC 52 复制到系统剪贴板，并在左下角边框短暂显示 `copied to system clipboard`。在默认的 `locked` 模式下，鼠标事件会根据内部程序启用的鼠标协议传入当前 pane，不会触发 rustmux 的文本选择。在包含多个 pane 的 tab 中，点击任意 pane 的内容或边框会先切换焦点；如果其中的程序启用了鼠标协议，同一次点击也会继续传给该程序。
+进入 history（`scroll`）模式后，按住鼠标左键拖动可以选择当前窗口中的文本；选区会反色显示，松开左键后自动通过 OSC 52 复制到系统剪贴板，并在左下角边框短暂显示 `copied to system clipboard`。在默认的 `locked` 模式下，鼠标事件会根据内部程序启用的鼠标协议传入当前 pane，不会触发 rustmux 的文本选择。在包含多个 pane 的 tab 中，点击任意 pane 的内容或边框会先切换焦点；拖动两个 pane 之间的共享边框可以连续调整分割比例。顶部状态栏中的 window 名称也可以直接点击切换；由 rustmux 处理的标签点击和边框拖动不会传给 pane 内程序。
 
 在 Kitty 0.47.0 或更高版本中，rustmux 会转发 OSC 72 drag-and-drop protocol。Yazi 可以从当前 pane 向 Finder 等 GUI 应用拖出文件，也可以接收拖入的文件；协议响应会根据 pane ID 路由，并自动换算 pane 内的单元格和像素坐标。
 
