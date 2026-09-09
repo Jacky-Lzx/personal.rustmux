@@ -21,6 +21,25 @@ const MOCHA_LAVENDER: Rgb = (180, 190, 254);
 const MOCHA_PINK: Rgb = (245, 194, 231);
 const POWERLINE_RIGHT: &str = "";
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SessionManagerView {
+    pub(super) query: String,
+    pub(super) sessions: Vec<String>,
+    pub(super) selected: usize,
+    pub(super) current: String,
+}
+
+pub(super) fn session_manager_rect((columns, rows): (u16, u16)) -> (u16, u16, u16, u16) {
+    let width = (columns / 2).max(40).min(columns);
+    let height = (rows / 2).max(8).min(rows);
+    (
+        columns.saturating_sub(width) / 2,
+        rows.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
 #[derive(Default)]
 pub(super) struct Renderer {
     previous: Option<FrameSnapshot>,
@@ -29,6 +48,7 @@ pub(super) struct Renderer {
     mode_hints: Vec<String>,
     session_name: String,
     rename_prompt: Option<String>,
+    session_manager: Option<SessionManagerView>,
 }
 
 impl Renderer {
@@ -46,6 +66,10 @@ impl Renderer {
 
     pub(super) fn set_rename_prompt(&mut self, name: Option<&str>) {
         self.rename_prompt = name.map(str::to_owned);
+    }
+
+    pub(super) fn set_session_manager(&mut self, view: Option<SessionManagerView>) {
+        self.session_manager = view;
     }
 
     pub(super) fn set_ui(&mut self, compact: bool, mode_hints: Vec<String>) {
@@ -73,6 +97,7 @@ impl Renderer {
                 border_status: self.border_status.as_deref(),
                 session_name: &self.session_name,
                 rename_prompt: self.rename_prompt.as_deref(),
+                session_manager: self.session_manager.as_ref(),
             },
             selection,
         );
@@ -127,7 +152,9 @@ impl Renderer {
         let title_changed = previous.terminal_title != current.terminal_title;
         let status_changed = previous.border_status != current.border_status
             || previous.mode_hints != current.mode_hints
-            || previous.rename_prompt != current.rename_prompt;
+            || previous.rename_prompt != current.rename_prompt
+            || previous.session_manager != current.session_manager;
+        let manager_changed = previous.session_manager != current.session_manager;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
         // text updates. Some terminals cap or time out synchronized buffers;
@@ -199,6 +226,9 @@ impl Renderer {
                 }
             }
         }
+        if manager_changed || (cells_changed && current.session_manager.is_some()) {
+            draw_session_manager(&mut output, &current);
+        }
 
         if cells_changed
             || state_changed
@@ -244,6 +274,7 @@ pub(super) struct FrameSnapshot {
     mode_hints: Vec<String>,
     session_name: String,
     rename_prompt: Option<String>,
+    session_manager: Option<SessionManagerView>,
     history_mode: bool,
     history_offset: usize,
     cells: Vec<CellSnapshot>,
@@ -271,6 +302,7 @@ impl FrameSnapshot {
                 border_status,
                 session_name: "",
                 rename_prompt: None,
+                session_manager: None,
             },
             selection,
         )
@@ -290,6 +322,7 @@ impl FrameSnapshot {
             border_status,
             session_name,
             rename_prompt,
+            session_manager,
         } = ui;
         let base = render_base_index(windows, active);
         let tab_id = windows[base].tab_id;
@@ -377,6 +410,9 @@ impl FrameSnapshot {
                 .1
                 .saturating_add(windows[active].pane_rect.column + 1);
         }
+        if session_manager.is_some() {
+            terminal_state.hide_cursor = true;
+        }
         Self {
             terminal_size,
             content_size: (columns, rows),
@@ -399,6 +435,7 @@ impl FrameSnapshot {
             mode_hints: mode_hints.to_vec(),
             session_name: session_name.to_owned(),
             rename_prompt: rename_prompt.map(str::to_owned),
+            session_manager: session_manager.cloned(),
             history_mode: windows[active].history_mode,
             history_offset: active_screen.scrollback(),
             cells,
@@ -415,6 +452,7 @@ struct RenderUi<'a> {
     border_status: Option<&'a str>,
     session_name: &'a str,
     rename_prompt: Option<&'a str>,
+    session_manager: Option<&'a SessionManagerView>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -812,6 +850,10 @@ pub(super) fn render_frame(
         }
     }
 
+    if snapshot.session_manager.is_some() {
+        draw_session_manager(&mut output, snapshot);
+    }
+
     if !snapshot.compact && height > 1 {
         if snapshot.outer_border && height > 2 {
             let _ = write!(output, "\x1b[{};1H", height - 1);
@@ -1003,6 +1045,14 @@ fn action_hint_label(action: &str) -> String {
 }
 
 fn status_segments(snapshot: &FrameSnapshot) -> Vec<(String, Rgb)> {
+    if snapshot.session_manager.is_some() {
+        return vec![
+            ("Enter".to_owned(), MOCHA_PINK),
+            ("ATTACH / CREATE".to_owned(), MOCHA_LAVENDER),
+            ("Esc".to_owned(), MOCHA_PINK),
+            ("CANCEL".to_owned(), MOCHA_BLUE),
+        ];
+    }
     if let Some(name) = &snapshot.rename_prompt {
         return vec![(format!("RENAME: {name}_"), MOCHA_YELLOW)];
     }
@@ -1038,6 +1088,104 @@ fn status_segments(snapshot: &FrameSnapshot) -> Vec<(String, Rgb)> {
         ));
     }
     segments
+}
+
+fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
+    let Some(manager) = &snapshot.session_manager else {
+        return;
+    };
+    let (canvas_columns, canvas_rows) = snapshot.content_size;
+    let (box_column, box_row, columns, rows) = session_manager_rect(snapshot.content_size);
+    let (canvas_origin_column, canvas_origin_row) = snapshot.content_origin;
+    let origin_column = canvas_origin_column + box_column;
+    let origin_row = canvas_origin_row + box_row;
+    if canvas_columns == 0 || canvas_rows == 0 || columns == 0 || rows == 0 {
+        return;
+    }
+    let blank = " ".repeat(usize::from(columns));
+    for row in 0..rows {
+        let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
+        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        output.extend_from_slice(blank.as_bytes());
+    }
+    if columns < 4 || rows < 3 {
+        return;
+    }
+
+    let inner_width = usize::from(columns.saturating_sub(2));
+    let title = "─ Session Manager ";
+    let (title, title_width) = truncate_to_display_width(title, inner_width);
+    let _ = write!(output, "\x1b[{origin_row};{origin_column}H");
+    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    output.extend_from_slice("┌".as_bytes());
+    output.extend_from_slice(title.as_bytes());
+    for _ in title_width..inner_width {
+        output.extend_from_slice("─".as_bytes());
+    }
+    output.extend_from_slice("┐".as_bytes());
+
+    for row in 1..rows - 1 {
+        let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
+        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), false);
+        output.extend_from_slice("│".as_bytes());
+        let _ = write!(
+            output,
+            "\x1b[{};{}H",
+            origin_row + row,
+            origin_column + columns - 1
+        );
+        output.extend_from_slice("│".as_bytes());
+    }
+    let _ = write!(
+        output,
+        "\x1b[{};{}H└{}┘",
+        origin_row + rows - 1,
+        origin_column,
+        "─".repeat(inner_width)
+    );
+
+    let query = format!("Session: {}_", manager.query);
+    let (query, _) = truncate_to_display_width(&query, inner_width.saturating_sub(2));
+    let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
+    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    output.extend_from_slice(query.as_bytes());
+
+    let available_rows = usize::from(rows.saturating_sub(4));
+    let first_visible = manager
+        .selected
+        .saturating_sub(available_rows.saturating_sub(1));
+    for (visible_index, (index, name)) in manager
+        .sessions
+        .iter()
+        .enumerate()
+        .skip(first_visible)
+        .take(available_rows)
+        .enumerate()
+    {
+        let marker = if name == &manager.current { "*" } else { " " };
+        let label = format!(
+            "{} {marker} {name}",
+            if index == manager.selected { ">" } else { " " }
+        );
+        let (label, _) = truncate_to_display_width(&label, inner_width.saturating_sub(2));
+        let _ = write!(
+            output,
+            "\x1b[{};{}H",
+            origin_row + 3 + visible_index as u16,
+            origin_column + 2
+        );
+        write_rgb_style(
+            output,
+            if index == manager.selected {
+                MOCHA_GREEN
+            } else {
+                MOCHA_TEXT
+            },
+            Some(MOCHA_BASE),
+            index == manager.selected,
+        );
+        output.extend_from_slice(label.as_bytes());
+    }
 }
 
 fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {

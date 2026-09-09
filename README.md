@@ -16,6 +16,7 @@
 - `,`：重命名当前窗口；输入时顶部标签会实时预览，Enter 确认，Esc 取消并恢复原名
 - `n`：下一个窗口
 - `p`：上一个窗口
+- `s`：打开 Session Manager；输入名称搜索，使用 `↑` / `↓` 选择、Tab 补全、Enter 进入、Esc 取消。没有匹配项时，Enter 会以当前输入创建新 session
 - `[`：进入当前窗口的历史模式
 - `h`：用 `$VISUAL` 或 `$EDITOR`（默认 `vi`）打开当前窗口的完整历史
 - `e`：用编辑器打开上一条命令的输出
@@ -78,6 +79,7 @@ command_duration_seconds = 10
 c = ["new-window", { action = "switch-mode", mode = "locked" }]
 "," = ["rename-window"]
 n = ["next-window", { action = "switch-mode", mode = "locked" }]
+s = ["switch-session"]
 "1" = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
 i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
 "Ctrl p" = [{ action = "switch-mode", mode = "pane" }]
@@ -101,7 +103,7 @@ l = ["focus-right", { action = "switch-mode", mode = "locked" }]
 x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 ```
 
-一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
+一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`switch-session`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
 
 ```toml
 key = [{ action = "switch-mode", mode = "locked" }]

@@ -23,6 +23,7 @@ c = ["new-window", { action = "switch-mode", mode = "locked" }]
 "," = ["rename-window"]
 n = ["next-window", { action = "switch-mode", mode = "locked" }]
 p = ["previous-window", { action = "switch-mode", mode = "locked" }]
+s = ["switch-session"]
 1 = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
 2 = [{ action = "go-to-window", index = 2 }, { action = "switch-mode", mode = "locked" }]
 3 = [{ action = "go-to-window", index = 3 }, { action = "switch-mode", mode = "locked" }]
@@ -92,6 +93,7 @@ pub enum Action {
     RenameWindow,
     NextWindow,
     PreviousWindow,
+    SwitchSession,
     GoToWindow(usize),
     CloseWindow,
     Detach,
@@ -309,6 +311,7 @@ impl Action {
             Self::RenameWindow => "rename-window".to_owned(),
             Self::NextWindow => "next-window".to_owned(),
             Self::PreviousWindow => "previous-window".to_owned(),
+            Self::SwitchSession => "switch-session".to_owned(),
             Self::GoToWindow(index) => format!("window:{index}"),
             Self::CloseWindow => "close-window".to_owned(),
             Self::Detach => "detach".to_owned(),
@@ -413,6 +416,10 @@ fn parse_action(
         "previous-window" => {
             no_arguments()?;
             Action::PreviousWindow
+        }
+        "switch-session" => {
+            no_arguments()?;
+            Action::SwitchSession
         }
         "close-window" => {
             no_arguments()?;
@@ -603,6 +610,10 @@ mod tests {
         assert_eq!(
             config.actions("normal", ","),
             Some(&[Action::RenameWindow][..])
+        );
+        assert_eq!(
+            config.actions("normal", "s"),
+            Some(&[Action::SwitchSession][..])
         );
         assert_eq!(
             config.actions("normal", "i"),

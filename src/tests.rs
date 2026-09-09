@@ -5,8 +5,8 @@ use nix::unistd::Pid;
 
 use super::*;
 use crate::app::{
-    RenameEdit, TextSelection, Window, edit_window_name, rename_tab, selected_text,
-    selection_contains, window_history,
+    RenameEdit, TextSelection, Window, edit_window_name, matching_sessions, rename_tab,
+    selected_text, selection_contains, window_history,
 };
 use crate::input::{
     DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
@@ -17,8 +17,10 @@ use crate::layout::{
     validate_terminal_size, window_winsize_for,
 };
 use crate::render::{
-    CellStyle, FrameSnapshot, Renderer, render_frame, styled_text_cells, truncate_to_display_width,
+    CellStyle, FrameSnapshot, Renderer, SessionManagerView, render_frame, session_manager_rect,
+    styled_text_cells, truncate_to_display_width,
 };
+use crate::session::ServerOutputDecoder;
 use crate::terminal::{
     CursorStyleTracker, KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata,
     base64_encode, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
@@ -826,6 +828,55 @@ fn decoder_accepts_all_prefix_encodings() {
 
     assert_eq!(decoder.push(input), b"a\x02b\x02c\x02d");
     assert!(decoder.flush().is_empty());
+}
+
+#[test]
+fn server_output_decoder_intercepts_split_session_switch_messages() {
+    let mut decoder = ServerOutputDecoder::default();
+    let (visible, target) = decoder.push(b"frame\x1b]777;rustmux-switch-").unwrap();
+    assert_eq!(visible, b"frame");
+    assert_eq!(target, None);
+
+    let (visible, target) = decoder.push(b"session=work\x07").unwrap();
+    assert!(visible.is_empty());
+    assert_eq!(target.as_deref(), Some("work"));
+}
+
+#[test]
+fn session_manager_searches_case_insensitively() {
+    let sessions = vec!["alpha".to_owned(), "Personal".to_owned(), "work".to_owned()];
+    assert_eq!(matching_sessions(&sessions, "son"), vec!["Personal"]);
+    assert_eq!(matching_sessions(&sessions, "W"), vec!["work"]);
+    assert!(matching_sessions(&sessions, "new").is_empty());
+}
+
+#[test]
+fn session_manager_renders_search_results_and_actions() {
+    let window = test_window(1, "fish", 8, 58);
+    let windows = vec![window];
+    let mut renderer = Renderer::default();
+    renderer.set_session_manager(Some(SessionManagerView {
+        query: "wo".to_owned(),
+        sessions: vec!["work".to_owned()],
+        selected: 0,
+        current: "personal".to_owned(),
+    }));
+
+    let frame = renderer.render(&windows, 0, (60, 12), "normal", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+
+    assert!(frame.contains("Session Manager"));
+    assert!(frame.contains("Session: wo_"));
+    assert!(frame.contains(">   work"));
+    assert!(frame.contains("ATTACH / CREATE"));
+    assert!(frame.contains("\x1b[?25l"));
+}
+
+#[test]
+fn session_manager_is_centered_at_half_the_content_size() {
+    assert_eq!(session_manager_rect((100, 40)), (25, 10, 50, 20));
+    assert_eq!(session_manager_rect((60, 20)), (10, 5, 40, 10));
+    assert_eq!(session_manager_rect((30, 6)), (0, 0, 30, 6));
 }
 
 #[test]

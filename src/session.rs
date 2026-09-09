@@ -17,12 +17,64 @@ use nix::unistd::read;
 
 use super::{
     CLIENT_INPUT, CLIENT_RESIZE, CLIENT_SHUTDOWN, Config, EARLY_DISCONNECT_RETRY, Result,
-    TerminalGuard,
+    SERVER_SWITCH_SESSION_PREFIX, TerminalGuard,
 };
 use crate::app::App;
 use crate::layout::validate_terminal_size;
 
 struct SocketGuard(PathBuf);
+
+#[derive(Debug, Eq, PartialEq)]
+enum ClientExit {
+    Disconnected,
+    SwitchSession(String),
+}
+
+#[derive(Default)]
+pub(super) struct ServerOutputDecoder {
+    pending: Vec<u8>,
+}
+
+impl ServerOutputDecoder {
+    pub(super) fn push(&mut self, bytes: &[u8]) -> Result<(Vec<u8>, Option<String>)> {
+        self.pending.extend_from_slice(bytes);
+        if let Some(start) = find_bytes(&self.pending, SERVER_SWITCH_SESSION_PREFIX) {
+            let name_start = start + SERVER_SWITCH_SESSION_PREFIX.len();
+            let Some(end_offset) = self.pending[name_start..]
+                .iter()
+                .position(|byte| *byte == b'\x07')
+            else {
+                return Ok((self.pending.drain(..start).collect(), None));
+            };
+            let end = name_start + end_offset;
+            let name = std::str::from_utf8(&self.pending[name_start..end])?.to_owned();
+            validate_session_name(&name)?;
+            let visible = self.pending.drain(..start).collect();
+            self.pending.drain(..=end - start);
+            return Ok((visible, Some(name)));
+        }
+
+        let retained = (1..SERVER_SWITCH_SESSION_PREFIX.len())
+            .rev()
+            .find(|length| {
+                self.pending
+                    .ends_with(&SERVER_SWITCH_SESSION_PREFIX[..*length])
+            })
+            .unwrap_or(0);
+        let visible_length = self.pending.len().saturating_sub(retained);
+        Ok((self.pending.drain(..visible_length).collect(), None))
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
@@ -42,7 +94,7 @@ pub(super) fn ensure_session_dir() -> Result<PathBuf> {
     Ok(directory)
 }
 
-fn validate_session_name(name: &str) -> Result<()> {
+pub(super) fn validate_session_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.len() > 64
         || !name
@@ -80,13 +132,14 @@ fn send_input(stream: &mut UnixStream, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn run_client(mut stream: UnixStream) -> Result<()> {
+fn run_client(mut stream: UnixStream) -> Result<ClientExit> {
     let mut size = window_size()?;
     send_resize(&mut stream, &size)?;
     let _terminal = TerminalGuard::enter()?;
     let stdin = io::stdin();
     let mut input = [0_u8; 4096];
     let mut output = [0_u8; 64 * 1024];
+    let mut output_decoder = ServerOutputDecoder::default();
 
     loop {
         let (stdin_event, server_event) = {
@@ -112,9 +165,13 @@ fn run_client(mut stream: UnixStream) -> Result<()> {
             match stream.read(&mut output) {
                 Ok(0) => break,
                 Ok(count) => {
+                    let (visible, switch) = output_decoder.push(&output[..count])?;
                     let mut stdout = io::stdout().lock();
-                    stdout.write_all(&output[..count])?;
+                    stdout.write_all(&visible)?;
                     stdout.flush()?;
+                    if let Some(name) = switch {
+                        return Ok(ClientExit::SwitchSession(name));
+                    }
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error.into()),
@@ -143,7 +200,13 @@ fn run_client(mut stream: UnixStream) -> Result<()> {
             send_resize(&mut stream, &size)?;
         }
     }
-    Ok(())
+    let remaining = output_decoder.finish();
+    if !remaining.is_empty() {
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(&remaining)?;
+        stdout.flush()?;
+    }
+    Ok(ClientExit::Disconnected)
 }
 
 fn start_server(socket: &Path, size: crossterm::terminal::WindowSize) -> Result<()> {
@@ -191,31 +254,43 @@ fn connect_with_retry(socket: &Path) -> Result<UnixStream> {
 
 pub(super) fn attach_or_create(name: &str, create: bool) -> Result<()> {
     Config::load().map_err(|error| format!("configuration error: {error}"))?;
-    let socket = session_socket(name)?;
-    let stream = match UnixStream::connect(&socket) {
-        Ok(stream) => stream,
-        Err(error) if !create => {
-            return Err(format!("session '{name}' not found: {error}").into());
-        }
-        Err(_) => {
-            let size = window_size()?;
-            start_server(&socket, size)?;
-            connect_with_retry(&socket)?
-        }
-    };
+    let mut current_name = name.to_owned();
+    let mut create_current = create;
+    'sessions: loop {
+        let socket = session_socket(&current_name)?;
+        let stream = match UnixStream::connect(&socket) {
+            Ok(stream) => stream,
+            Err(error) if !create_current => {
+                return Err(format!("session '{current_name}' not found: {error}").into());
+            }
+            Err(_) => {
+                let size = window_size()?;
+                start_server(&socket, size)?;
+                connect_with_retry(&socket)?
+            }
+        };
 
-    let started = Instant::now();
-    run_client(stream)?;
-    if started.elapsed() < EARLY_DISCONNECT_RETRY {
-        // Servers started by an older rustmux build could accidentally apply a
-        // previous client's POLLHUP to a newly accepted connection. Retrying
-        // once preserves that in-memory session while recovering transparently.
-        thread::sleep(Duration::from_millis(20));
-        if let Ok(stream) = UnixStream::connect(&socket) {
-            run_client(stream)?;
+        let started = Instant::now();
+        if let ClientExit::SwitchSession(name) = run_client(stream)? {
+            current_name = name;
+            create_current = true;
+            continue;
         }
+        if started.elapsed() < EARLY_DISCONNECT_RETRY {
+            // Servers started by an older rustmux build could accidentally apply a
+            // previous client's POLLHUP to a newly accepted connection. Retrying
+            // once preserves that in-memory session while recovering transparently.
+            thread::sleep(Duration::from_millis(20));
+            if let Ok(stream) = UnixStream::connect(&socket)
+                && let ClientExit::SwitchSession(name) = run_client(stream)?
+            {
+                current_name = name;
+                create_current = true;
+                continue 'sessions;
+            }
+        }
+        return Ok(());
     }
-    Ok(())
 }
 
 pub(super) fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
@@ -245,10 +320,21 @@ pub(super) fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
 }
 
 pub(super) fn list_sessions() -> Result<()> {
+    let names = available_sessions()?;
+    if names.is_empty() {
+        println!("no sessions");
+    } else {
+        for name in names {
+            println!("{name}");
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn available_sessions() -> Result<Vec<String>> {
     let directory = session_dir();
     if !directory.exists() {
-        println!("no sessions");
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut names = fs::read_dir(directory)?
         .filter_map(|entry| entry.ok())
@@ -267,14 +353,7 @@ pub(super) fn list_sessions() -> Result<()> {
         })
         .collect::<Vec<_>>();
     names.sort();
-    if names.is_empty() {
-        println!("no sessions");
-    } else {
-        for name in names {
-            println!("{name}");
-        }
-    }
-    Ok(())
+    Ok(names)
 }
 
 pub(super) fn kill_session(name: &str) -> Result<()> {

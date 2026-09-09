@@ -25,8 +25,8 @@ use crate::layout::{
     floating_layout_for, pane_ids, pane_pty_size, pane_rects, rect_in_direction, remove_pane,
     split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
-use crate::render::{Renderer, render_base_index};
-use crate::session::ensure_session_dir;
+use crate::render::{Renderer, SessionManagerView, render_base_index};
+use crate::session::{available_sessions, ensure_session_dir, validate_session_name};
 use crate::terminal::{
     CursorStyleTracker, KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata,
     base64_encode, format_duration, kitty_graphics_query_response,
@@ -36,7 +36,7 @@ use crate::terminal::{
 use crate::{
     CLIENT_INPUT, CLIENT_RESIZE, CLIENT_SHUTDOWN, CLIPBOARD_STATUS, CLIPBOARD_STATUS_DURATION,
     FRAME_INTERVAL, MAX_CLIENT_MESSAGE_BYTES, MAX_PTY_READS_PER_TICK, MOUSE_SCROLL_LINES, PREFIX,
-    Result, SCROLLBACK_LINES,
+    Result, SCROLLBACK_LINES, SERVER_SWITCH_SESSION_PREFIX,
 };
 
 pub(super) struct Window {
@@ -141,6 +141,21 @@ struct RenameState {
     input: String,
 }
 
+struct SessionManagerState {
+    query: String,
+    sessions: Vec<String>,
+    selected: usize,
+}
+
+pub(super) fn matching_sessions(sessions: &[String], query: &str) -> Vec<String> {
+    let query = query.to_ascii_lowercase();
+    sessions
+        .iter()
+        .filter(|name| name.to_ascii_lowercase().contains(&query))
+        .cloned()
+        .collect()
+}
+
 pub(super) struct App {
     windows: Vec<Window>,
     tabs: Vec<Tab>,
@@ -152,12 +167,14 @@ pub(super) struct App {
     mode: String,
     selection: Option<TextSelection>,
     renderer: Renderer,
+    session_name: String,
     terminal_size: (u16, u16),
     terminal_pixels: (u16, u16),
     terminal_identity: String,
     redraw_deadline: Option<Instant>,
     clipboard_status_until: Option<Instant>,
     rename_state: Option<RenameState>,
+    session_manager: Option<SessionManagerState>,
     client: Option<UnixStream>,
     client_input: Vec<u8>,
 }
@@ -183,12 +200,14 @@ impl App {
             mode,
             selection: None,
             renderer,
+            session_name: session_name.to_owned(),
             terminal_size,
             terminal_pixels,
             terminal_identity: outer_terminal_identity(),
             redraw_deadline: None,
             clipboard_status_until: None,
             rename_state: None,
+            session_manager: None,
             client: None,
             client_input: Vec::new(),
         };
@@ -512,6 +531,14 @@ impl App {
         let mut index = 0;
         let mut selection_cleared = false;
         while index < bytes.len() {
+            if self.session_manager.is_some() {
+                let (key, consumed) = decode_key(&bytes[index..]);
+                if !self.handle_session_manager_key(&key)? {
+                    return Ok(false);
+                }
+                index += consumed;
+                continue;
+            }
             if self.rename_state.is_some() {
                 let (key, consumed) = decode_key(&bytes[index..]);
                 self.handle_rename_key(&key)?;
@@ -567,6 +594,7 @@ impl App {
                 Action::RenameWindow => self.begin_window_rename()?,
                 Action::NextWindow => self.select_relative(1)?,
                 Action::PreviousWindow => self.select_relative(-1)?,
+                Action::SwitchSession => self.open_session_manager()?,
                 Action::GoToWindow(index) => self.select_window(*index)?,
                 Action::CloseWindow => self.close_active()?,
                 Action::Detach => return Ok(false),
@@ -596,6 +624,142 @@ impl App {
             }
         }
         Ok(true)
+    }
+
+    fn open_session_manager(&mut self) -> Result<()> {
+        let sessions = available_sessions()?;
+        let selected = sessions
+            .iter()
+            .position(|name| name == &self.session_name)
+            .unwrap_or(0);
+        self.session_manager = Some(SessionManagerState {
+            query: String::new(),
+            sessions,
+            selected,
+        });
+        self.sync_session_manager();
+        self.redraw()
+    }
+
+    fn handle_session_manager_key(&mut self, key: &DecodedKey) -> Result<bool> {
+        match key.name.as_str() {
+            "esc" => {
+                self.close_session_manager();
+                self.redraw()?;
+            }
+            "up" | "down" => {
+                let state = self
+                    .session_manager
+                    .as_mut()
+                    .expect("session manager is open");
+                let count = matching_sessions(&state.sessions, &state.query).len();
+                if count > 0 {
+                    state.selected = if key.name == "up" {
+                        state.selected.checked_sub(1).unwrap_or(count - 1)
+                    } else {
+                        (state.selected + 1) % count
+                    };
+                }
+                self.sync_session_manager();
+                self.redraw()?;
+            }
+            "tab" => {
+                let state = self
+                    .session_manager
+                    .as_mut()
+                    .expect("session manager is open");
+                let matches = matching_sessions(&state.sessions, &state.query);
+                if let Some(name) = matches.get(state.selected) {
+                    state.query.clone_from(name);
+                    state.selected = 0;
+                }
+                self.sync_session_manager();
+                self.redraw()?;
+            }
+            "enter" => {
+                let state = self
+                    .session_manager
+                    .as_ref()
+                    .expect("session manager is open");
+                let matches = matching_sessions(&state.sessions, &state.query);
+                let target = matches
+                    .get(state.selected)
+                    .cloned()
+                    .unwrap_or_else(|| state.query.clone());
+                if target.is_empty() {
+                    return Ok(true);
+                }
+                validate_session_name(&target)?;
+                if target == self.session_name {
+                    self.close_session_manager();
+                    self.redraw()?;
+                    return Ok(true);
+                }
+                self.request_session_switch(&target)?;
+                return Ok(false);
+            }
+            "backspace" => {
+                let state = self
+                    .session_manager
+                    .as_mut()
+                    .expect("session manager is open");
+                state.query.pop();
+                state.selected = 0;
+                self.sync_session_manager();
+                self.redraw()?;
+            }
+            _ => {
+                if let Ok(text) = std::str::from_utf8(&key.raw)
+                    && text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                {
+                    let state = self
+                        .session_manager
+                        .as_mut()
+                        .expect("session manager is open");
+                    if state.query.len() + text.len() <= 64 {
+                        state.query.push_str(text);
+                        state.selected = 0;
+                    }
+                }
+                self.sync_session_manager();
+                self.redraw()?;
+            }
+        }
+        Ok(true)
+    }
+
+    fn sync_session_manager(&mut self) {
+        let view = self.session_manager.as_mut().map(|state| {
+            let sessions = matching_sessions(&state.sessions, &state.query);
+            state.selected = state.selected.min(sessions.len().saturating_sub(1));
+            SessionManagerView {
+                query: state.query.clone(),
+                sessions,
+                selected: state.selected,
+                current: self.session_name.clone(),
+            }
+        });
+        self.renderer.set_session_manager(view);
+    }
+
+    fn close_session_manager(&mut self) {
+        self.session_manager = None;
+        self.renderer.set_session_manager(None);
+        self.mode = self.config.default_mode.clone();
+        self.renderer.invalidate();
+    }
+
+    fn request_session_switch(&mut self, target: &str) -> Result<()> {
+        let Some(client) = self.client.as_mut() else {
+            return Ok(());
+        };
+        client.write_all(SERVER_SWITCH_SESSION_PREFIX)?;
+        client.write_all(target.as_bytes())?;
+        client.write_all(b"\x07")?;
+        client.flush()?;
+        Ok(())
     }
 
     fn begin_window_rename(&mut self) -> Result<()> {
@@ -697,6 +861,8 @@ impl App {
         }
         self.renderer.set_border_status(None);
         self.renderer.set_rename_prompt(None);
+        self.session_manager = None;
+        self.renderer.set_session_manager(None);
         for window in &mut self.windows {
             window.history_mode = false;
             window.terminal.screen_mut().set_scrollback(0);
