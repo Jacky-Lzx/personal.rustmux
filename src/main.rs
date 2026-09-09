@@ -1,9 +1,16 @@
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
-use std::io::{self, Write};
+use std::fs;
+use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -17,7 +24,7 @@ use nix::poll::{PollFd, PollFlags, poll};
 use nix::pty::{ForkptyResult, Winsize, forkpty};
 use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::{Pid, execvp, read, write};
+use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
 
 const PREFIX: u8 = 0x02; // Ctrl-b
 const SCROLLBACK_LINES: usize = 1_000;
@@ -27,6 +34,10 @@ const MAX_KITTY_COMMAND_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PTY_READS_PER_TICK: usize = 32;
 const MOUSE_SCROLL_LINES: usize = 3;
 const ENCODED_PREFIXES: [&[u8]; 2] = [b"\x1b[98;5u", b"\x1b[27;5;98~"];
+const CLIENT_INPUT: u8 = b'I';
+const CLIENT_RESIZE: u8 = b'R';
+const CLIENT_SHUTDOWN: u8 = b'Q';
+const MAX_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -421,12 +432,12 @@ struct App {
     terminal_pixels: (u16, u16),
     terminal_identity: String,
     redraw_deadline: Option<Instant>,
+    client: Option<UnixStream>,
+    client_input: Vec<u8>,
 }
 
 impl App {
-    fn new() -> Result<Self> {
-        let outer = window_size()?;
-        let terminal_size = (outer.columns, outer.rows);
+    fn new(terminal_size: (u16, u16), terminal_pixels: (u16, u16)) -> Result<Self> {
         let mut app = Self {
             windows: Vec::new(),
             active: 0,
@@ -435,9 +446,11 @@ impl App {
             input_decoder: InputDecoder::default(),
             renderer: Renderer::default(),
             terminal_size,
-            terminal_pixels: (outer.width, outer.height),
+            terminal_pixels,
             terminal_identity: outer_terminal_identity(),
             redraw_deadline: None,
+            client: None,
+            client_input: Vec::new(),
         };
         app.create_window()?;
         Ok(app)
@@ -492,21 +505,26 @@ impl App {
         Ok(())
     }
 
-    fn run(&mut self) -> Result<()> {
-        let stdin = io::stdin();
-        let mut input = [0_u8; 4096];
+    fn run_server(&mut self, listener: UnixListener) -> Result<()> {
+        listener.set_nonblocking(true)?;
         let mut output = [0_u8; 64 * 1024];
 
         while !self.windows.is_empty() {
-            self.update_size()?;
             self.flush_scheduled_redraw()?;
             let expired_input = self.input_decoder.flush_if_expired();
             if !expired_input.is_empty() && !self.handle_decoded_input(&expired_input)? {
-                break;
+                self.detach_client();
             }
 
-            let mut poll_fds = Vec::with_capacity(self.windows.len() + 1);
-            poll_fds.push(PollFd::new(stdin.as_fd(), PollFlags::POLLIN));
+            let mut poll_fds = Vec::with_capacity(self.windows.len() + 2);
+            poll_fds.push(PollFd::new(listener.as_fd(), PollFlags::POLLIN));
+            if let Some(client) = &self.client {
+                poll_fds.push(PollFd::new(
+                    client.as_fd(),
+                    PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR,
+                ));
+            }
+            let pty_start = poll_fds.len();
             for window in &self.windows {
                 poll_fds.push(PollFd::new(
                     window.master.as_fd(),
@@ -519,11 +537,15 @@ impl App {
                 Err(Errno::EINTR) => continue,
                 Err(error) => return Err(error.into()),
             }
-            let stdin_ready = poll_fds[0]
+            let listener_ready = poll_fds[0]
                 .revents()
                 .unwrap_or_else(PollFlags::empty)
                 .contains(PollFlags::POLLIN);
-            let pty_events: Vec<PollFlags> = poll_fds[1..]
+            let client_event = self
+                .client
+                .as_ref()
+                .map(|_| poll_fds[1].revents().unwrap_or_else(PollFlags::empty));
+            let pty_events: Vec<PollFlags> = poll_fds[pty_start..]
                 .iter()
                 .map(|fd| fd.revents().unwrap_or_else(PollFlags::empty))
                 .collect();
@@ -542,15 +564,105 @@ impl App {
             }
 
             self.reap_children()?;
-            if stdin_ready {
-                let count = read(stdin.as_fd(), &mut input)?;
-                if count == 0 || !self.handle_input(&input[..count])? {
+            if let Some(event) = client_event {
+                if event.contains(PollFlags::POLLIN) && !self.read_client_messages()? {
                     break;
+                }
+                if event.intersects(PollFlags::POLLHUP | PollFlags::POLLERR)
+                    && self.client.is_some()
+                {
+                    self.detach_client();
+                }
+            }
+            if listener_ready {
+                match listener.accept() {
+                    Ok((stream, _)) => self.attach_client(stream)?,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error.into()),
                 }
             }
             self.flush_scheduled_redraw()?;
         }
         Ok(())
+    }
+
+    fn attach_client(&mut self, stream: UnixStream) -> Result<()> {
+        self.client = Some(stream);
+        self.client_input.clear();
+        self.input_decoder = InputDecoder::default();
+        self.prefix_pending = false;
+        self.renderer.invalidate();
+        self.redraw()
+    }
+
+    fn detach_client(&mut self) {
+        self.client = None;
+        self.client_input.clear();
+        self.input_decoder = InputDecoder::default();
+        self.prefix_pending = false;
+        self.redraw_deadline = None;
+        self.renderer.invalidate();
+    }
+
+    fn read_client_messages(&mut self) -> Result<bool> {
+        let mut input = [0_u8; 64 * 1024];
+        let count = match self
+            .client
+            .as_mut()
+            .expect("client exists")
+            .read(&mut input)
+        {
+            Ok(0) => {
+                self.detach_client();
+                return Ok(true);
+            }
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Ok(true),
+            Err(error) => return Err(error.into()),
+        };
+        self.client_input.extend_from_slice(&input[..count]);
+
+        while let Some(&kind) = self.client_input.first() {
+            match kind {
+                CLIENT_INPUT => {
+                    if self.client_input.len() < 5 {
+                        break;
+                    }
+                    let length = u32::from_be_bytes(
+                        self.client_input[1..5]
+                            .try_into()
+                            .expect("four-byte length"),
+                    ) as usize;
+                    if length > MAX_CLIENT_MESSAGE_BYTES {
+                        return Err("client input message is too large".into());
+                    }
+                    if self.client_input.len() < 5 + length {
+                        break;
+                    }
+                    let bytes = self.client_input[5..5 + length].to_vec();
+                    self.client_input.drain(..5 + length);
+                    if !self.handle_input(&bytes)? {
+                        self.detach_client();
+                        break;
+                    }
+                }
+                CLIENT_RESIZE => {
+                    if self.client_input.len() < 9 {
+                        break;
+                    }
+                    let value = &self.client_input[1..9];
+                    let columns = u16::from_be_bytes([value[0], value[1]]);
+                    let rows = u16::from_be_bytes([value[2], value[3]]);
+                    let width = u16::from_be_bytes([value[4], value[5]]);
+                    let height = u16::from_be_bytes([value[6], value[7]]);
+                    self.client_input.drain(..9);
+                    self.update_size((columns, rows), (width, height))?;
+                }
+                CLIENT_SHUTDOWN => return Ok(false),
+                _ => return Err("invalid client message".into()),
+            }
+        }
+        Ok(true)
     }
 
     fn handle_input(&mut self, bytes: &[u8]) -> Result<bool> {
@@ -749,8 +861,7 @@ impl App {
             return Ok(());
         }
         let window = self.windows.remove(self.active);
-        let _ = kill(window.child, Signal::SIGHUP);
-        let _ = waitpid(window.child, None);
+        terminate_window(window);
         if !self.windows.is_empty() {
             self.active = self.active.min(self.windows.len() - 1);
             self.renderer.invalidate();
@@ -761,7 +872,7 @@ impl App {
 
     fn redraw(&mut self) -> Result<()> {
         self.redraw_deadline = None;
-        if self.windows.is_empty() {
+        if self.windows.is_empty() || self.client.is_none() {
             return Ok(());
         }
         let graphics = std::mem::take(&mut self.windows[self.active].pending_graphics);
@@ -771,9 +882,14 @@ impl App {
         if frame.is_empty() {
             return Ok(());
         }
-        let mut stdout = io::stdout().lock();
-        stdout.write_all(&frame)?;
-        stdout.flush()?;
+        let result = self
+            .client
+            .as_mut()
+            .expect("client exists")
+            .write_all(&frame);
+        if result.is_err() {
+            self.detach_client();
+        }
         Ok(())
     }
 
@@ -804,19 +920,19 @@ impl App {
     }
 
     fn show_help(&self) -> Result<()> {
-        let mut stdout = io::stdout();
-        write!(
-            stdout,
-            "\r\n\x1b[1m[rustmux] Ctrl-b commands:\x1b[0m c=new  n=next  p=previous  [=history  &=close  d=detach/quit  Ctrl-b=send prefix\r\n"
-        )?;
-        stdout.flush()?;
+        if let Some(mut client) = self.client.as_ref() {
+            let result = write!(
+                client,
+                "\r\n\x1b[1m[rustmux] Ctrl-b commands:\x1b[0m c=new  n=next  p=previous  [=history  &=close  d=detach  Ctrl-b=send prefix\r\n"
+            );
+            if result.is_err() {
+                return Ok(());
+            }
+        }
         Ok(())
     }
 
-    fn update_size(&mut self) -> Result<()> {
-        let outer = window_size()?;
-        let new_size = (outer.columns, outer.rows);
-        let new_pixels = (outer.width, outer.height);
+    fn update_size(&mut self, new_size: (u16, u16), new_pixels: (u16, u16)) -> Result<()> {
         if new_size == self.terminal_size && new_pixels == self.terminal_pixels {
             return Ok(());
         }
@@ -868,13 +984,46 @@ impl App {
     }
 
     fn shutdown(&mut self) {
-        for window in &self.windows {
-            let _ = kill(window.child, Signal::SIGHUP);
-        }
         for window in self.windows.drain(..) {
-            let _ = waitpid(window.child, None);
+            terminate_window(window);
         }
     }
+}
+
+fn signal_window(window: &Window, signal: Signal) {
+    if let Ok(foreground) = tcgetpgrp(&window.master) {
+        let _ = kill(Pid::from_raw(-foreground.as_raw()), signal);
+    }
+    let _ = kill(Pid::from_raw(-window.child.as_raw()), signal);
+    let _ = kill(window.child, signal);
+}
+
+fn wait_for_child(child: Pid, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(WaitStatus::StillAlive) => return false,
+            Ok(_) | Err(Errno::ECHILD) => return true,
+            Err(Errno::EINTR) => {}
+            Err(_) => return true,
+        }
+    }
+}
+
+fn terminate_window(window: Window) {
+    signal_window(&window, Signal::SIGHUP);
+    if wait_for_child(window.child, Duration::from_millis(200)) {
+        return;
+    }
+    signal_window(&window, Signal::SIGTERM);
+    if wait_for_child(window.child, Duration::from_millis(200)) {
+        return;
+    }
+    signal_window(&window, Signal::SIGKILL);
+    let _ = wait_for_child(window.child, Duration::from_secs(1));
 }
 
 fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
@@ -1552,30 +1701,303 @@ fn content_winsize(terminal_size: (u16, u16), terminal_pixels: (u16, u16)) -> Wi
     }
 }
 
-fn main() -> Result<()> {
-    if let Some(argument) = env::args().nth(1) {
-        match argument.as_str() {
-            "-h" | "--help" => {
-                println!(
-                    "rustmux {}\n\nA minimal terminal multiplexer.\n\nUSAGE:\n    rustmux\n\nInside rustmux, press Ctrl-b ? for key bindings.",
-                    env!("CARGO_PKG_VERSION")
-                );
-                return Ok(());
+struct SocketGuard(PathBuf);
+
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn session_dir() -> PathBuf {
+    let uid = unsafe { nix::libc::getuid() };
+    env::temp_dir().join(format!("rustmux-{uid}"))
+}
+
+fn ensure_session_dir() -> Result<PathBuf> {
+    let directory = session_dir();
+    fs::create_dir_all(&directory)?;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+    Ok(directory)
+}
+
+fn validate_session_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("session names may contain only letters, numbers, '-' and '_'".into());
+    }
+    Ok(())
+}
+
+fn session_socket(name: &str) -> Result<PathBuf> {
+    validate_session_name(name)?;
+    Ok(session_dir().join(format!("{name}.sock")))
+}
+
+fn send_resize(stream: &mut UnixStream, size: &crossterm::terminal::WindowSize) -> Result<()> {
+    let mut message = [0_u8; 9];
+    message[0] = CLIENT_RESIZE;
+    message[1..3].copy_from_slice(&size.columns.to_be_bytes());
+    message[3..5].copy_from_slice(&size.rows.to_be_bytes());
+    message[5..7].copy_from_slice(&size.width.to_be_bytes());
+    message[7..9].copy_from_slice(&size.height.to_be_bytes());
+    stream.write_all(&message)?;
+    Ok(())
+}
+
+fn send_input(stream: &mut UnixStream, bytes: &[u8]) -> Result<()> {
+    let length = u32::try_from(bytes.len())?;
+    let mut header = [0_u8; 5];
+    header[0] = CLIENT_INPUT;
+    header[1..].copy_from_slice(&length.to_be_bytes());
+    stream.write_all(&header)?;
+    stream.write_all(bytes)?;
+    Ok(())
+}
+
+fn run_client(mut stream: UnixStream) -> Result<()> {
+    let mut size = window_size()?;
+    send_resize(&mut stream, &size)?;
+    let _terminal = TerminalGuard::enter()?;
+    let stdin = io::stdin();
+    let mut input = [0_u8; 4096];
+    let mut output = [0_u8; 64 * 1024];
+
+    loop {
+        let (stdin_event, server_event) = {
+            let mut poll_fds = [
+                PollFd::new(stdin.as_fd(), PollFlags::POLLIN),
+                PollFd::new(
+                    stream.as_fd(),
+                    PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR,
+                ),
+            ];
+            match poll(&mut poll_fds, 100_u16) {
+                Ok(_) => {}
+                Err(Errno::EINTR) => continue,
+                Err(error) => return Err(error.into()),
             }
-            "-V" | "--version" => {
-                println!("rustmux {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            _ => {
-                return Err(format!("unknown argument: {argument} (try --help)").into());
+            (
+                poll_fds[0].revents().unwrap_or_else(PollFlags::empty),
+                poll_fds[1].revents().unwrap_or_else(PollFlags::empty),
+            )
+        };
+
+        if server_event.contains(PollFlags::POLLIN) {
+            match stream.read(&mut output) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let mut stdout = io::stdout().lock();
+                    stdout.write_all(&output[..count])?;
+                    stdout.flush()?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
             }
         }
+        if server_event.intersects(PollFlags::POLLHUP | PollFlags::POLLERR) {
+            break;
+        }
+        if stdin_event.contains(PollFlags::POLLIN) {
+            let count = read(stdin.as_fd(), &mut input)?;
+            if count == 0 {
+                break;
+            }
+            send_input(&mut stream, &input[..count])?;
+        }
+
+        let current_size = window_size()?;
+        if (
+            current_size.columns,
+            current_size.rows,
+            current_size.width,
+            current_size.height,
+        ) != (size.columns, size.rows, size.width, size.height)
+        {
+            size = current_size;
+            send_resize(&mut stream, &size)?;
+        }
     }
-    let _terminal = TerminalGuard::enter()?;
-    let mut app = App::new()?;
-    let result = app.run();
+    Ok(())
+}
+
+fn start_server(socket: &Path, size: crossterm::terminal::WindowSize) -> Result<()> {
+    ensure_session_dir()?;
+    if socket.exists() {
+        fs::remove_file(socket)?;
+    }
+    let executable = env::current_exe()?;
+    let mut command = Command::new(executable);
+    command
+        .arg("--server")
+        .arg(socket)
+        .arg(size.columns.to_string())
+        .arg(size.rows.to_string())
+        .arg(size.width.to_string())
+        .arg(size.height.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            if nix::libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command.spawn()?;
+    Ok(())
+}
+
+fn connect_with_retry(socket: &Path) -> Result<UnixStream> {
+    let mut last_error = None;
+    for _ in 0..100 {
+        match UnixStream::connect(socket) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Err(last_error
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session not found"))
+        .into())
+}
+
+fn attach_or_create(name: &str, create: bool) -> Result<()> {
+    let socket = session_socket(name)?;
+    match UnixStream::connect(&socket) {
+        Ok(stream) => run_client(stream),
+        Err(error) if !create => Err(format!("session '{name}' not found: {error}").into()),
+        Err(_) => {
+            let size = window_size()?;
+            start_server(&socket, size)?;
+            run_client(connect_with_retry(&socket)?)
+        }
+    }
+}
+
+fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
+    if values.len() != 4 {
+        return Err("invalid server arguments".into());
+    }
+    let columns = values[0].parse()?;
+    let rows = values[1].parse()?;
+    let width = values[2].parse()?;
+    let height = values[3].parse()?;
+    ensure_session_dir()?;
+    let listener = UnixListener::bind(&socket)?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+    let _socket_guard = SocketGuard(socket);
+    let mut app = App::new((columns, rows), (width, height))?;
+    let result = app.run_server(listener);
     app.shutdown();
     result
+}
+
+fn list_sessions() -> Result<()> {
+    let directory = session_dir();
+    if !directory.exists() {
+        println!("no sessions");
+        return Ok(());
+    }
+    let mut names = fs::read_dir(directory)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|value| value == "sock")
+        })
+        .filter_map(|entry| {
+            entry
+                .path()
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    if names.is_empty() {
+        println!("no sessions");
+    } else {
+        for name in names {
+            println!("{name}");
+        }
+    }
+    Ok(())
+}
+
+fn kill_session(name: &str) -> Result<()> {
+    let socket = session_socket(name)?;
+    let mut stream = UnixStream::connect(&socket)
+        .map_err(|error| format!("session '{name}' not found: {error}"))?;
+    stream.write_all(&[CLIENT_SHUTDOWN])?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut response = [0_u8; 4096];
+    loop {
+        match stream.read(&mut response) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn print_help() {
+    println!(
+        "rustmux {}\n\nA minimal terminal multiplexer.\n\nUSAGE:\n    rustmux [new-session [-s NAME]]\n    rustmux attach-session [-t NAME]\n    rustmux list-sessions\n    rustmux kill-session [-t NAME]\n\nInside rustmux, press Ctrl-b ? for key bindings.",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+fn main() -> Result<()> {
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    match arguments.as_slice() {
+        [] => attach_or_create("default", true),
+        [flag] if flag == "-h" || flag == "--help" => {
+            print_help();
+            Ok(())
+        }
+        [flag] if flag == "-V" || flag == "--version" => {
+            println!("rustmux {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        [command] if command == "new" || command == "new-session" => {
+            attach_or_create("default", true)
+        }
+        [command, flag, name] if (command == "new" || command == "new-session") && flag == "-s" => {
+            attach_or_create(name, true)
+        }
+        [command] if command == "attach" || command == "attach-session" => {
+            attach_or_create("default", false)
+        }
+        [command, flag, name]
+            if (command == "attach" || command == "attach-session") && flag == "-t" =>
+        {
+            attach_or_create(name, false)
+        }
+        [command] if command == "ls" || command == "list-sessions" => list_sessions(),
+        [command] if command == "kill-session" => kill_session("default"),
+        [command, flag, name] if command == "kill-session" && flag == "-t" => kill_session(name),
+        [command, socket, values @ ..] if command == "--server" => {
+            run_server(PathBuf::from(socket), values)
+        }
+        _ => Err("invalid arguments (try --help)".into()),
+    }
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@
 - `p`：上一个窗口
 - `[`：进入当前窗口的历史模式
 - `&`：关闭当前窗口
-- `d`：退出 rustmux（子进程也会被清理）
+- `d`：detach，断开当前终端；session 和其中的程序继续在后台运行
 - 再按一次 `Ctrl-b`：把 `Ctrl-b` 发送给当前 shell
 
 历史模式下可以使用：
@@ -37,6 +37,28 @@
 cargo run
 ```
 
+不带参数运行会连接已有的 `default` session；如果不存在则自动创建：
+
+```sh
+rustmux
+```
+
+也可以创建和管理具名 session：
+
+```sh
+# 创建（或连接）名为 work 的 session
+rustmux new-session -s work
+
+# Ctrl-b d 后重新连接
+rustmux attach-session -t work
+
+# 列出 session
+rustmux list-sessions
+
+# 结束 session 及其窗口进程
+rustmux kill-session -t work
+```
+
 也可以安装到 Cargo 的二进制目录：
 
 ```sh
@@ -52,4 +74,4 @@ RUSTMUX_SHELL=zsh rustmux
 
 ## MVP 边界
 
-当前版本是单进程复用器，窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持终端字符与像素尺寸同步，并为每个窗口维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。退出 rustmux 会结束其 shell。尚未实现 tmux 的后台 server/session 持久化、分屏、鼠标点击转发和配置文件。
+当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持终端字符与像素尺寸同步，并为每个窗口维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现分屏、鼠标点击转发和配置文件。
