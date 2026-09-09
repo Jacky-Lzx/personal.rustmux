@@ -352,15 +352,28 @@ fn parse_action(
         }
     };
     let action = match normalized.as_str() {
-        "switch-mode" => Action::SwitchMode(normalize_mode(
-            mode.as_deref()
-                .ok_or_else(|| "switch-mode requires 'mode'".to_owned())?,
-        )?),
-        "send-key" => Action::SendKey(parse_send_key(
-            key.as_deref()
-                .ok_or_else(|| "send-key requires 'key'".to_owned())?,
-        )?),
+        "switch-mode" => {
+            if index.is_some() || key.is_some() {
+                return Err("switch-mode accepts only the 'mode' argument".to_owned());
+            }
+            Action::SwitchMode(normalize_mode(
+                mode.as_deref()
+                    .ok_or_else(|| "switch-mode requires 'mode'".to_owned())?,
+            )?)
+        }
+        "send-key" => {
+            if mode.is_some() || index.is_some() {
+                return Err("send-key accepts only the 'key' argument".to_owned());
+            }
+            Action::SendKey(parse_send_key(
+                key.as_deref()
+                    .ok_or_else(|| "send-key requires 'key'".to_owned())?,
+            )?)
+        }
         "go-to-window" => {
+            if mode.is_some() || key.is_some() {
+                return Err("go-to-window accepts only the 'index' argument".to_owned());
+            }
             let index = index.ok_or_else(|| "go-to-window requires 'index'".to_owned())?;
             if index == 0 {
                 return Err("go-to-window index starts at 1".to_owned());
@@ -594,6 +607,28 @@ mod tests {
         assert_eq!(canonical_key_name("Ctrl B").unwrap(), "ctrl b");
         assert_eq!(canonical_key_name("Escape").unwrap(), "esc");
         assert_eq!(canonical_key_name("G").unwrap(), "G");
+    }
+
+    #[test]
+    fn parameterized_actions_reject_unrelated_arguments() {
+        assert_eq!(
+            parse_action("switch-mode", Some("normal".to_owned()), Some(1), None).unwrap_err(),
+            "switch-mode accepts only the 'mode' argument"
+        );
+        assert_eq!(
+            parse_action(
+                "send-key",
+                Some("normal".to_owned()),
+                None,
+                Some("x".to_owned())
+            )
+            .unwrap_err(),
+            "send-key accepts only the 'key' argument"
+        );
+        assert_eq!(
+            parse_action("go-to-window", None, Some(1), Some("x".to_owned())).unwrap_err(),
+            "go-to-window accepts only the 'index' argument"
+        );
     }
 
     #[test]
