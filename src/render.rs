@@ -701,7 +701,7 @@ fn overlay_floating_cells(
         };
     let border_cell = |contents: char| CellSnapshot {
         contents: contents.to_string(),
-        style: CellStyle::border(),
+        style: CellStyle::active_border(),
         wide_continuation: false,
     };
 
@@ -728,7 +728,7 @@ fn overlay_floating_cells(
     let title_cells = styled_text_cells(
         &title,
         usize::from(layout.width.saturating_sub(2)),
-        CellStyle::border(),
+        CellStyle::active_border(),
     );
     for (offset, cell) in title_cells.into_iter().enumerate() {
         replace(cells, 0, offset as u16 + 1, cell);

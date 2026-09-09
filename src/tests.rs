@@ -658,6 +658,7 @@ fn floating_terminal_is_composited_over_the_active_tab() {
     assert!(frame.contains("base contents"));
     assert!(frame.contains("┌─ float "));
     assert!(frame.contains("floating contents"));
+    assert!(frame.contains("\x1b[1m\x1b[38;2;166;227;161m┌─ float "));
     assert!(frame.contains(" 1 base "));
     assert!(!frame.contains(" 2 float "));
 }
