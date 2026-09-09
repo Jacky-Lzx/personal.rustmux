@@ -54,6 +54,7 @@ pub(super) struct Window {
     pub(super) pending_graphics: Vec<Vec<u8>>,
     pub(super) history_mode: bool,
     pub(super) command_output: SemanticOutputCapture,
+    pub(super) notification_applications: Vec<String>,
     pub(super) temporary_file: Option<PathBuf>,
     pub(super) return_to_window: Option<usize>,
 }
@@ -339,6 +340,7 @@ impl App {
                     pending_graphics: Vec::new(),
                     history_mode: false,
                     command_output: SemanticOutputCapture::default(),
+                    notification_applications: Vec::new(),
                     temporary_file: options.temporary_file,
                     return_to_window: options.return_to_window,
                 });
@@ -360,6 +362,7 @@ impl App {
 
         while !self.windows.is_empty() {
             self.reload_config_if_changed()?;
+            self.track_foreground_applications();
             self.flush_scheduled_redraw()?;
             let expired_input = self.input_decoder.flush_if_expired();
             if !expired_input.is_empty() && !self.handle_decoded_input(&expired_input)? {
@@ -466,6 +469,28 @@ impl App {
             self.renderer.invalidate();
         }
         self.redraw()
+    }
+
+    fn track_foreground_applications(&mut self) {
+        for window in &mut self.windows {
+            if window.command_output.command_started_at.is_none() {
+                continue;
+            }
+            let Ok(foreground) = tcgetpgrp(&window.master) else {
+                continue;
+            };
+            if foreground == window.child {
+                continue;
+            }
+            if let Some(application) = process_name(foreground)
+                && !window
+                    .notification_applications
+                    .iter()
+                    .any(|observed| observed.eq_ignore_ascii_case(&application))
+            {
+                window.notification_applications.push(application);
+            }
+        }
     }
 
     fn attach_client(&mut self, stream: UnixStream) -> Result<()> {
@@ -1146,7 +1171,19 @@ impl App {
                 graphics_changed = true;
             }
         }
+        let command_was_running = self.windows[index]
+            .command_output
+            .command_started_at
+            .is_some();
         let completions = self.windows[index].command_output.process(&parsed.terminal);
+        if !command_was_running
+            && self.windows[index]
+                .command_output
+                .command_started_at
+                .is_some()
+        {
+            self.windows[index].notification_applications.clear();
+        }
         self.windows[index].terminal.process(&parsed.terminal);
         let screen = self.windows[index].terminal.screen();
         let (screen_rows, screen_columns) = screen.size();
@@ -1169,11 +1206,20 @@ impl App {
         }
         if let Some(seconds) = self.config.command_notification_seconds() {
             let threshold = Duration::from_secs(seconds);
-            for duration in completions {
-                if duration >= threshold {
+            let excluded = self.config.notification_excludes_any_application(
+                self.windows[index]
+                    .notification_applications
+                    .iter()
+                    .map(String::as_str),
+            );
+            for &duration in &completions {
+                if duration >= threshold && !excluded {
                     self.notify_command_finished(index, duration)?;
                 }
             }
+        }
+        if !completions.is_empty() {
+            self.windows[index].notification_applications.clear();
         }
         let base_tab = self.windows[render_base_index(&self.windows, self.active)].tab_id;
         let visible = index == self.active
@@ -1226,6 +1272,7 @@ impl App {
             return Ok(());
         }
         if bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+            self.windows[self.active].notification_applications.clear();
             self.windows[self.active].command_output.command_submitted();
         }
         write_fd(&self.windows[self.active].master, bytes)
@@ -1785,6 +1832,41 @@ fn signal_window(window: &Window, signal: Signal) {
     }
     let _ = kill(Pid::from_raw(-window.child.as_raw()), signal);
     let _ = kill(window.child, signal);
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn process_name(pid: Pid) -> Option<String> {
+    let mut buffer = [0_u8; 256];
+    // SAFETY: proc_name only writes up to the provided buffer size and does not
+    // retain the pointer after returning.
+    let length = unsafe {
+        nix::libc::proc_name(
+            pid.as_raw(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len().try_into().ok()?,
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+    let length = usize::try_from(length).ok()?.min(buffer.len());
+    let end = buffer[..length]
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(length);
+    (!buffer[..end].is_empty()).then(|| String::from_utf8_lossy(&buffer[..end]).into_owned())
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn process_name(pid: Pid) -> Option<String> {
+    let name = fs::read_to_string(format!("/proc/{}/comm", pid.as_raw())).ok()?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(super) fn process_name(_: Pid) -> Option<String> {
+    None
 }
 
 fn wait_for_child(child: Pid, timeout: Duration) -> bool {

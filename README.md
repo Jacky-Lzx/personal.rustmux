@@ -71,6 +71,7 @@ compact = false
 [notifications]
 enabled = true
 command_duration_seconds = 10
+exclude_applications = ["yazi", "nvim"]
 
 [keybinds.locked]
 "Ctrl b" = [{ action = "switch-mode", mode = "normal" }]
@@ -127,7 +128,10 @@ compact = true
 [notifications]
 enabled = true
 command_duration_seconds = 10
+exclude_applications = ["yazi", "nvim"]
 ```
+
+`exclude_applications` 按可执行文件名过滤通知，不区分大小写；即使这些应用运行时间超过阈值也不会通知。rustmux 会检查整条命令运行期间出现过的所有前台应用，因此 `yazi` 外面包有负责切换目录的 fish 函数时也能正确过滤。默认过滤 `yazi` 和 `nvim`，可以加入其他应用；设置为 `[]` 可取消过滤。该列表也支持热重载。
 
 该功能依赖 shell integration 提供的命令边界，默认的 fish 可以直接使用。通知需要 session 当前连接着一个 Kitty 客户端；detach 期间没有终端可接收通知。设置 `enabled = false` 可以关闭。
 

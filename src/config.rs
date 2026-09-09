@@ -61,6 +61,7 @@ compact = false
 [notifications]
 enabled = true
 command_duration_seconds = 10
+exclude_applications = ["yazi", "nvim"]
 
 [keybinds.locked]
 "Ctrl b" = [{ action = "switch-mode", mode = "normal" }]
@@ -172,6 +173,7 @@ pub struct Config {
     compact: bool,
     notifications_enabled: bool,
     command_duration_seconds: u64,
+    notification_excluded_applications: Vec<String>,
     bindings: HashMap<String, HashMap<String, Vec<Action>>>,
 }
 
@@ -192,6 +194,7 @@ struct ConfigFile {
 struct NotificationsFile {
     enabled: Option<bool>,
     command_duration_seconds: Option<u64>,
+    exclude_applications: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -250,6 +253,9 @@ impl Config {
             if let Some(seconds) = notifications.command_duration_seconds {
                 self.command_duration_seconds = seconds;
             }
+            if let Some(applications) = notifications.exclude_applications {
+                self.notification_excluded_applications = normalize_applications(applications)?;
+            }
         }
         self.merge_bindings(user.keybinds)?;
         self.validate()
@@ -268,6 +274,9 @@ impl Config {
             compact: file.compact.unwrap_or(false),
             notifications_enabled: notifications.enabled.unwrap_or(true),
             command_duration_seconds: notifications.command_duration_seconds.unwrap_or(10),
+            notification_excluded_applications: normalize_applications(
+                notifications.exclude_applications.unwrap_or_default(),
+            )?,
             bindings: HashMap::new(),
         };
         config.merge_bindings(file.keybinds)?;
@@ -333,6 +342,28 @@ impl Config {
     pub fn command_notification_seconds(&self) -> Option<u64> {
         self.notifications_enabled
             .then_some(self.command_duration_seconds)
+    }
+
+    pub fn notification_excludes_application(&self, application: Option<&str>) -> bool {
+        let Some(application) = application else {
+            return false;
+        };
+        let application = Path::new(application)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(application);
+        self.notification_excluded_applications
+            .iter()
+            .any(|excluded| excluded.eq_ignore_ascii_case(application))
+    }
+
+    pub fn notification_excludes_any_application<'a>(
+        &self,
+        applications: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
+        applications
+            .into_iter()
+            .any(|application| self.notification_excludes_application(Some(application)))
     }
 
     pub fn compact(&self) -> bool {
@@ -580,6 +611,28 @@ fn normalize_mode(mode: &str) -> Result<String, String> {
     Ok(mode)
 }
 
+fn normalize_applications(applications: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for application in applications {
+        let application = application.trim();
+        if application.is_empty() {
+            return Err("notification application names cannot be empty".to_owned());
+        }
+        let name = Path::new(application)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(application)
+            .to_owned();
+        if !normalized
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&name))
+        {
+            normalized.push(name);
+        }
+    }
+    Ok(normalized)
+}
+
 pub fn canonical_key_name(key: &str) -> Result<String, String> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
@@ -683,6 +736,8 @@ mod tests {
             )
         );
         assert_eq!(config.command_notification_seconds(), Some(10));
+        assert!(config.notification_excludes_application(Some("yazi")));
+        assert!(config.notification_excludes_application(Some("nvim")));
         assert_eq!(
             config.actions("pane", "r"),
             Some(
@@ -794,6 +849,56 @@ enabled = false
         .unwrap();
         config.apply_user(disabled).unwrap();
         assert_eq!(config.command_notification_seconds(), None);
+    }
+
+    #[test]
+    fn user_can_exclude_applications_from_command_notifications() {
+        let defaults: ConfigFile = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
+        let mut config = Config::from_file(defaults, None).unwrap();
+        let user: ConfigFile = toml::from_str(
+            r#"
+[notifications]
+exclude_applications = ["yazi", "/usr/bin/NVIM", "yazi"]
+"#,
+        )
+        .unwrap();
+
+        config.apply_user(user).unwrap();
+
+        assert!(config.notification_excludes_application(Some("yazi")));
+        assert!(config.notification_excludes_application(Some("/opt/homebrew/bin/nvim")));
+        assert!(!config.notification_excludes_application(Some("cargo")));
+        assert!(!config.notification_excludes_application(None));
+        assert!(config.notification_excludes_any_application(["yazi", "cat", "rm"]));
+        assert!(!config.notification_excludes_any_application(["cat", "rm"]));
+
+        let clear: ConfigFile = toml::from_str(
+            r#"
+[notifications]
+exclude_applications = []
+"#,
+        )
+        .unwrap();
+        config.apply_user(clear).unwrap();
+        assert!(!config.notification_excludes_application(Some("yazi")));
+    }
+
+    #[test]
+    fn empty_notification_application_name_is_rejected() {
+        let defaults: ConfigFile = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
+        let mut config = Config::from_file(defaults, None).unwrap();
+        let user: ConfigFile = toml::from_str(
+            r#"
+[notifications]
+exclude_applications = ["  "]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.apply_user(user).unwrap_err(),
+            "notification application names cannot be empty"
+        );
     }
 
     #[test]

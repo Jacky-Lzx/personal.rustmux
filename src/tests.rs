@@ -5,8 +5,8 @@ use nix::unistd::Pid;
 
 use super::*;
 use crate::app::{
-    RenameEdit, TextSelection, Window, edit_window_name, matching_sessions, rename_tab,
-    selected_text, selection_contains, window_history,
+    RenameEdit, TextSelection, Window, edit_window_name, matching_sessions, process_name,
+    rename_tab, selected_text, selection_contains, window_history,
 };
 use crate::input::{
     DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
@@ -58,9 +58,16 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         pending_graphics: Vec::new(),
         history_mode: false,
         command_output: SemanticOutputCapture::default(),
+        notification_applications: Vec::new(),
         temporary_file: None,
         return_to_window: None,
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn process_name_resolves_the_running_process() {
+    assert!(process_name(Pid::this()).is_some());
 }
 
 #[test]
