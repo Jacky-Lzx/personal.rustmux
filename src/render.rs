@@ -268,7 +268,12 @@ impl Renderer {
         }
         if title_changed && current.outer_border {
             let _ = write!(output, "\x1b[2;1H");
-            draw_terminal_border(&mut output, &current.terminal_title, terminal_size.0);
+            draw_terminal_border(
+                &mut output,
+                &current.terminal_title,
+                terminal_size.0,
+                !windows[active].floating,
+            );
         }
         if (status_changed || mode_changed || history_changed)
             && !current.compact
@@ -440,7 +445,7 @@ impl FrameSnapshot {
                     &mut cells,
                     (columns, rows),
                     window,
-                    index == base,
+                    index == active,
                     selection,
                 );
             } else {
@@ -907,7 +912,12 @@ pub(super) fn render_frame(
     draw_window_bar(&mut output, windows, active, width, snapshot);
     if snapshot.outer_border {
         let _ = write!(output, "\x1b[2;1H");
-        draw_terminal_border(&mut output, &snapshot.terminal_title, width);
+        draw_terminal_border(
+            &mut output,
+            &snapshot.terminal_title,
+            width,
+            !windows[active].floating,
+        );
     }
 
     for row in 0..content_rows {
@@ -922,7 +932,16 @@ pub(super) fn render_frame(
             }
         );
         if snapshot.outer_border {
-            write_rgb_style(&mut output, MOCHA_GREEN, None, false);
+            write_rgb_style(
+                &mut output,
+                if windows[active].floating {
+                    MOCHA_OVERLAY_0
+                } else {
+                    MOCHA_GREEN
+                },
+                None,
+                false,
+            );
             output.extend_from_slice("│\x1b[0m".as_bytes());
         }
         let mut previous_style = None;
@@ -943,7 +962,16 @@ pub(super) fn render_frame(
             }
         }
         if snapshot.outer_border {
-            write_rgb_style(&mut output, MOCHA_GREEN, None, false);
+            write_rgb_style(
+                &mut output,
+                if windows[active].floating {
+                    MOCHA_OVERLAY_0
+                } else {
+                    MOCHA_GREEN
+                },
+                None,
+                false,
+            );
             output.extend_from_slice("│".as_bytes());
         }
     }
@@ -961,7 +989,7 @@ pub(super) fn render_frame(
     if !snapshot.compact && height > 1 {
         if snapshot.outer_border && height > 2 {
             let _ = write!(output, "\x1b[{};1H", height - 1);
-            draw_bottom_border(&mut output, width);
+            draw_bottom_border(&mut output, width, !windows[active].floating);
         }
         draw_bottom_status(&mut output, snapshot);
     }
@@ -1629,12 +1657,17 @@ fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     output.extend_from_slice(b"\x1b[0m");
 }
 
-fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
+fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16, active: bool) {
     if width == 0 {
         return;
     }
     output.extend_from_slice(b"\x1b[0;49m\x1b[2K");
-    write_rgb_style(output, MOCHA_GREEN, None, false);
+    write_rgb_style(
+        output,
+        if active { MOCHA_GREEN } else { MOCHA_OVERLAY_0 },
+        None,
+        false,
+    );
     output.extend_from_slice("┌".as_bytes());
     let inner_width = usize::from(width.saturating_sub(2));
     let decorated = format!("─ {title} ");
@@ -1648,11 +1681,16 @@ fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
     }
 }
 
-fn draw_bottom_border(output: &mut Vec<u8>, width: u16) {
+fn draw_bottom_border(output: &mut Vec<u8>, width: u16, active: bool) {
     if width == 0 {
         return;
     }
-    write_rgb_style(output, MOCHA_GREEN, None, false);
+    write_rgb_style(
+        output,
+        if active { MOCHA_GREEN } else { MOCHA_OVERLAY_0 },
+        None,
+        false,
+    );
     output.extend_from_slice("└".as_bytes());
     let inner_width = usize::from(width.saturating_sub(2));
     for _ in 0..inner_width {

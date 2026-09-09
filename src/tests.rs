@@ -659,8 +659,49 @@ fn floating_terminal_is_composited_over_the_active_tab() {
     assert!(frame.contains("┌─ float "));
     assert!(frame.contains("floating contents"));
     assert!(frame.contains("\x1b[1m\x1b[38;2;166;227;161m┌─ float "));
+    assert!(frame.contains("\x1b[0;38;2;108;112;134;49m┌─ base "));
     assert!(frame.contains(" 1 base "));
     assert!(!frame.contains(" 2 float "));
+
+    let restored = renderer.render(&windows[..1], 0, (40, 15), "locked", None, &[]);
+    let restored = String::from_utf8(restored).unwrap();
+    assert!(restored.contains("\x1b[0;38;2;166;227;161;49m┌─ base "));
+}
+
+#[test]
+fn floating_terminal_unfocuses_every_tiled_pane() {
+    let mut left = test_window(1, "left", 10, 18);
+    left.tab_id = 1;
+    left.pane_framed = true;
+    left.pane_rect = PaneRect {
+        column: 0,
+        row: 0,
+        width: 20,
+        height: 12,
+    };
+    let mut right = test_window(2, "right", 10, 18);
+    right.tab_id = 1;
+    right.pane_framed = true;
+    right.pane_rect = PaneRect {
+        column: 20,
+        row: 0,
+        width: 20,
+        height: 12,
+    };
+    let mut floating = test_window(3, "float", 6, 26);
+    floating.tab_id = 1;
+    floating.floating = true;
+    floating.return_to_window = Some(2);
+    let windows = vec![left, right, floating];
+
+    let snapshot = FrameSnapshot::capture(&windows, 2, (40, 15), "locked", None, None);
+    let frame = String::from_utf8(render_frame(&windows, 2, &snapshot, &[])).unwrap();
+
+    assert!(frame.contains("┌─ left "));
+    assert!(frame.contains("┌─ right "));
+    assert!(!frame.contains("\x1b[1m\x1b[38;2;166;227;161m┌─ left "));
+    assert!(!frame.contains("\x1b[1m\x1b[38;2;166;227;161m┌─ right "));
+    assert!(frame.contains("\x1b[1m\x1b[38;2;166;227;161m┌─ float "));
 }
 
 #[test]
