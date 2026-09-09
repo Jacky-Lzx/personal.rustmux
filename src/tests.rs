@@ -13,9 +13,9 @@ use crate::input::{
     sgr_mouse_at,
 };
 use crate::layout::{
-    FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for, content_winsize_for,
-    floating_layout_for, pane_ids, pane_rects, remove_pane, split_pane, tiled_content_rect_for,
-    validate_terminal_size, window_winsize_for,
+    Direction, FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for,
+    content_winsize_for, floating_layout_for, pane_ids, pane_rects, remove_pane, resize_pane,
+    split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
 use crate::render::{
     CellStyle, FrameSnapshot, Renderer, SessionManagerView, render_frame, session_manager_rect,
@@ -47,6 +47,7 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
             height: rows,
         },
         pane_framed: false,
+        zoomed: false,
         master,
         child: Pid::from_raw(1),
         terminal: vt100::Parser::new_with_callbacks(
@@ -563,6 +564,61 @@ fn pane_layout_splits_the_active_leaf_and_collapses_after_removal() {
     );
     let root = remove_pane(root, 2).unwrap();
     assert_eq!(pane_ids(&root), vec![1, 3]);
+}
+
+#[test]
+fn pane_layout_resizes_the_nearest_boundary() {
+    let mut root = PaneNode::Leaf(1);
+    assert!(split_pane(&mut root, 1, 2, SplitAxis::Vertical));
+    assert!(split_pane(&mut root, 2, 3, SplitAxis::Horizontal));
+    assert!(resize_pane(&mut root, 2, Direction::Down));
+    assert!(resize_pane(&mut root, 2, Direction::Left));
+    let rects = pane_rects(
+        &root,
+        PaneRect {
+            column: 0,
+            row: 0,
+            width: 100,
+            height: 20,
+        },
+    );
+    assert_eq!(rects[0].1.width, 45);
+    assert_eq!(
+        rects[1].1,
+        PaneRect {
+            column: 45,
+            row: 0,
+            width: 55,
+            height: 11
+        }
+    );
+    assert_eq!(
+        rects[2].1,
+        PaneRect {
+            column: 45,
+            row: 11,
+            width: 55,
+            height: 9
+        }
+    );
+}
+
+#[test]
+fn zoomed_pane_is_rendered_as_the_only_full_size_pane() {
+    let mut first = test_window(1, "left", 6, 38);
+    first.tab_id = 1;
+    let mut second = test_window(2, "right", 6, 38);
+    second.tab_id = 1;
+    second.zoomed = true;
+    second.terminal.process(b"zoomed contents");
+    let windows = vec![first, second];
+
+    let snapshot = FrameSnapshot::capture(&windows, 1, (40, 10), "locked", None, None);
+    let frame = String::from_utf8(render_frame(&windows, 1, &snapshot, &[])).unwrap();
+    assert!(snapshot.outer_border);
+    assert_eq!(snapshot.content_size, (38, 6));
+    assert!(frame.contains("zoomed contents"));
+    assert!(!frame.contains("┌─ left"));
 }
 
 #[test]

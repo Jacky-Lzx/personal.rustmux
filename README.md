@@ -33,6 +33,8 @@ Pane mode 下可以使用：
 - `d`：在当前 pane 下方创建 pane
 - `h` / `j` / `k` / `l` 或方向键：向对应方向切换焦点
 - Tab：循环切换 pane
+- `H` / `J` / `K` / `L`：向左 / 下 / 上 / 右扩展当前 pane
+- `z`：切换当前 pane 的全屏显示
 - `x`：关闭当前 pane；若它是 tab 内最后一个 pane，则关闭整个 tab
 - `q` / Esc：退出 pane mode
 
@@ -103,10 +105,15 @@ h = ["focus-left", { action = "switch-mode", mode = "locked" }]
 j = ["focus-down", { action = "switch-mode", mode = "locked" }]
 k = ["focus-up", { action = "switch-mode", mode = "locked" }]
 l = ["focus-right", { action = "switch-mode", mode = "locked" }]
+H = ["resize-pane-left"]
+J = ["resize-pane-down"]
+K = ["resize-pane-up"]
+L = ["resize-pane-right"]
+z = ["toggle-pane-zoom"]
 x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 ```
 
-一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`switch-session`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
+一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`switch-session`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`resize-pane-left`、`resize-pane-right`、`resize-pane-up`、`resize-pane-down`、`toggle-pane-zoom`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
 
 ```toml
 key = [{ action = "switch-mode", mode = "locked" }]
@@ -180,4 +187,4 @@ RUSTMUX_SHELL=zsh rustmux
 
 ## MVP 边界
 
-当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 tab 内的水平/垂直 pane、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现 pane resize、pane 移动、pane 全屏和鼠标点击切换焦点。
+当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 tab 内的水平/垂直 pane、pane resize 与全屏、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现 pane 移动和鼠标点击切换焦点。

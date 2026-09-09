@@ -329,7 +329,11 @@ impl FrameSnapshot {
         let tab_panes = windows
             .iter()
             .enumerate()
-            .filter(|(_, window)| !window.floating && window.tab_id == tab_id)
+            .filter(|(index, window)| {
+                !window.floating
+                    && window.tab_id == tab_id
+                    && (!windows[active].zoomed || *index == active)
+            })
             .collect::<Vec<_>>();
         let outer_border = tab_panes.len() == 1;
         let (columns, rows) = if outer_border {

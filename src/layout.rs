@@ -23,6 +23,7 @@ pub(super) enum PaneNode {
     Leaf(usize),
     Split {
         axis: SplitAxis,
+        ratio: u16,
         first: Box<PaneNode>,
         second: Box<PaneNode>,
     },
@@ -85,6 +86,7 @@ pub(super) fn split_pane(
         PaneNode::Leaf(id) if *id == target => {
             *node = PaneNode::Split {
                 axis,
+                ratio: 500,
                 first: Box::new(PaneNode::Leaf(target)),
                 second: Box::new(PaneNode::Leaf(new_id)),
             };
@@ -102,6 +104,7 @@ pub(super) fn remove_pane(node: PaneNode, target: usize) -> Option<PaneNode> {
         PaneNode::Leaf(id) => (id != target).then_some(PaneNode::Leaf(id)),
         PaneNode::Split {
             axis,
+            ratio,
             first,
             second,
         } => {
@@ -110,6 +113,7 @@ pub(super) fn remove_pane(node: PaneNode, target: usize) -> Option<PaneNode> {
             match (first, second) {
                 (Some(first), Some(second)) => Some(PaneNode::Split {
                     axis,
+                    ratio,
                     first: Box::new(first),
                     second: Box::new(second),
                 }),
@@ -142,12 +146,13 @@ pub(super) fn pane_rects(node: &PaneNode, rect: PaneRect) -> Vec<(usize, PaneRec
             PaneNode::Leaf(id) => rects.push((*id, rect)),
             PaneNode::Split {
                 axis,
+                ratio,
                 first,
                 second,
             } => {
                 let (a, b) = match axis {
                     SplitAxis::Vertical => {
-                        let first_width = rect.width / 2;
+                        let first_width = split_extent(rect.width, *ratio);
                         (
                             PaneRect {
                                 width: first_width,
@@ -161,7 +166,7 @@ pub(super) fn pane_rects(node: &PaneNode, rect: PaneRect) -> Vec<(usize, PaneRec
                         )
                     }
                     SplitAxis::Horizontal => {
-                        let first_height = rect.height / 2;
+                        let first_height = split_extent(rect.height, *ratio);
                         (
                             PaneRect {
                                 height: first_height,
@@ -182,6 +187,53 @@ pub(super) fn pane_rects(node: &PaneNode, rect: PaneRect) -> Vec<(usize, PaneRec
     }
     layout(node, rect, &mut rects);
     rects
+}
+
+fn split_extent(total: u16, ratio: u16) -> u16 {
+    let extent = u32::from(total) * u32::from(ratio) / 1_000;
+    let minimum = total.min(3);
+    (extent as u16).clamp(minimum, total.saturating_sub(minimum).max(minimum))
+}
+
+pub(super) fn resize_pane(node: &mut PaneNode, target: usize, direction: Direction) -> bool {
+    const STEP: u16 = 50;
+    const MIN_RATIO: u16 = 100;
+    const MAX_RATIO: u16 = 900;
+
+    let PaneNode::Split {
+        axis,
+        ratio,
+        first,
+        second,
+    } = node
+    else {
+        return false;
+    };
+    let in_first = pane_ids(first).contains(&target);
+    let in_second = pane_ids(second).contains(&target);
+    if !in_first && !in_second {
+        return false;
+    }
+    let child_resized = if in_first {
+        resize_pane(first, target, direction)
+    } else {
+        resize_pane(second, target, direction)
+    };
+    if child_resized {
+        return true;
+    }
+    let adjustment = match (*axis, direction, in_first, in_second) {
+        (SplitAxis::Vertical, Direction::Right, true, _) => i16::try_from(STEP).unwrap(),
+        (SplitAxis::Vertical, Direction::Left, _, true) => -i16::try_from(STEP).unwrap(),
+        (SplitAxis::Horizontal, Direction::Down, true, _) => i16::try_from(STEP).unwrap(),
+        (SplitAxis::Horizontal, Direction::Up, _, true) => -i16::try_from(STEP).unwrap(),
+        _ => return false,
+    };
+    let updated = (i32::from(*ratio) + i32::from(adjustment))
+        .clamp(i32::from(MIN_RATIO), i32::from(MAX_RATIO)) as u16;
+    let changed = updated != *ratio;
+    *ratio = updated;
+    changed
 }
 
 pub(super) fn pane_pty_size(rect: PaneRect, framed: bool) -> (u16, u16) {

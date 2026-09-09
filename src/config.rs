@@ -107,6 +107,11 @@ down = ["focus-down", { action = "switch-mode", mode = "locked" }]
 up = ["focus-up", { action = "switch-mode", mode = "locked" }]
 right = ["focus-right", { action = "switch-mode", mode = "locked" }]
 tab = ["focus-next-pane", { action = "switch-mode", mode = "locked" }]
+H = ["resize-pane-left"]
+J = ["resize-pane-down"]
+K = ["resize-pane-up"]
+L = ["resize-pane-right"]
+z = ["toggle-pane-zoom"]
 x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 q = [{ action = "switch-mode", mode = "locked" }]
 esc = [{ action = "switch-mode", mode = "locked" }]
@@ -165,6 +170,11 @@ pub enum Action {
     FocusDown,
     FocusNextPane,
     ClosePane,
+    ResizePaneLeft,
+    ResizePaneRight,
+    ResizePaneUp,
+    ResizePaneDown,
+    TogglePaneZoom,
 }
 
 #[derive(Clone, Debug)]
@@ -423,6 +433,11 @@ impl Action {
             Self::FocusDown => "focus-down".to_owned(),
             Self::FocusNextPane => "focus-next-pane".to_owned(),
             Self::ClosePane => "close-pane".to_owned(),
+            Self::ResizePaneLeft => "resize-left".to_owned(),
+            Self::ResizePaneRight => "resize-right".to_owned(),
+            Self::ResizePaneUp => "resize-up".to_owned(),
+            Self::ResizePaneDown => "resize-down".to_owned(),
+            Self::TogglePaneZoom => "zoom-pane".to_owned(),
         }
     }
 }
@@ -593,6 +608,26 @@ fn parse_action(
         "close-pane" => {
             no_arguments()?;
             Action::ClosePane
+        }
+        "resize-pane-left" => {
+            no_arguments()?;
+            Action::ResizePaneLeft
+        }
+        "resize-pane-right" => {
+            no_arguments()?;
+            Action::ResizePaneRight
+        }
+        "resize-pane-up" => {
+            no_arguments()?;
+            Action::ResizePaneUp
+        }
+        "resize-pane-down" => {
+            no_arguments()?;
+            Action::ResizePaneDown
+        }
+        "toggle-pane-zoom" => {
+            no_arguments()?;
+            Action::TogglePaneZoom
         }
         _ => return Err(format!("unknown action '{name}'")),
     };

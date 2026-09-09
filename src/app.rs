@@ -24,7 +24,7 @@ use crate::input::{
 use crate::layout::{
     Direction, PaneNode, PaneRect, SplitAxis, content_rect_for, directional_distance,
     floating_layout_for, pane_ids, pane_pty_size, pane_rects, rect_in_direction, remove_pane,
-    split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
+    resize_pane, split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
 use crate::render::{Renderer, SessionManagerView, render_base_index};
 use crate::session::{available_sessions, ensure_session_dir, validate_session_name};
@@ -48,6 +48,7 @@ pub(super) struct Window {
     pub(super) floating: bool,
     pub(super) pane_rect: PaneRect,
     pub(super) pane_framed: bool,
+    pub(super) zoomed: bool,
     pub(super) master: OwnedFd,
     pub(super) child: Pid,
     pub(super) terminal: vt100::Parser<TerminalMetadata>,
@@ -336,6 +337,7 @@ impl App {
                     floating: options.floating,
                     pane_rect: content_rect_for(self.terminal_size, self.config.compact()),
                     pane_framed: false,
+                    zoomed: false,
                     master,
                     child,
                     terminal: vt100::Parser::new_with_callbacks(
@@ -859,6 +861,11 @@ impl App {
                 Action::FocusDown => self.focus_pane(Direction::Down)?,
                 Action::FocusNextPane => self.focus_next_pane()?,
                 Action::ClosePane => self.close_pane()?,
+                Action::ResizePaneLeft => self.resize_active_pane(Direction::Left)?,
+                Action::ResizePaneRight => self.resize_active_pane(Direction::Right)?,
+                Action::ResizePaneUp => self.resize_active_pane(Direction::Up)?,
+                Action::ResizePaneDown => self.resize_active_pane(Direction::Down)?,
+                Action::TogglePaneZoom => self.toggle_pane_zoom()?,
             }
         }
         Ok(true)
@@ -1520,7 +1527,7 @@ impl App {
     }
 
     fn focus_next_pane(&mut self) -> Result<()> {
-        if self.windows[self.active].floating {
+        if self.windows[self.active].floating || self.windows[self.active].zoomed {
             return Ok(());
         }
         let tab_id = self.windows[self.active].tab_id;
@@ -1549,7 +1556,7 @@ impl App {
     }
 
     fn focus_pane(&mut self, direction: Direction) -> Result<()> {
-        if self.windows[self.active].floating {
+        if self.windows[self.active].floating || self.windows[self.active].zoomed {
             return Ok(());
         }
         let tab_id = self.windows[self.active].tab_id;
@@ -1579,6 +1586,41 @@ impl App {
             self.redraw()?;
         }
         Ok(())
+    }
+
+    fn resize_active_pane(&mut self, direction: Direction) -> Result<()> {
+        if self.windows[self.active].floating || self.windows[self.active].zoomed {
+            return Ok(());
+        }
+        let tab_id = self.windows[self.active].tab_id;
+        let pane_id = self.windows[self.active].id;
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
+            return Ok(());
+        };
+        if !resize_pane(&mut tab.root, pane_id, direction) {
+            return self.notify("no pane boundary in that direction");
+        }
+        self.resize_windows()?;
+        self.renderer.invalidate();
+        self.redraw()
+    }
+
+    fn toggle_pane_zoom(&mut self) -> Result<()> {
+        if self.windows[self.active].floating {
+            return Ok(());
+        }
+        let tab_id = self.windows[self.active].tab_id;
+        let zoom = !self.windows[self.active].zoomed;
+        for window in &mut self.windows {
+            if window.tab_id == tab_id {
+                window.zoomed = false;
+            }
+        }
+        self.windows[self.active].zoomed = zoom;
+        self.selection = None;
+        self.resize_windows()?;
+        self.renderer.invalidate();
+        self.redraw()
     }
 
     fn close_pane(&mut self) -> Result<()> {
@@ -1630,6 +1672,11 @@ impl App {
         for index in 0..self.windows.len() {
             let (columns, rows) = if self.windows[index].floating {
                 floating_layout_for(self.terminal_size, self.config.compact()).content_size()
+            } else if self.windows[index].zoomed {
+                let rect = content_rect_for(self.terminal_size, self.config.compact());
+                self.windows[index].pane_rect = rect;
+                self.windows[index].pane_framed = false;
+                pane_pty_size(rect, false)
             } else {
                 let (_, rect, framed, size) = sizes
                     .iter()
