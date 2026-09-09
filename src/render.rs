@@ -1523,7 +1523,7 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         output.extend_from_slice(label.as_bytes());
     }
 
-    let footer = "─ Esc close ";
+    let footer = "─ Esc close · press a key to run ";
     let (footer, footer_width) = truncate_to_display_width(footer, inner_width);
     let _ = write!(output, "\x1b[{};{}H", origin_row + rows - 1, origin_column);
     write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);

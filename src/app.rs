@@ -206,7 +206,7 @@ pub(super) struct App {
     rename_state: Option<RenameState>,
     history_search: Option<HistorySearchState>,
     session_manager: Option<SessionManagerState>,
-    help_visible: bool,
+    help_mode: Option<String>,
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
     client_input: Vec<u8>,
@@ -252,7 +252,7 @@ impl App {
             rename_state: None,
             history_search: None,
             session_manager: None,
-            help_visible: false,
+            help_mode: None,
             client: None,
             outer_dnd_window: None,
             client_input: Vec::new(),
@@ -879,12 +879,23 @@ impl App {
         let mut index = 0;
         let mut selection_cleared = false;
         while index < bytes.len() {
-            if self.help_visible {
+            if let Some(help_mode) = self.help_mode.clone() {
                 let (key, consumed) = decode_key(&bytes[index..]);
-                if matches!(key.name.as_str(), "esc" | "q" | "?" | "enter") {
-                    self.help_visible = false;
+                if matches!(key.name.as_str(), "esc" | "?") {
+                    self.help_mode = None;
                     self.renderer.set_help(None);
                     self.redraw()?;
+                } else if let Some(actions) = self
+                    .config
+                    .actions(&help_mode, &key.name)
+                    .map(<[Action]>::to_vec)
+                {
+                    self.help_mode = None;
+                    self.renderer.set_help(None);
+                    self.redraw()?;
+                    if !self.execute_actions(&actions)? {
+                        return Ok(false);
+                    }
                 }
                 index += consumed;
                 continue;
@@ -1434,7 +1445,7 @@ impl App {
         self.renderer.set_history_search_prompt(None);
         self.session_manager = None;
         self.renderer.set_session_manager(None);
-        self.help_visible = false;
+        self.help_mode = None;
         self.renderer.set_help(None);
         for window in &mut self.windows {
             window.history_mode = false;
@@ -2410,7 +2421,7 @@ impl App {
     }
 
     fn show_help(&mut self) -> Result<()> {
-        self.help_visible = true;
+        self.help_mode = Some(self.mode.clone());
         self.renderer.set_help(Some(HelpView {
             mode: self.mode.clone(),
             hints: self.config.describe_mode(&self.mode),
