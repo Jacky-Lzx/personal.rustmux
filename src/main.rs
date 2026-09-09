@@ -43,6 +43,7 @@ const CLIENT_INPUT: u8 = b'I';
 const CLIENT_RESIZE: u8 = b'R';
 const CLIENT_SHUTDOWN: u8 = b'Q';
 const MAX_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_TERMINAL_CELLS: usize = 1_000_000;
 const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 const CLIPBOARD_STATUS: &str = "copied to system clipboard";
 const CLIPBOARD_STATUS_DURATION: Duration = Duration::from_secs(2);
@@ -885,8 +886,12 @@ impl App {
 
             self.reap_children()?;
             if let Some(event) = client_event {
-                if event.contains(PollFlags::POLLIN) && !self.read_client_messages()? {
-                    break;
+                if event.contains(PollFlags::POLLIN) {
+                    match self.read_client_messages() {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        Err(_) => self.detach_client(),
+                    }
                 }
                 if event.intersects(PollFlags::POLLHUP | PollFlags::POLLERR)
                     && self.client.is_some()
@@ -1792,6 +1797,7 @@ impl App {
     }
 
     fn update_size(&mut self, new_size: (u16, u16), new_pixels: (u16, u16)) -> Result<()> {
+        validate_terminal_size(new_size)?;
         if new_size == self.terminal_size && new_pixels == self.terminal_pixels {
             return Ok(());
         }
@@ -3264,6 +3270,19 @@ fn content_size((columns, rows): (u16, u16)) -> (u16, u16) {
     )
 }
 
+fn validate_terminal_size((columns, rows): (u16, u16)) -> Result<()> {
+    if columns == 0 || rows == 0 {
+        return Err("terminal dimensions must be non-zero".into());
+    }
+    if usize::from(columns) * usize::from(rows) > MAX_TERMINAL_CELLS {
+        return Err(format!(
+            "terminal dimensions {columns}x{rows} exceed the supported canvas size"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn content_rect(terminal_size: (u16, u16)) -> PaneRect {
     let (width, height) = content_size(terminal_size);
     PaneRect {
@@ -3727,6 +3746,7 @@ fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
     let rows = values[1].parse()?;
     let width = values[2].parse()?;
     let height = values[3].parse()?;
+    validate_terminal_size((columns, rows))?;
     ensure_session_dir()?;
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
@@ -3902,6 +3922,16 @@ mod tests {
         assert_eq!(value.ws_row, 59);
         assert_eq!(value.ws_xpixel, 3672);
         assert_eq!(value.ws_ypixel, 1947);
+    }
+
+    #[test]
+    fn terminal_size_validation_bounds_frame_allocations() {
+        assert!(validate_terminal_size((1, 1)).is_ok());
+        assert!(validate_terminal_size((1_000, 1_000)).is_ok());
+        assert!(validate_terminal_size((0, 24)).is_err());
+        assert!(validate_terminal_size((80, 0)).is_err());
+        assert!(validate_terminal_size((1_001, 1_000)).is_err());
+        assert!(validate_terminal_size((u16::MAX, u16::MAX)).is_err());
     }
 
     #[test]
