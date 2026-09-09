@@ -1307,9 +1307,10 @@ impl App {
             let window = &self.windows[self.active];
             let inset = u16::from(window.pane_framed);
             let (columns, rows) = pane_pty_size(window.pane_rect, window.pane_framed);
+            let (base_column, base_row) = if window.pane_framed { (1, 2) } else { (2, 3) };
             (
-                2 + window.pane_rect.column + inset,
-                3 + window.pane_rect.row + inset,
+                base_column + window.pane_rect.column + inset,
+                base_row + window.pane_rect.row + inset,
                 columns,
                 rows,
             )
@@ -1581,11 +1582,16 @@ impl App {
     }
 
     fn resize_windows(&mut self) -> Result<()> {
-        let content = content_rect(self.terminal_size);
         let mut sizes = Vec::new();
         for tab in &self.tabs {
+            let pane_count = pane_ids(&tab.root).len();
+            let framed = pane_count > 1;
+            let content = if framed {
+                tiled_content_rect(self.terminal_size)
+            } else {
+                content_rect(self.terminal_size)
+            };
             let rects = pane_rects(&tab.root, content);
-            let framed = rects.len() > 1;
             for (id, rect) in rects {
                 sizes.push((id, rect, framed, pane_pty_size(rect, framed)));
             }
@@ -2218,6 +2224,9 @@ impl Renderer {
         };
 
         if previous.terminal_size != current.terminal_size
+            || previous.content_size != current.content_size
+            || previous.content_origin != current.content_origin
+            || previous.outer_border != current.outer_border
             || previous.active_id != current.active_id
             || previous.tabs != current.tabs
             || previous.cells.len() != current.cells.len()
@@ -2227,7 +2236,7 @@ impl Renderer {
             return output;
         }
 
-        let (content_columns, content_rows) = content_size(terminal_size);
+        let (content_columns, content_rows) = current.content_size;
         let columns = usize::from(content_columns);
         let mut changes = Vec::new();
         for row in 0..usize::from(content_rows) {
@@ -2264,7 +2273,12 @@ impl Renderer {
         if graphics_changed && !previous.terminal_state.hide_cursor {
             output.extend_from_slice(b"\x1b[?25l");
         }
-        append_graphics(&mut output, graphics, &current.terminal_state);
+        append_graphics(
+            &mut output,
+            graphics,
+            &current.terminal_state,
+            current.content_origin,
+        );
         if cells_changed
             || state_changed
             || graphics_changed
@@ -2288,11 +2302,11 @@ impl Renderer {
             let _ = write!(output, "\x1b[1;1H\x1b[32m");
             draw_window_bar(&mut output, windows, active, terminal_size.0, mode);
         }
-        if title_changed {
+        if title_changed && current.outer_border {
             let _ = write!(output, "\x1b[2;1H\x1b[32m");
             draw_terminal_border(&mut output, &current.terminal_title, terminal_size.0);
         }
-        if status_changed && terminal_size.1 > 1 {
+        if status_changed && current.outer_border && terminal_size.1 > 1 {
             let _ = write!(output, "\x1b[{};1H\x1b[32m", terminal_size.1);
             draw_bottom_border(
                 &mut output,
@@ -2301,7 +2315,12 @@ impl Renderer {
             );
         }
         for (row, first, last) in changes {
-            let _ = write!(output, "\x1b[{};{}H", row + 3, first + 2);
+            let _ = write!(
+                output,
+                "\x1b[{};{}H",
+                row + usize::from(current.content_origin.1),
+                first + usize::from(current.content_origin.0)
+            );
             let mut previous_style = None;
             for cell in &current.cells[row * columns + first..=row * columns + last] {
                 if cell.wide_continuation {
@@ -2331,6 +2350,7 @@ impl Renderer {
                 &mut output,
                 &previous.terminal_state,
                 &current.terminal_state,
+                current.content_origin,
                 cells_changed
                     || graphics_changed
                     || history_changed
@@ -2348,6 +2368,9 @@ impl Renderer {
 #[derive(Eq, PartialEq)]
 struct FrameSnapshot {
     terminal_size: (u16, u16),
+    content_size: (u16, u16),
+    content_origin: (u16, u16),
+    outer_border: bool,
     active_id: usize,
     tabs: Vec<(usize, String)>,
     mode: String,
@@ -2369,13 +2392,20 @@ impl FrameSnapshot {
         border_status: Option<&str>,
     ) -> Self {
         let base = render_base_index(windows, active);
-        let (columns, rows) = content_size(terminal_size);
         let tab_id = windows[base].tab_id;
         let tab_panes = windows
             .iter()
             .enumerate()
             .filter(|(_, window)| !window.floating && window.tab_id == tab_id)
             .collect::<Vec<_>>();
+        let outer_border = tab_panes.len() == 1;
+        let (columns, rows) = if outer_border {
+            content_size(terminal_size)
+        } else {
+            let rect = tiled_content_rect(terminal_size);
+            (rect.width, rect.height)
+        };
+        let content_origin = if outer_border { (2, 3) } else { (1, 2) };
         let mut cells = (0..usize::from(columns) * usize::from(rows))
             .map(|_| CellSnapshot::blank())
             .collect::<Vec<_>>();
@@ -2383,12 +2413,12 @@ impl FrameSnapshot {
             if window.pane_framed {
                 overlay_pane_cells(
                     &mut cells,
-                    columns,
-                    rows,
+                    (columns, rows),
                     window,
                     index == base,
                     selection,
                     mode,
+                    (index == base).then_some(border_status).flatten(),
                 );
             } else {
                 let screen = window.terminal.screen();
@@ -2412,12 +2442,12 @@ impl FrameSnapshot {
         if windows[active].floating {
             overlay_floating_cells(
                 &mut cells,
-                columns,
-                rows,
+                (columns, rows),
                 &windows[active],
                 floating_layout(terminal_size),
                 selection,
                 mode,
+                content_origin,
             );
         }
         let active_screen = windows[active].terminal.screen();
@@ -2428,14 +2458,18 @@ impl FrameSnapshot {
         );
         if windows[active].floating {
             let layout = floating_layout(terminal_size);
-            terminal_state.cursor.0 = terminal_state
-                .cursor
-                .0
-                .saturating_add(layout.row.saturating_sub(2));
-            terminal_state.cursor.1 = terminal_state
-                .cursor
-                .1
-                .saturating_add(layout.column.saturating_sub(1));
+            terminal_state.cursor.0 = terminal_state.cursor.0.saturating_add(
+                layout
+                    .row
+                    .saturating_add(1)
+                    .saturating_sub(content_origin.1),
+            );
+            terminal_state.cursor.1 = terminal_state.cursor.1.saturating_add(
+                layout
+                    .column
+                    .saturating_add(1)
+                    .saturating_sub(content_origin.0),
+            );
         } else if windows[active].pane_framed {
             terminal_state.cursor.0 = terminal_state
                 .cursor
@@ -2448,6 +2482,9 @@ impl FrameSnapshot {
         }
         Self {
             terminal_size,
+            content_size: (columns, rows),
+            content_origin,
+            outer_border,
             active_id: windows[active].id,
             tabs: windows.iter().filter(|window| !window.floating).fold(
                 Vec::new(),
@@ -2493,13 +2530,14 @@ fn render_base_index(windows: &[Window], active: usize) -> usize {
 
 fn overlay_pane_cells(
     cells: &mut [CellSnapshot],
-    columns: u16,
-    rows: u16,
+    canvas_size: (u16, u16),
     window: &Window,
     active: bool,
     selection: Option<&TextSelection>,
     mode: &str,
+    border_status: Option<&str>,
 ) {
+    let (columns, rows) = canvas_size;
     let rect = window.pane_rect;
     let border_cell = |contents: char| CellSnapshot {
         contents: contents.to_string(),
@@ -2551,6 +2589,21 @@ fn overlay_pane_cells(
     {
         replace(cells, 0, offset as u16 + 1, border_cell(character));
     }
+    if let Some(status) = border_status {
+        let label = format!("─ {status} ");
+        for (offset, character) in label
+            .chars()
+            .take(usize::from(rect.width.saturating_sub(2)))
+            .enumerate()
+        {
+            replace(
+                cells,
+                rect.height.saturating_sub(1),
+                offset as u16 + 1,
+                border_cell(character),
+            );
+        }
+    }
     let screen = window.terminal.screen();
     let (content_columns, content_rows) = pane_pty_size(rect, true);
     for row in 0..content_rows {
@@ -2578,15 +2631,16 @@ fn overlay_pane_cells(
 
 fn overlay_floating_cells(
     cells: &mut [CellSnapshot],
-    columns: u16,
-    rows: u16,
+    canvas_size: (u16, u16),
     window: &Window,
     layout: FloatingLayout,
     selection: Option<&TextSelection>,
     mode: &str,
+    content_origin: (u16, u16),
 ) {
-    let first_row = layout.row.saturating_sub(3);
-    let first_column = layout.column.saturating_sub(2);
+    let (columns, rows) = canvas_size;
+    let first_row = layout.row.saturating_sub(content_origin.1);
+    let first_column = layout.column.saturating_sub(content_origin.0);
     let last_column = first_column
         .saturating_add(layout.width.saturating_sub(1))
         .min(columns.saturating_sub(1));
@@ -2609,8 +2663,14 @@ fn overlay_floating_cells(
 
     let replace =
         |cells: &mut [CellSnapshot], local_row: u16, local_column: u16, cell: CellSnapshot| {
-            let row = layout.row.saturating_sub(3).saturating_add(local_row);
-            let column = layout.column.saturating_sub(2).saturating_add(local_column);
+            let row = layout
+                .row
+                .saturating_sub(content_origin.1)
+                .saturating_add(local_row);
+            let column = layout
+                .column
+                .saturating_sub(content_origin.0)
+                .saturating_add(local_column);
             if row < rows && column < columns {
                 cells[usize::from(row) * usize::from(columns) + usize::from(column)] = cell;
             }
@@ -2777,18 +2837,37 @@ fn render_frame(
 ) -> Vec<u8> {
     let terminal_size = snapshot.terminal_size;
     let (width, height) = terminal_size;
-    let (content_columns, content_rows) = content_size(terminal_size);
+    let (content_columns, content_rows) = snapshot.content_size;
     let mut output = Vec::with_capacity(usize::from(width) * usize::from(height) * 2);
 
     output.extend_from_slice(b"\x1b[?25l\x1b[2J");
-    append_graphics(&mut output, graphics, &snapshot.terminal_state);
+    append_graphics(
+        &mut output,
+        graphics,
+        &snapshot.terminal_state,
+        snapshot.content_origin,
+    );
     output.extend_from_slice(b"\x1b[H");
     draw_window_bar(&mut output, windows, active, width, &snapshot.mode);
-    let _ = write!(output, "\x1b[2;1H\x1b[32m");
-    draw_terminal_border(&mut output, &snapshot.terminal_title, width);
+    if snapshot.outer_border {
+        let _ = write!(output, "\x1b[2;1H\x1b[32m");
+        draw_terminal_border(&mut output, &snapshot.terminal_title, width);
+    }
 
     for row in 0..content_rows {
-        let _ = write!(output, "\x1b[{};1H\x1b[32m│\x1b[0m", row + 3);
+        let _ = write!(
+            output,
+            "\x1b[{};{}H",
+            row + snapshot.content_origin.1,
+            if snapshot.outer_border {
+                1
+            } else {
+                snapshot.content_origin.0
+            }
+        );
+        if snapshot.outer_border {
+            output.extend_from_slice(b"\x1b[32m\xE2\x94\x82\x1b[0m");
+        }
         let mut previous_style = None;
         for column in 0..content_columns {
             let cell = &snapshot.cells
@@ -2806,31 +2885,48 @@ fn render_frame(
                 output.push(b' ');
             }
         }
-        output.extend_from_slice("\x1b[0;32m│".as_bytes());
+        if snapshot.outer_border {
+            output.extend_from_slice("\x1b[0;32m│".as_bytes());
+        }
     }
 
-    if height > 1 {
+    if snapshot.outer_border && height > 1 {
         let _ = write!(output, "\x1b[{height};1H\x1b[32m");
         draw_bottom_border(&mut output, width, snapshot.border_status.as_deref());
     }
 
-    append_terminal_state(&mut output, &snapshot.terminal_state, windows[active].id);
+    append_terminal_state(
+        &mut output,
+        &snapshot.terminal_state,
+        windows[active].id,
+        snapshot.content_origin,
+    );
     output
 }
 
-fn append_graphics(output: &mut Vec<u8>, graphics: &[Vec<u8>], state: &TerminalState) {
+fn append_graphics(
+    output: &mut Vec<u8>,
+    graphics: &[Vec<u8>],
+    state: &TerminalState,
+    origin: (u16, u16),
+) {
     if graphics.is_empty() {
         return;
     }
     output.reserve(graphics.iter().map(Vec::len).sum());
     let (row, column) = state.cursor;
-    let _ = write!(output, "\x1b[{};{}H", row + 3, column + 2);
+    let _ = write!(output, "\x1b[{};{}H", row + origin.1, column + origin.0);
     for command in graphics {
         output.extend_from_slice(command);
     }
 }
 
-fn append_terminal_state(output: &mut Vec<u8>, state: &TerminalState, active_id: usize) {
+fn append_terminal_state(
+    output: &mut Vec<u8>,
+    state: &TerminalState,
+    active_id: usize,
+    origin: (u16, u16),
+) {
     let (cursor_row, cursor_column) = state.cursor;
     let _ = write!(
         output,
@@ -2839,8 +2935,8 @@ fn append_terminal_state(output: &mut Vec<u8>, state: &TerminalState, active_id:
         if state.application_cursor { 'h' } else { 'l' },
         if state.bracketed_paste { 'h' } else { 'l' },
         state.cursor_style,
-        cursor_row + 3,
-        cursor_column + 2,
+        cursor_row + origin.1,
+        cursor_column + origin.0,
         if state.hide_cursor { 'l' } else { 'h' },
     );
 }
@@ -2849,6 +2945,7 @@ fn append_terminal_state_diff(
     output: &mut Vec<u8>,
     previous: &TerminalState,
     current: &TerminalState,
+    origin: (u16, u16),
     cells_changed: bool,
 ) {
     output.extend_from_slice(b"\x1b[0m");
@@ -2871,7 +2968,7 @@ fn append_terminal_state_diff(
     }
     if cells_changed || previous.cursor != current.cursor {
         let (row, column) = current.cursor;
-        let _ = write!(output, "\x1b[{};{}H", row + 3, column + 2);
+        let _ = write!(output, "\x1b[{};{}H", row + origin.1, column + origin.0);
     }
     if cells_changed || previous.hide_cursor != current.hide_cursor {
         let _ = write!(
@@ -3174,6 +3271,15 @@ fn content_rect(terminal_size: (u16, u16)) -> PaneRect {
         row: 0,
         width,
         height,
+    }
+}
+
+fn tiled_content_rect((columns, rows): (u16, u16)) -> PaneRect {
+    PaneRect {
+        column: 0,
+        row: 0,
+        width: columns.max(1),
+        height: rows.saturating_sub(1).max(1),
     }
 }
 
@@ -4072,24 +4178,24 @@ mod tests {
 
     #[test]
     fn tiled_panes_are_composited_inside_one_tab() {
-        let mut left = test_window(1, "fish", 10, 17);
+        let mut left = test_window(1, "fish", 12, 18);
         left.tab_id = 1;
         left.pane_framed = true;
         left.pane_rect = PaneRect {
             column: 0,
             row: 0,
-            width: 19,
-            height: 12,
+            width: 20,
+            height: 14,
         };
         left.terminal.process(b"left pane");
-        let mut right = test_window(2, "fish", 10, 17);
+        let mut right = test_window(2, "fish", 12, 18);
         right.tab_id = 1;
         right.pane_framed = true;
         right.pane_rect = PaneRect {
-            column: 19,
+            column: 20,
             row: 0,
-            width: 19,
-            height: 12,
+            width: 20,
+            height: 14,
         };
         right.terminal.process(b"right pane");
         let windows = vec![left, right];
@@ -4100,9 +4206,13 @@ mod tests {
         assert!(frame.contains("left pane"));
         assert!(frame.contains("right pane"));
         assert!(frame.contains("┌─ fish"));
+        assert_eq!(frame.matches("┌─ fish").count(), 2);
         assert!(frame.contains(" 1 fish "));
         assert!(!frame.contains(" 2 fish "));
         assert_eq!(snapshot.tabs, vec![(1, "fish".to_owned())]);
+        assert!(!snapshot.outer_border);
+        assert_eq!(snapshot.content_size, (40, 14));
+        assert_eq!(snapshot.content_origin, (1, 2));
     }
 
     #[test]
