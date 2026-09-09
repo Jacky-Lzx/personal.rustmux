@@ -36,10 +36,28 @@ h = ["edit-history", { action = "switch-mode", mode = "locked" }]
 e = ["edit-last-output", { action = "switch-mode", mode = "locked" }]
 y = ["copy-last-output", { action = "switch-mode", mode = "locked" }]
 i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
+"Ctrl p" = [{ action = "switch-mode", mode = "pane" }]
 "&" = ["close-window", { action = "switch-mode", mode = "locked" }]
 x = ["close-window", { action = "switch-mode", mode = "locked" }]
 d = ["detach"]
 "?" = ["show-help", { action = "switch-mode", mode = "locked" }]
+
+[keybinds.pane]
+r = ["new-pane-right", { action = "switch-mode", mode = "locked" }]
+d = ["new-pane-down", { action = "switch-mode", mode = "locked" }]
+n = ["new-pane-right", { action = "switch-mode", mode = "locked" }]
+h = ["focus-left", { action = "switch-mode", mode = "locked" }]
+j = ["focus-down", { action = "switch-mode", mode = "locked" }]
+k = ["focus-up", { action = "switch-mode", mode = "locked" }]
+l = ["focus-right", { action = "switch-mode", mode = "locked" }]
+left = ["focus-left", { action = "switch-mode", mode = "locked" }]
+down = ["focus-down", { action = "switch-mode", mode = "locked" }]
+up = ["focus-up", { action = "switch-mode", mode = "locked" }]
+right = ["focus-right", { action = "switch-mode", mode = "locked" }]
+tab = ["focus-next-pane", { action = "switch-mode", mode = "locked" }]
+x = ["close-pane", { action = "switch-mode", mode = "locked" }]
+q = [{ action = "switch-mode", mode = "locked" }]
+esc = [{ action = "switch-mode", mode = "locked" }]
 
 [keybinds.scroll]
 up = ["scroll-up"]
@@ -85,6 +103,14 @@ pub enum Action {
     EditLastOutput,
     CopyLastOutput,
     ToggleFloatingTerminal,
+    NewPaneRight,
+    NewPaneDown,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
+    FocusNextPane,
+    ClosePane,
 }
 
 #[derive(Clone, Debug)]
@@ -283,6 +309,14 @@ impl Action {
             Self::EditLastOutput => "edit-last-output".to_owned(),
             Self::CopyLastOutput => "copy-last-output".to_owned(),
             Self::ToggleFloatingTerminal => "toggle-floating-terminal".to_owned(),
+            Self::NewPaneRight => "new-pane-right".to_owned(),
+            Self::NewPaneDown => "new-pane-down".to_owned(),
+            Self::FocusLeft => "focus-left".to_owned(),
+            Self::FocusRight => "focus-right".to_owned(),
+            Self::FocusUp => "focus-up".to_owned(),
+            Self::FocusDown => "focus-down".to_owned(),
+            Self::FocusNextPane => "focus-next-pane".to_owned(),
+            Self::ClosePane => "close-pane".to_owned(),
         }
     }
 }
@@ -401,6 +435,38 @@ fn parse_action(
             no_arguments()?;
             Action::ToggleFloatingTerminal
         }
+        "new-pane-right" => {
+            no_arguments()?;
+            Action::NewPaneRight
+        }
+        "new-pane-down" => {
+            no_arguments()?;
+            Action::NewPaneDown
+        }
+        "focus-left" => {
+            no_arguments()?;
+            Action::FocusLeft
+        }
+        "focus-right" => {
+            no_arguments()?;
+            Action::FocusRight
+        }
+        "focus-up" => {
+            no_arguments()?;
+            Action::FocusUp
+        }
+        "focus-down" => {
+            no_arguments()?;
+            Action::FocusDown
+        }
+        "focus-next-pane" => {
+            no_arguments()?;
+            Action::FocusNextPane
+        }
+        "close-pane" => {
+            no_arguments()?;
+            Action::ClosePane
+        }
         _ => return Err(format!("unknown action '{name}'")),
     };
     Ok(action)
@@ -512,6 +578,15 @@ mod tests {
             )
         );
         assert_eq!(config.command_notification_seconds(), Some(10));
+        assert_eq!(
+            config.actions("pane", "r"),
+            Some(
+                &[
+                    Action::NewPaneRight,
+                    Action::SwitchMode("locked".to_owned())
+                ][..]
+            )
+        );
     }
 
     #[test]

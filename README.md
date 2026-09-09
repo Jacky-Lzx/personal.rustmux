@@ -20,9 +20,19 @@
 - `e`：用编辑器打开上一条命令的输出
 - `y`：通过 OSC 52 把上一条命令的输出复制到系统剪贴板
 - `i`：显示或隐藏居中的浮动 terminal；首次使用时创建一个独立 PTY shell
+- `Ctrl-p`：进入 pane mode
 - `&`：关闭当前窗口
 - `d`：detach，断开当前终端；session 和其中的程序继续在后台运行
 - 再按一次 `Ctrl-b`：把 `Ctrl-b` 发送给当前 shell
+
+Pane mode 下可以使用：
+
+- `r` / `n`：在当前 pane 右侧创建 pane
+- `d`：在当前 pane 下方创建 pane
+- `h` / `j` / `k` / `l` 或方向键：向对应方向切换焦点
+- Tab：循环切换 pane
+- `x`：关闭当前 pane；若它是 tab 内最后一个 pane，则关闭整个 tab
+- `q` / Esc：退出 pane mode
 
 历史模式下可以使用：
 
@@ -67,6 +77,7 @@ c = ["new-window", { action = "switch-mode", mode = "locked" }]
 n = ["next-window", { action = "switch-mode", mode = "locked" }]
 "1" = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
 i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
+"Ctrl p" = [{ action = "switch-mode", mode = "pane" }]
 enter = [{ action = "switch-mode", mode = "scroll" }]
 d = ["detach"]
 
@@ -76,9 +87,18 @@ j = ["scroll-down"]
 E = ["scroll-bottom", { action = "switch-mode", mode = "locked" }, "edit-history"]
 y = ["copy-last-output", "scroll-bottom", { action = "switch-mode", mode = "locked" }]
 esc = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
+
+[keybinds.pane]
+r = ["new-pane-right", { action = "switch-mode", mode = "locked" }]
+d = ["new-pane-down", { action = "switch-mode", mode = "locked" }]
+h = ["focus-left", { action = "switch-mode", mode = "locked" }]
+j = ["focus-down", { action = "switch-mode", mode = "locked" }]
+k = ["focus-up", { action = "switch-mode", mode = "locked" }]
+l = ["focus-right", { action = "switch-mode", mode = "locked" }]
+x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 ```
 
-一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`next-window`、`previous-window`、`toggle-floating-terminal`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
+一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`next-window`、`previous-window`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
 
 ```toml
 key = [{ action = "switch-mode", mode = "locked" }]
@@ -143,4 +163,4 @@ RUSTMUX_SHELL=zsh rustmux
 
 ## MVP 边界
 
-当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持终端字符与像素尺寸同步，并为每个窗口维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现分屏、鼠标点击转发和配置文件。
+当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 tab 内的水平/垂直 pane、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现 pane resize、pane 移动、pane 全屏和鼠标点击切换焦点。

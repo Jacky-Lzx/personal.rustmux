@@ -77,8 +77,11 @@ impl Drop for TerminalGuard {
 
 struct Window {
     id: usize,
+    tab_id: usize,
     name: String,
     floating: bool,
+    pane_rect: PaneRect,
+    pane_framed: bool,
     master: OwnedFd,
     child: Pid,
     terminal: vt100::Parser<TerminalMetadata>,
@@ -89,6 +92,51 @@ struct Window {
     command_output: SemanticOutputCapture,
     temporary_file: Option<PathBuf>,
     return_to_window: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SplitAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Copy)]
+enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PaneNode {
+    Leaf(usize),
+    Split {
+        axis: SplitAxis,
+        first: Box<PaneNode>,
+        second: Box<PaneNode>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct Tab {
+    id: usize,
+    root: PaneNode,
+}
+
+struct SpawnOptions {
+    temporary_file: Option<PathBuf>,
+    return_to_window: Option<usize>,
+    floating: bool,
+    tab_id: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PaneRect {
+    column: u16,
+    row: u16,
+    width: u16,
+    height: u16,
 }
 
 #[derive(Default)]
@@ -610,6 +658,7 @@ impl InputDecoder {
 
 struct App {
     windows: Vec<Window>,
+    tabs: Vec<Tab>,
     active: usize,
     next_id: usize,
     next_notification_id: u64,
@@ -632,6 +681,7 @@ impl App {
         let mode = config.default_mode.clone();
         let mut app = Self {
             windows: Vec::new(),
+            tabs: Vec::new(),
             active: 0,
             next_id: 1,
             next_notification_id: 1,
@@ -660,7 +710,24 @@ impl App {
             .unwrap_or(&shell)
             .to_owned();
         let shell = CString::new(shell)?;
-        self.spawn_window(name, shell.clone(), vec![shell], None, None, false)
+        let tab_id = self.next_id;
+        let pane_id = self.spawn_window(
+            name.clone(),
+            shell.clone(),
+            vec![shell],
+            SpawnOptions {
+                temporary_file: None,
+                return_to_window: None,
+                floating: false,
+                tab_id,
+            },
+        )?;
+        self.tabs.push(Tab {
+            id: tab_id,
+            root: PaneNode::Leaf(pane_id),
+        });
+        self.resize_windows()?;
+        self.redraw()
     }
 
     fn toggle_floating_terminal(&mut self) -> Result<()> {
@@ -677,6 +744,7 @@ impl App {
         let return_to = self.windows[self.active].id;
         if let Some(index) = self.windows.iter().position(|window| window.floating) {
             self.windows[index].return_to_window = Some(return_to);
+            self.windows[index].tab_id = self.windows[self.active].tab_id;
             self.active = index;
             self.selection = None;
             return self.redraw();
@@ -689,14 +757,19 @@ impl App {
             .unwrap_or(&shell)
             .to_owned();
         let shell = CString::new(shell)?;
+        let tab_id = self.windows[self.active].tab_id;
         self.spawn_window(
             name,
             shell.clone(),
             vec![shell],
-            None,
-            Some(return_to),
-            true,
-        )
+            SpawnOptions {
+                temporary_file: None,
+                return_to_window: Some(return_to),
+                floating: true,
+                tab_id,
+            },
+        )?;
+        self.redraw()
     }
 
     fn spawn_window(
@@ -704,11 +777,9 @@ impl App {
         name: String,
         program: CString,
         arguments: Vec<CString>,
-        temporary_file: Option<PathBuf>,
-        return_to_window: Option<usize>,
-        floating: bool,
-    ) -> Result<()> {
-        let winsize = window_winsize(self.terminal_size, self.terminal_pixels, floating);
+        options: SpawnOptions,
+    ) -> Result<usize> {
+        let winsize = window_winsize(self.terminal_size, self.terminal_pixels, options.floating);
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
 
         // SAFETY: the child immediately calls execvp and _exit, both of which are
@@ -721,8 +792,11 @@ impl App {
                 self.next_id += 1;
                 self.windows.push(Window {
                     id,
+                    tab_id: options.tab_id,
                     name,
-                    floating,
+                    floating: options.floating,
+                    pane_rect: content_rect(self.terminal_size),
+                    pane_framed: false,
                     master,
                     child,
                     terminal: vt100::Parser::new_with_callbacks(
@@ -736,12 +810,12 @@ impl App {
                     pending_graphics: Vec::new(),
                     history_mode: false,
                     command_output: SemanticOutputCapture::default(),
-                    temporary_file,
-                    return_to_window,
+                    temporary_file: options.temporary_file,
+                    return_to_window: options.return_to_window,
                 });
                 self.active = self.windows.len() - 1;
                 self.renderer.invalidate();
-                self.redraw()?;
+                Ok(id)
             }
             ForkptyResult::Child => {
                 let _ = execvp(&program, &arguments);
@@ -749,7 +823,6 @@ impl App {
                 unsafe { nix::libc::_exit(127) };
             }
         }
-        Ok(())
     }
 
     fn run_server(&mut self, listener: UnixListener) -> Result<()> {
@@ -994,6 +1067,14 @@ impl App {
                 Action::EditLastOutput => self.open_last_output_in_editor()?,
                 Action::CopyLastOutput => self.copy_last_output()?,
                 Action::ToggleFloatingTerminal => self.toggle_floating_terminal()?,
+                Action::NewPaneRight => self.new_pane(SplitAxis::Vertical)?,
+                Action::NewPaneDown => self.new_pane(SplitAxis::Horizontal)?,
+                Action::FocusLeft => self.focus_pane(Direction::Left)?,
+                Action::FocusRight => self.focus_pane(Direction::Right)?,
+                Action::FocusUp => self.focus_pane(Direction::Up)?,
+                Action::FocusDown => self.focus_pane(Direction::Down)?,
+                Action::FocusNextPane => self.focus_next_pane()?,
+                Action::ClosePane => self.close_pane()?,
             }
         }
         Ok(true)
@@ -1061,18 +1142,30 @@ impl App {
             CString::new(path.as_os_str().as_encoded_bytes())?,
         ];
         let return_to = self.windows[self.active].id;
-        if let Err(error) = self.spawn_window(
+        let tab_id = self.next_id;
+        let pane_id = match self.spawn_window(
             label.to_owned(),
             shell,
             arguments,
-            Some(path.clone()),
-            Some(return_to),
-            false,
+            SpawnOptions {
+                temporary_file: Some(path.clone()),
+                return_to_window: Some(return_to),
+                floating: false,
+                tab_id,
+            },
         ) {
-            let _ = fs::remove_file(path);
-            return Err(error);
-        }
-        Ok(())
+            Ok(id) => id,
+            Err(error) => {
+                let _ = fs::remove_file(path);
+                return Err(error);
+            }
+        };
+        self.tabs.push(Tab {
+            id: tab_id,
+            root: PaneNode::Leaf(pane_id),
+        });
+        self.resize_windows()?;
+        self.redraw()
     }
 
     fn copy_last_output(&mut self) -> Result<()> {
@@ -1211,8 +1304,15 @@ impl App {
             let (columns, rows) = layout.content_size();
             (layout.column + 1, layout.row + 1, columns, rows)
         } else {
-            let (columns, rows) = content_size(self.terminal_size);
-            (2, 3, columns, rows)
+            let window = &self.windows[self.active];
+            let inset = u16::from(window.pane_framed);
+            let (columns, rows) = pane_pty_size(window.pane_rect, window.pane_framed);
+            (
+                2 + window.pane_rect.column + inset,
+                3 + window.pane_rect.row + inset,
+                columns,
+                rows,
+            )
         };
         let column = i32::from(position.column) - i32::from(origin_column);
         let row = i32::from(position.row) - i32::from(origin_row);
@@ -1231,7 +1331,8 @@ impl App {
         if self.windows[self.active].floating {
             floating_layout(self.terminal_size).content_size()
         } else {
-            content_size(self.terminal_size)
+            let window = &self.windows[self.active];
+            pane_pty_size(window.pane_rect, window.pane_framed)
         }
     }
 
@@ -1254,13 +1355,17 @@ impl App {
         let completions = self.windows[index].command_output.process(&parsed.terminal);
         self.windows[index].terminal.process(&parsed.terminal);
         let screen = self.windows[index].terminal.screen();
+        let (screen_rows, screen_columns) = screen.size();
+        let cell_width = self.terminal_pixels.0 / self.terminal_size.0.max(1);
+        let cell_height = self.terminal_pixels.1 / self.terminal_size.1.max(1);
         graphics_responses.extend_from_slice(&terminal_responses(
             &parsed.terminal,
-            window_winsize(
-                self.terminal_size,
-                self.terminal_pixels,
-                self.windows[index].floating,
-            ),
+            Winsize {
+                ws_col: screen_columns,
+                ws_row: screen_rows,
+                ws_xpixel: screen_columns.saturating_mul(cell_width),
+                ws_ypixel: screen_rows.saturating_mul(cell_height),
+            },
             &self.terminal_identity,
             screen.cursor_position(),
             screen.bracketed_paste(),
@@ -1276,7 +1381,10 @@ impl App {
                 }
             }
         }
-        if index == self.active && (terminal_changed || graphics_changed) {
+        let base_tab = self.windows[render_base_index(&self.windows, self.active)].tab_id;
+        let visible = index == self.active
+            || (!self.windows[index].floating && self.windows[index].tab_id == base_tab);
+        if visible && (terminal_changed || graphics_changed) {
             if flush_graphics_immediately {
                 // A shared-memory object must be opened by the outer terminal
                 // promptly. Flush every older graphics command with it so a
@@ -1329,18 +1437,198 @@ impl App {
         write_fd(&self.windows[self.active].master, bytes)
     }
 
-    fn select_relative(&mut self, offset: isize) -> Result<()> {
-        let regular = self
+    fn new_pane(&mut self, axis: SplitAxis) -> Result<()> {
+        if self.windows[self.active].floating {
+            return self.notify("hide the floating terminal before splitting a pane");
+        }
+        let tab_id = self.windows[self.active].tab_id;
+        let active_id = self.windows[self.active].id;
+        let rect = self.windows[self.active].pane_rect;
+        let enough_space = match axis {
+            SplitAxis::Vertical => rect.width >= 12,
+            SplitAxis::Horizontal => rect.height >= 6,
+        };
+        if !enough_space {
+            return self.notify("not enough space to split this pane");
+        }
+        let shell_name = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
+        let name = Path::new(&shell_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&shell_name)
+            .to_owned();
+        let shell = CString::new(shell_name)?;
+        let new_id = self.spawn_window(
+            name,
+            shell.clone(),
+            vec![shell],
+            SpawnOptions {
+                temporary_file: None,
+                return_to_window: None,
+                floating: false,
+                tab_id,
+            },
+        )?;
+        let tab = self.tabs.iter_mut().find(|tab| tab.id == tab_id).unwrap();
+        if !split_pane(&mut tab.root, active_id, new_id, axis) {
+            let index = self
+                .windows
+                .iter()
+                .position(|window| window.id == new_id)
+                .unwrap();
+            terminate_window(self.windows.remove(index));
+            return Err("active pane is missing from its tab layout".into());
+        }
+        self.active = self
             .windows
             .iter()
-            .enumerate()
-            .filter_map(|(index, window)| (!window.floating).then_some(index))
-            .collect::<Vec<_>>();
-        if regular.len() > 1 {
-            let base = render_base_index(&self.windows, self.active);
-            let current = regular.iter().position(|index| *index == base).unwrap_or(0);
-            let next = (current as isize + offset).rem_euclid(regular.len() as isize) as usize;
-            self.active = regular[next];
+            .position(|window| window.id == new_id)
+            .unwrap();
+        self.selection = None;
+        self.resize_windows()?;
+        self.renderer.invalidate();
+        self.redraw()
+    }
+
+    fn focus_next_pane(&mut self) -> Result<()> {
+        if self.windows[self.active].floating {
+            return Ok(());
+        }
+        let tab_id = self.windows[self.active].tab_id;
+        let ids = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| pane_ids(&tab.root))
+            .unwrap_or_default();
+        if ids.len() > 1 {
+            let current = ids
+                .iter()
+                .position(|id| *id == self.windows[self.active].id)
+                .unwrap_or(0);
+            let target = ids[(current + 1) % ids.len()];
+            self.active = self
+                .windows
+                .iter()
+                .position(|window| window.id == target)
+                .unwrap();
+            self.selection = None;
+            self.renderer.invalidate();
+            self.redraw()?;
+        }
+        Ok(())
+    }
+
+    fn focus_pane(&mut self, direction: Direction) -> Result<()> {
+        if self.windows[self.active].floating {
+            return Ok(());
+        }
+        let tab_id = self.windows[self.active].tab_id;
+        let active_id = self.windows[self.active].id;
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return Ok(());
+        };
+        let rects = pane_rects(&tab.root, content_rect(self.terminal_size));
+        let Some((_, current)) = rects.iter().find(|(id, _)| *id == active_id) else {
+            return Ok(());
+        };
+        if let Some((target, _)) = rects
+            .iter()
+            .filter(|(id, rect)| *id != active_id && rect_in_direction(*current, *rect, direction))
+            .min_by_key(|(_, rect)| directional_distance(*current, *rect, direction))
+        {
+            self.active = self
+                .windows
+                .iter()
+                .position(|window| window.id == *target)
+                .unwrap();
+            self.selection = None;
+            self.renderer.invalidate();
+            self.redraw()?;
+        }
+        Ok(())
+    }
+
+    fn close_pane(&mut self) -> Result<()> {
+        if self.windows[self.active].floating {
+            return self.close_active();
+        }
+        let tab_id = self.windows[self.active].tab_id;
+        let pane_id = self.windows[self.active].id;
+        let pane_count = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| pane_ids(&tab.root).len())
+            .unwrap_or(1);
+        if pane_count == 1 {
+            return self.close_active();
+        }
+        let window = self.windows.remove(self.active);
+        terminate_window(window);
+        let tab = self.tabs.iter_mut().find(|tab| tab.id == tab_id).unwrap();
+        tab.root = remove_pane(tab.root.clone(), pane_id).expect("another pane remains");
+        let target = pane_ids(&tab.root)[0];
+        self.active = self
+            .windows
+            .iter()
+            .position(|window| window.id == target)
+            .unwrap();
+        self.selection = None;
+        self.resize_windows()?;
+        self.renderer.invalidate();
+        self.redraw()
+    }
+
+    fn resize_windows(&mut self) -> Result<()> {
+        let content = content_rect(self.terminal_size);
+        let mut sizes = Vec::new();
+        for tab in &self.tabs {
+            let rects = pane_rects(&tab.root, content);
+            let framed = rects.len() > 1;
+            for (id, rect) in rects {
+                sizes.push((id, rect, framed, pane_pty_size(rect, framed)));
+            }
+        }
+        for index in 0..self.windows.len() {
+            let (columns, rows) = if self.windows[index].floating {
+                floating_layout(self.terminal_size).content_size()
+            } else {
+                let (_, rect, framed, size) = sizes
+                    .iter()
+                    .find(|(id, _, _, _)| *id == self.windows[index].id)
+                    .copied()
+                    .unwrap_or((0, PaneRect::default(), false, (1, 1)));
+                self.windows[index].pane_rect = rect;
+                self.windows[index].pane_framed = framed;
+                size
+            };
+            resize_window(
+                &mut self.windows[index],
+                columns,
+                rows,
+                self.terminal_size,
+                self.terminal_pixels,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn select_relative(&mut self, offset: isize) -> Result<()> {
+        if self.tabs.len() > 1 {
+            let tab_id = self.windows[render_base_index(&self.windows, self.active)].tab_id;
+            let current = self
+                .tabs
+                .iter()
+                .position(|tab| tab.id == tab_id)
+                .unwrap_or(0);
+            let next = (current as isize + offset).rem_euclid(self.tabs.len() as isize) as usize;
+            let target = pane_ids(&self.tabs[next].root)[0];
+            self.active = self
+                .windows
+                .iter()
+                .position(|window| window.id == target)
+                .unwrap();
             self.selection = None;
             self.renderer.invalidate();
             self.redraw()?;
@@ -1349,15 +1637,13 @@ impl App {
     }
 
     fn select_window(&mut self, index: usize) -> Result<()> {
-        if let Some(target) = self
-            .windows
-            .iter()
-            .enumerate()
-            .filter(|(_, window)| !window.floating)
-            .nth(index.saturating_sub(1))
-            .map(|(index, _)| index)
-        {
-            self.active = target;
+        if let Some(tab) = self.tabs.get(index.saturating_sub(1)) {
+            let target = pane_ids(&tab.root)[0];
+            self.active = self
+                .windows
+                .iter()
+                .position(|window| window.id == target)
+                .unwrap();
             self.selection = None;
             self.renderer.invalidate();
             self.redraw()?;
@@ -1369,23 +1655,51 @@ impl App {
         if self.windows.is_empty() {
             return Ok(());
         }
-        let window = self.windows.remove(self.active);
-        let return_to = window.return_to_window;
-        terminate_window(window);
-        if !self.windows.iter().any(|window| !window.floating) {
+        if self.windows[self.active].floating {
+            let window = self.windows.remove(self.active);
+            let return_to = window.return_to_window;
+            terminate_window(window);
+            self.active = return_to
+                .and_then(|id| self.windows.iter().position(|window| window.id == id))
+                .unwrap_or(0);
+            self.renderer.invalidate();
+            return self.redraw();
+        }
+        let tab_id = self.windows[self.active].tab_id;
+        let tab_index = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == tab_id)
+            .unwrap_or(0);
+        let return_to = self
+            .windows
+            .iter()
+            .find(|window| window.tab_id == tab_id && window.return_to_window.is_some())
+            .and_then(|window| window.return_to_window);
+        for index in (0..self.windows.len()).rev() {
+            if self.windows[index].tab_id == tab_id {
+                terminate_window(self.windows.remove(index));
+            }
+        }
+        self.tabs.retain(|tab| tab.id != tab_id);
+        if self.tabs.is_empty() {
             for window in self.windows.drain(..) {
                 terminate_window(window);
             }
             return Ok(());
         }
-        if !self.windows.is_empty() {
-            self.active = return_to
-                .and_then(|id| self.windows.iter().position(|window| window.id == id))
-                .unwrap_or_else(|| self.active.min(self.windows.len() - 1));
-            self.renderer.invalidate();
-            self.redraw()?;
-        }
-        Ok(())
+        let target = return_to
+            .filter(|id| self.windows.iter().any(|window| window.id == *id))
+            .unwrap_or_else(|| pane_ids(&self.tabs[tab_index.min(self.tabs.len() - 1)].root)[0]);
+        self.active = self
+            .windows
+            .iter()
+            .position(|window| window.id == target)
+            .unwrap();
+        self.selection = None;
+        self.resize_windows()?;
+        self.renderer.invalidate();
+        self.redraw()
     }
 
     fn redraw(&mut self) -> Result<()> {
@@ -1478,21 +1792,7 @@ impl App {
         self.terminal_size = new_size;
         self.terminal_pixels = new_pixels;
         self.selection = None;
-        for window in &self.windows {
-            let winsize = window_winsize(new_size, new_pixels, window.floating);
-            // SAFETY: master is an open PTY descriptor and winsize is valid.
-            let result = unsafe {
-                nix::libc::ioctl(window.master.as_raw_fd(), nix::libc::TIOCSWINSZ, &winsize)
-            };
-            if result == -1 {
-                return Err(io::Error::last_os_error().into());
-            }
-        }
-        for window in &mut self.windows {
-            let winsize = window_winsize(new_size, new_pixels, window.floating);
-            let (columns, rows) = (winsize.ws_col, winsize.ws_row);
-            window.terminal.screen_mut().set_size(rows, columns);
-        }
+        self.resize_windows()?;
         self.renderer.invalidate();
         self.redraw()?;
         Ok(())
@@ -1500,6 +1800,9 @@ impl App {
 
     fn reap_children(&mut self) -> Result<()> {
         let mut removed_any = false;
+        let active_id = self.windows.get(self.active).map(|window| window.id);
+        let mut preferred = None;
+        let mut preferred_tab = None;
         let mut index = 0;
         while index < self.windows.len() {
             let pid = self.windows[index].child;
@@ -1508,33 +1811,56 @@ impl App {
                 _ => {
                     removed_any = true;
                     let window = self.windows.remove(index);
+                    if Some(window.id) == active_id {
+                        preferred = window.return_to_window;
+                        preferred_tab = Some(window.tab_id);
+                    }
                     if let Some(path) = window.temporary_file {
                         let _ = fs::remove_file(path);
                     }
-                    if index == self.active {
-                        if let Some(return_to) = window.return_to_window {
-                            self.active = self
-                                .windows
-                                .iter()
-                                .position(|window| window.id == return_to)
-                                .unwrap_or(index);
+                    if !window.floating
+                        && let Some(tab_index) =
+                            self.tabs.iter().position(|tab| tab.id == window.tab_id)
+                    {
+                        let root = remove_pane(self.tabs[tab_index].root.clone(), window.id);
+                        if let Some(root) = root {
+                            self.tabs[tab_index].root = root;
+                        } else {
+                            self.tabs.remove(tab_index);
                         }
-                    } else if index < self.active {
-                        self.active -= 1;
                     }
                 }
             }
         }
-        if !self.windows.iter().any(|window| !window.floating) {
+        if self.tabs.is_empty() {
             for window in self.windows.drain(..) {
                 terminate_window(window);
             }
             return Ok(());
         }
         if !self.windows.is_empty() {
-            self.active = self.active.min(self.windows.len() - 1);
+            let target = active_id
+                .filter(|id| self.windows.iter().any(|window| window.id == *id))
+                .or_else(|| {
+                    preferred.filter(|id| self.windows.iter().any(|window| window.id == *id))
+                })
+                .or_else(|| {
+                    preferred_tab.and_then(|tab_id| {
+                        self.tabs
+                            .iter()
+                            .find(|tab| tab.id == tab_id)
+                            .map(|tab| pane_ids(&tab.root)[0])
+                    })
+                })
+                .unwrap_or_else(|| pane_ids(&self.tabs[0].root)[0]);
+            self.active = self
+                .windows
+                .iter()
+                .position(|window| window.id == target)
+                .unwrap();
             if removed_any {
                 self.selection = None;
+                self.resize_windows()?;
                 self.renderer.invalidate();
                 self.redraw()?;
             }
@@ -2043,21 +2369,44 @@ impl FrameSnapshot {
         border_status: Option<&str>,
     ) -> Self {
         let base = render_base_index(windows, active);
-        let screen = windows[base].terminal.screen();
         let (columns, rows) = content_size(terminal_size);
-        let mut cells = Vec::with_capacity(usize::from(columns) * usize::from(rows));
-        for row in 0..rows {
-            for column in 0..columns {
-                let cell = screen.cell(row, column).expect("cell is within screen");
-                let mut style = CellStyle::from(cell);
-                if selection_contains(selection, windows[base].id, row, column, columns) {
-                    style.inverse = !style.inverse;
+        let tab_id = windows[base].tab_id;
+        let tab_panes = windows
+            .iter()
+            .enumerate()
+            .filter(|(_, window)| !window.floating && window.tab_id == tab_id)
+            .collect::<Vec<_>>();
+        let mut cells = (0..usize::from(columns) * usize::from(rows))
+            .map(|_| CellSnapshot::blank())
+            .collect::<Vec<_>>();
+        for (index, window) in tab_panes {
+            if window.pane_framed {
+                overlay_pane_cells(
+                    &mut cells,
+                    columns,
+                    rows,
+                    window,
+                    index == base,
+                    selection,
+                    mode,
+                );
+            } else {
+                let screen = window.terminal.screen();
+                for row in 0..rows {
+                    for column in 0..columns {
+                        let cell = screen.cell(row, column).expect("cell is within screen");
+                        let mut style = CellStyle::from(cell);
+                        if selection_contains(selection, window.id, row, column, columns) {
+                            style.inverse = !style.inverse;
+                        }
+                        cells[usize::from(row) * usize::from(columns) + usize::from(column)] =
+                            CellSnapshot {
+                                contents: cell.contents().to_owned(),
+                                style,
+                                wide_continuation: cell.is_wide_continuation(),
+                            };
+                    }
                 }
-                cells.push(CellSnapshot {
-                    contents: cell.contents().to_owned(),
-                    style,
-                    wide_continuation: cell.is_wide_continuation(),
-                });
             }
         }
         if windows[active].floating {
@@ -2087,15 +2436,28 @@ impl FrameSnapshot {
                 .cursor
                 .1
                 .saturating_add(layout.column.saturating_sub(1));
+        } else if windows[active].pane_framed {
+            terminal_state.cursor.0 = terminal_state
+                .cursor
+                .0
+                .saturating_add(windows[active].pane_rect.row + 1);
+            terminal_state.cursor.1 = terminal_state
+                .cursor
+                .1
+                .saturating_add(windows[active].pane_rect.column + 1);
         }
         Self {
             terminal_size,
             active_id: windows[active].id,
-            tabs: windows
-                .iter()
-                .filter(|window| !window.floating)
-                .map(|window| (window.id, window.name.clone()))
-                .collect(),
+            tabs: windows.iter().filter(|window| !window.floating).fold(
+                Vec::new(),
+                |mut tabs, window| {
+                    if !tabs.iter().any(|(id, _)| *id == window.tab_id) {
+                        tabs.push((window.tab_id, window.name.clone()));
+                    }
+                    tabs
+                },
+            ),
             mode: mode.to_owned(),
             terminal_title: windows[base].terminal_title().to_owned(),
             border_status: border_status.map(str::to_owned),
@@ -2127,6 +2489,91 @@ fn render_base_index(windows: &[Window], active: usize) -> usize {
         })
         .or_else(|| windows.iter().position(|window| !window.floating))
         .expect("a floating window always has a regular base window")
+}
+
+fn overlay_pane_cells(
+    cells: &mut [CellSnapshot],
+    columns: u16,
+    rows: u16,
+    window: &Window,
+    active: bool,
+    selection: Option<&TextSelection>,
+    mode: &str,
+) {
+    let rect = window.pane_rect;
+    let border_cell = |contents: char| CellSnapshot {
+        contents: contents.to_string(),
+        style: if active {
+            CellStyle::active_border()
+        } else {
+            CellStyle::border()
+        },
+        wide_continuation: false,
+    };
+    let replace = |cells: &mut [CellSnapshot], row: u16, column: u16, cell: CellSnapshot| {
+        let row = rect.row.saturating_add(row);
+        let column = rect.column.saturating_add(column);
+        if row < rows && column < columns {
+            cells[usize::from(row) * usize::from(columns) + usize::from(column)] = cell;
+        }
+    };
+    for row in 0..rect.height {
+        for column in 0..rect.width {
+            let border = match (row, column) {
+                (0, 0) => Some('┌'),
+                (0, column) if column + 1 == rect.width => Some('┐'),
+                (row, 0) if row + 1 == rect.height => Some('└'),
+                (row, column) if row + 1 == rect.height && column + 1 == rect.width => Some('┘'),
+                _ if row == 0 || row + 1 == rect.height => Some('─'),
+                _ if column == 0 || column + 1 == rect.width => Some('│'),
+                _ => None,
+            };
+            if let Some(character) = border {
+                replace(cells, row, column, border_cell(character));
+            }
+        }
+    }
+    let title = if window.history_mode {
+        format!(
+            "─ {} [{mode} {}] ",
+            window.terminal_title(),
+            window.terminal.screen().scrollback()
+        )
+    } else if active && mode != "locked" {
+        format!("─ {} [{mode}] ", window.terminal_title())
+    } else {
+        format!("─ {} ", window.terminal_title())
+    };
+    for (offset, character) in title
+        .chars()
+        .take(usize::from(rect.width.saturating_sub(2)))
+        .enumerate()
+    {
+        replace(cells, 0, offset as u16 + 1, border_cell(character));
+    }
+    let screen = window.terminal.screen();
+    let (content_columns, content_rows) = pane_pty_size(rect, true);
+    for row in 0..content_rows {
+        for column in 0..content_columns {
+            let Some(cell) = screen.cell(row, column) else {
+                continue;
+            };
+            let mut style = CellStyle::from(cell);
+            if selection_contains(selection, window.id, row, column, content_columns) {
+                style.inverse = !style.inverse;
+            }
+            replace(
+                cells,
+                row + 1,
+                column + 1,
+                CellSnapshot {
+                    contents: cell.contents().to_owned(),
+                    style,
+                    wide_continuation: cell.is_wide_continuation(),
+                },
+            );
+        }
+    }
 }
 
 fn overlay_floating_cells(
@@ -2312,6 +2759,14 @@ impl CellStyle {
             ..Self::plain()
         }
     }
+
+    fn active_border() -> Self {
+        Self {
+            foreground: vt100::Color::Idx(10),
+            bold: true,
+            ..Self::plain()
+        }
+    }
 }
 
 fn render_frame(
@@ -2444,30 +2899,32 @@ fn draw_window_bar(
     let inner_width = usize::from(width);
     let mut used = 0;
     let base = render_base_index(windows, active);
-    for (display_index, (index, window)) in windows
-        .iter()
-        .enumerate()
-        .filter(|(_, window)| !window.floating)
-        .enumerate()
-    {
+    let active_tab = windows[base].tab_id;
+    let mut seen = Vec::new();
+    for window in windows.iter().filter(|window| !window.floating) {
+        if seen.contains(&window.tab_id) {
+            continue;
+        }
+        seen.push(window.tab_id);
+        let display_index = seen.len();
         if used >= inner_width {
             break;
         }
-        let label = if index == active && window.history_mode {
+        let label = if window.tab_id == active_tab && windows[active].history_mode {
             format!(
                 " {} {} [{mode} {}] ",
-                display_index + 1,
+                display_index,
                 window.name,
-                window.terminal.screen().scrollback()
+                windows[active].terminal.screen().scrollback()
             )
-        } else if index == active && mode != "locked" {
-            format!(" {} {} [{mode}] ", display_index + 1, window.name)
+        } else if window.tab_id == active_tab && mode != "locked" {
+            format!(" {} {} [{mode}] ", display_index, window.name)
         } else {
-            format!(" {} {} ", display_index + 1, window.name)
+            format!(" {} {} ", display_index, window.name)
         };
         let available = inner_width.saturating_sub(used).saturating_sub(1);
         let label: String = label.chars().take(available).collect();
-        if index == base {
+        if window.tab_id == active_tab {
             output.extend_from_slice(b"\x1b[1;30;42m");
         } else {
             output.extend_from_slice(b"\x1b[1;30;48;2;205;214;244m");
@@ -2708,6 +3165,183 @@ fn content_size((columns, rows): (u16, u16)) -> (u16, u16) {
         columns.saturating_sub(2).max(1),
         rows.saturating_sub(3).max(1),
     )
+}
+
+fn content_rect(terminal_size: (u16, u16)) -> PaneRect {
+    let (width, height) = content_size(terminal_size);
+    PaneRect {
+        column: 0,
+        row: 0,
+        width,
+        height,
+    }
+}
+
+fn split_pane(node: &mut PaneNode, target: usize, new_id: usize, axis: SplitAxis) -> bool {
+    match node {
+        PaneNode::Leaf(id) if *id == target => {
+            *node = PaneNode::Split {
+                axis,
+                first: Box::new(PaneNode::Leaf(target)),
+                second: Box::new(PaneNode::Leaf(new_id)),
+            };
+            true
+        }
+        PaneNode::Leaf(_) => false,
+        PaneNode::Split { first, second, .. } => {
+            split_pane(first, target, new_id, axis) || split_pane(second, target, new_id, axis)
+        }
+    }
+}
+
+fn remove_pane(node: PaneNode, target: usize) -> Option<PaneNode> {
+    match node {
+        PaneNode::Leaf(id) => (id != target).then_some(PaneNode::Leaf(id)),
+        PaneNode::Split {
+            axis,
+            first,
+            second,
+        } => {
+            let first = remove_pane(*first, target);
+            let second = remove_pane(*second, target);
+            match (first, second) {
+                (Some(first), Some(second)) => Some(PaneNode::Split {
+                    axis,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                }),
+                (Some(node), None) | (None, Some(node)) => Some(node),
+                (None, None) => None,
+            }
+        }
+    }
+}
+
+fn pane_ids(node: &PaneNode) -> Vec<usize> {
+    let mut ids = Vec::new();
+    fn collect(node: &PaneNode, ids: &mut Vec<usize>) {
+        match node {
+            PaneNode::Leaf(id) => ids.push(*id),
+            PaneNode::Split { first, second, .. } => {
+                collect(first, ids);
+                collect(second, ids);
+            }
+        }
+    }
+    collect(node, &mut ids);
+    ids
+}
+
+fn pane_rects(node: &PaneNode, rect: PaneRect) -> Vec<(usize, PaneRect)> {
+    let mut rects = Vec::new();
+    fn layout(node: &PaneNode, rect: PaneRect, rects: &mut Vec<(usize, PaneRect)>) {
+        match node {
+            PaneNode::Leaf(id) => rects.push((*id, rect)),
+            PaneNode::Split {
+                axis,
+                first,
+                second,
+            } => {
+                let (a, b) = match axis {
+                    SplitAxis::Vertical => {
+                        let first_width = rect.width / 2;
+                        (
+                            PaneRect {
+                                width: first_width,
+                                ..rect
+                            },
+                            PaneRect {
+                                column: rect.column + first_width,
+                                width: rect.width - first_width,
+                                ..rect
+                            },
+                        )
+                    }
+                    SplitAxis::Horizontal => {
+                        let first_height = rect.height / 2;
+                        (
+                            PaneRect {
+                                height: first_height,
+                                ..rect
+                            },
+                            PaneRect {
+                                row: rect.row + first_height,
+                                height: rect.height - first_height,
+                                ..rect
+                            },
+                        )
+                    }
+                };
+                layout(first, a, rects);
+                layout(second, b, rects);
+            }
+        }
+    }
+    layout(node, rect, &mut rects);
+    rects
+}
+
+fn pane_pty_size(rect: PaneRect, framed: bool) -> (u16, u16) {
+    if framed {
+        (
+            rect.width.saturating_sub(2).max(1),
+            rect.height.saturating_sub(2).max(1),
+        )
+    } else {
+        (rect.width.max(1), rect.height.max(1))
+    }
+}
+
+fn rect_in_direction(from: PaneRect, to: PaneRect, direction: Direction) -> bool {
+    let from_center = (
+        i32::from(from.column) * 2 + i32::from(from.width),
+        i32::from(from.row) * 2 + i32::from(from.height),
+    );
+    let to_center = (
+        i32::from(to.column) * 2 + i32::from(to.width),
+        i32::from(to.row) * 2 + i32::from(to.height),
+    );
+    match direction {
+        Direction::Left => to_center.0 < from_center.0,
+        Direction::Right => to_center.0 > from_center.0,
+        Direction::Up => to_center.1 < from_center.1,
+        Direction::Down => to_center.1 > from_center.1,
+    }
+}
+
+fn directional_distance(from: PaneRect, to: PaneRect, direction: Direction) -> (i32, i32) {
+    let fx = i32::from(from.column) * 2 + i32::from(from.width);
+    let fy = i32::from(from.row) * 2 + i32::from(from.height);
+    let tx = i32::from(to.column) * 2 + i32::from(to.width);
+    let ty = i32::from(to.row) * 2 + i32::from(to.height);
+    match direction {
+        Direction::Left | Direction::Right => ((tx - fx).abs(), (ty - fy).abs()),
+        Direction::Up | Direction::Down => ((ty - fy).abs(), (tx - fx).abs()),
+    }
+}
+
+fn resize_window(
+    window: &mut Window,
+    columns: u16,
+    rows: u16,
+    terminal_size: (u16, u16),
+    terminal_pixels: (u16, u16),
+) -> Result<()> {
+    let cell_width = terminal_pixels.0 / terminal_size.0.max(1);
+    let cell_height = terminal_pixels.1 / terminal_size.1.max(1);
+    let winsize = Winsize {
+        ws_col: columns,
+        ws_row: rows,
+        ws_xpixel: columns.saturating_mul(cell_width),
+        ws_ypixel: rows.saturating_mul(cell_height),
+    };
+    // SAFETY: master is an open PTY descriptor and winsize is valid.
+    if unsafe { nix::libc::ioctl(window.master.as_raw_fd(), nix::libc::TIOCSWINSZ, &winsize) } == -1
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    window.terminal.screen_mut().set_size(rows, columns);
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3127,8 +3761,16 @@ mod tests {
         let master = unsafe { OwnedFd::from_raw_fd(fd) };
         Window {
             id,
+            tab_id: id,
             name: name.to_owned(),
             floating: false,
+            pane_rect: PaneRect {
+                column: 0,
+                row: 0,
+                width: columns,
+                height: rows,
+            },
+            pane_framed: false,
             master,
             child: Pid::from_raw(1),
             terminal: vt100::Parser::new_with_callbacks(
@@ -3375,6 +4017,92 @@ mod tests {
         assert!(frame.contains("floating contents"));
         assert!(frame.contains(" 1 base "));
         assert!(!frame.contains(" 2 float "));
+    }
+
+    #[test]
+    fn pane_layout_splits_the_active_leaf_and_collapses_after_removal() {
+        let mut root = PaneNode::Leaf(1);
+        assert!(split_pane(&mut root, 1, 2, SplitAxis::Vertical));
+        assert!(split_pane(&mut root, 2, 3, SplitAxis::Horizontal));
+        let rects = pane_rects(
+            &root,
+            PaneRect {
+                column: 0,
+                row: 0,
+                width: 80,
+                height: 20,
+            },
+        );
+
+        assert_eq!(
+            rects,
+            vec![
+                (
+                    1,
+                    PaneRect {
+                        column: 0,
+                        row: 0,
+                        width: 40,
+                        height: 20
+                    }
+                ),
+                (
+                    2,
+                    PaneRect {
+                        column: 40,
+                        row: 0,
+                        width: 40,
+                        height: 10
+                    }
+                ),
+                (
+                    3,
+                    PaneRect {
+                        column: 40,
+                        row: 10,
+                        width: 40,
+                        height: 10
+                    }
+                ),
+            ]
+        );
+        let root = remove_pane(root, 2).unwrap();
+        assert_eq!(pane_ids(&root), vec![1, 3]);
+    }
+
+    #[test]
+    fn tiled_panes_are_composited_inside_one_tab() {
+        let mut left = test_window(1, "fish", 10, 17);
+        left.tab_id = 1;
+        left.pane_framed = true;
+        left.pane_rect = PaneRect {
+            column: 0,
+            row: 0,
+            width: 19,
+            height: 12,
+        };
+        left.terminal.process(b"left pane");
+        let mut right = test_window(2, "fish", 10, 17);
+        right.tab_id = 1;
+        right.pane_framed = true;
+        right.pane_rect = PaneRect {
+            column: 19,
+            row: 0,
+            width: 19,
+            height: 12,
+        };
+        right.terminal.process(b"right pane");
+        let windows = vec![left, right];
+
+        let snapshot = FrameSnapshot::capture(&windows, 0, (40, 15), "locked", None, None);
+        let frame = String::from_utf8(render_frame(&windows, 0, &snapshot, &[])).unwrap();
+
+        assert!(frame.contains("left pane"));
+        assert!(frame.contains("right pane"));
+        assert!(frame.contains("┌─ fish"));
+        assert!(frame.contains(" 1 fish "));
+        assert!(!frame.contains(" 2 fish "));
+        assert_eq!(snapshot.tabs, vec![(1, "fish".to_owned())]);
     }
 
     #[test]
