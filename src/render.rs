@@ -771,6 +771,10 @@ pub(super) fn render_frame(
     }
 
     if !snapshot.compact && height > 1 {
+        if snapshot.outer_border && height > 2 {
+            let _ = write!(output, "\x1b[{};1H\x1b[32m", height - 1);
+            draw_bottom_border(&mut output, width);
+        }
         draw_bottom_status(&mut output, snapshot);
     }
 
@@ -943,15 +947,10 @@ fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let (width, height) = snapshot.terminal_size;
     let status = status_text(snapshot);
     let _ = write!(output, "\x1b[{height};1H");
-    if snapshot.outer_border {
-        output.extend_from_slice(b"\x1b[32m");
-        draw_bottom_border(output, width, Some(status.trim()));
-    } else {
-        output.extend_from_slice(b"\x1b[0;49m\x1b[2K\x1b[1;30;42m");
-        let (status, _) = truncate_to_display_width(&status, usize::from(width));
-        output.extend_from_slice(status.as_bytes());
-        output.extend_from_slice(b"\x1b[0m");
-    }
+    output.extend_from_slice(b"\x1b[0;49m\x1b[2K\x1b[1;30;42m");
+    let (status, _) = truncate_to_display_width(&status, usize::from(width));
+    output.extend_from_slice(status.as_bytes());
+    output.extend_from_slice(b"\x1b[0m");
 }
 
 fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
@@ -971,18 +970,13 @@ fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
     }
 }
 
-fn draw_bottom_border(output: &mut Vec<u8>, width: u16, status: Option<&str>) {
+fn draw_bottom_border(output: &mut Vec<u8>, width: u16) {
     if width == 0 {
         return;
     }
     output.extend_from_slice("└".as_bytes());
     let inner_width = usize::from(width.saturating_sub(2));
-    let label = status
-        .map(|status| format!("─ {status} "))
-        .unwrap_or_default();
-    let (label, label_width) = truncate_to_display_width(&label, inner_width);
-    output.extend_from_slice(label.as_bytes());
-    for _ in label_width..inner_width {
+    for _ in 0..inner_width {
         output.extend_from_slice("─".as_bytes());
     }
     if width > 1 {

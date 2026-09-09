@@ -39,7 +39,7 @@ pub(super) struct PaneRect {
 pub(super) fn content_size_for((columns, rows): (u16, u16), compact: bool) -> (u16, u16) {
     (
         columns.saturating_sub(2).max(1),
-        rows.saturating_sub(if compact { 2 } else { 3 }).max(1),
+        rows.saturating_sub(if compact { 2 } else { 4 }).max(1),
     )
 }
 

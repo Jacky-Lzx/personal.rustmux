@@ -60,9 +60,9 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
 fn content_winsize_excludes_border_cells_and_preserves_cell_pixels() {
     let value = content_winsize_for((218, 62), (3706, 2046), false);
     assert_eq!(value.ws_col, 216);
-    assert_eq!(value.ws_row, 59);
+    assert_eq!(value.ws_row, 58);
     assert_eq!(value.ws_xpixel, 3672);
-    assert_eq!(value.ws_ypixel, 1947);
+    assert_eq!(value.ws_ypixel, 1914);
 }
 
 #[test]
@@ -223,8 +223,8 @@ fn selection_highlight_is_rendered_incrementally() {
 }
 
 #[test]
-fn clipboard_status_is_drawn_in_the_bottom_border_incrementally() {
-    let window = test_window(3, "fish", 3, 38);
+fn clipboard_status_is_drawn_below_the_bottom_border_incrementally() {
+    let window = test_window(3, "fish", 2, 38);
     let windows = vec![window];
     let mut renderer = Renderer::default();
     renderer.render(&windows, 0, (40, 6), "locked", None, &[]);
@@ -233,7 +233,8 @@ fn clipboard_status_is_drawn_in_the_bottom_border_incrementally() {
     let shown = renderer.render(&windows, 0, (40, 6), "locked", None, &[]);
     let shown = String::from_utf8(shown).unwrap();
     assert!(shown.contains("\x1b[6;1H"));
-    assert!(shown.contains("└─ LOCKED │ copied to system clipboard "));
+    assert!(shown.contains("LOCKED │ copied to system clipboard"));
+    assert!(!shown.contains('└'));
     assert!(!shown.contains("\x1b[2J"));
 
     renderer.set_border_status(None);
@@ -245,7 +246,7 @@ fn clipboard_status_is_drawn_in_the_bottom_border_incrementally() {
 
 #[test]
 fn status_line_shows_mode_and_key_hints() {
-    let window = test_window(1, "fish", 2, 18);
+    let window = test_window(1, "fish", 1, 18);
     let windows = vec![window];
     let mut renderer = Renderer::default();
     renderer.set_ui(false, vec!["Ctrl b=mode:normal".to_owned()]);
@@ -254,12 +255,13 @@ fn status_line_shows_mode_and_key_hints() {
     let frame = String::from_utf8(frame).unwrap();
 
     assert!(frame.contains("LOCKED │ Ctrl b="));
+    assert!(frame.contains("\x1b[4;1H\x1b[32m└"));
     assert!(frame.contains("\x1b[5;1H"));
 }
 
 #[test]
 fn compact_layout_reclaims_status_row_and_shows_mode_at_top_right() {
-    assert_eq!(content_size_for((20, 5), false), (18, 2));
+    assert_eq!(content_size_for((20, 5), false), (18, 1));
     assert_eq!(content_size_for((20, 5), true), (18, 3));
     assert_eq!(tiled_content_rect_for((20, 5), false).height, 3);
     assert_eq!(tiled_content_rect_for((20, 5), true).height, 4);
@@ -701,8 +703,8 @@ fn terminal_queries_receive_local_responses() {
     assert_eq!(bell_background, background);
     assert!(
         responses
-            .windows(b"\x1b[4;693;1326t".len())
-            .any(|part| part == b"\x1b[4;693;1326t")
+            .windows(b"\x1b[4;660;1326t".len())
+            .any(|part| part == b"\x1b[4;660;1326t")
     );
     assert!(
         responses
