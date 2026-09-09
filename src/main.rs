@@ -44,6 +44,8 @@ const CLIENT_RESIZE: u8 = b'R';
 const CLIENT_SHUTDOWN: u8 = b'Q';
 const MAX_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+const CLIPBOARD_STATUS: &str = "clipped to system clipboard";
+const CLIPBOARD_STATUS_DURATION: Duration = Duration::from_secs(2);
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -619,6 +621,7 @@ struct App {
     terminal_pixels: (u16, u16),
     terminal_identity: String,
     redraw_deadline: Option<Instant>,
+    clipboard_status_until: Option<Instant>,
     client: Option<UnixStream>,
     client_input: Vec<u8>,
 }
@@ -640,6 +643,7 @@ impl App {
             terminal_pixels,
             terminal_identity: outer_terminal_identity(),
             redraw_deadline: None,
+            clipboard_status_until: None,
             client: None,
             client_input: Vec::new(),
         };
@@ -809,6 +813,8 @@ impl App {
         self.input_decoder = InputDecoder::default();
         self.reset_mode();
         self.redraw_deadline = None;
+        self.clipboard_status_until = None;
+        self.renderer.set_border_status(None);
         self.renderer.invalidate();
     }
 
@@ -973,6 +979,8 @@ impl App {
     fn reset_mode(&mut self) {
         self.mode = self.config.default_mode.clone();
         self.selection = None;
+        self.clipboard_status_until = None;
+        self.renderer.set_border_status(None);
         for window in &mut self.windows {
             window.history_mode = false;
             window.terminal.screen_mut().set_scrollback(0);
@@ -1095,14 +1103,15 @@ impl App {
                 .content_position(position, true)
                 .expect("clamped content position is always available");
             self.selection = Some(selection);
-            self.redraw()?;
             if matches!(action, MouseAction::SelectEnd(_)) {
                 let text = selected_text(&self.windows[self.active], selection, self.terminal_size);
                 if !text.is_empty() {
                     self.copy_to_clipboard(&text)?;
+                    self.clipboard_status_until = Some(Instant::now() + CLIPBOARD_STATUS_DURATION);
+                    self.renderer.set_border_status(Some(CLIPBOARD_STATUS));
                 }
             }
-            return Ok(());
+            return self.redraw();
         }
 
         let selection_cleared = matches!(action, MouseAction::ScrollUp | MouseAction::ScrollDown)
@@ -1327,6 +1336,14 @@ impl App {
 
     fn flush_scheduled_redraw(&mut self) -> Result<()> {
         if self
+            .clipboard_status_until
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.clipboard_status_until = None;
+            self.renderer.set_border_status(None);
+            self.redraw()?;
+        }
+        if self
             .redraw_deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
@@ -1336,7 +1353,12 @@ impl App {
     }
 
     fn poll_timeout(&self) -> u16 {
-        let Some(deadline) = self.redraw_deadline else {
+        let deadline = match (self.redraw_deadline, self.clipboard_status_until) {
+            (Some(redraw), Some(status)) => Some(redraw.min(status)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        };
+        let Some(deadline) = deadline else {
             return 100;
         };
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1740,11 +1762,16 @@ fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
 #[derive(Default)]
 struct Renderer {
     previous: Option<FrameSnapshot>,
+    border_status: Option<String>,
 }
 
 impl Renderer {
     fn invalidate(&mut self) {
         self.previous = None;
+    }
+
+    fn set_border_status(&mut self, status: Option<&str>) {
+        self.border_status = status.map(str::to_owned);
     }
 
     fn render(
@@ -1756,9 +1783,24 @@ impl Renderer {
         selection: Option<&TextSelection>,
         graphics: &[Vec<u8>],
     ) -> Vec<u8> {
-        let current = FrameSnapshot::capture(windows, active, terminal_size, mode, selection);
+        let current = FrameSnapshot::capture(
+            windows,
+            active,
+            terminal_size,
+            mode,
+            selection,
+            self.border_status.as_deref(),
+        );
         let Some(previous) = &self.previous else {
-            let output = render_frame(windows, active, terminal_size, mode, selection, graphics);
+            let output = render_frame(
+                windows,
+                active,
+                terminal_size,
+                mode,
+                selection,
+                self.border_status.as_deref(),
+                graphics,
+            );
             self.previous = Some(current);
             return output;
         };
@@ -1768,7 +1810,15 @@ impl Renderer {
             || previous.tabs != current.tabs
             || previous.cells.len() != current.cells.len()
         {
-            let output = render_frame(windows, active, terminal_size, mode, selection, graphics);
+            let output = render_frame(
+                windows,
+                active,
+                terminal_size,
+                mode,
+                selection,
+                self.border_status.as_deref(),
+                graphics,
+            );
             self.previous = Some(current);
             return output;
         }
@@ -1801,6 +1851,7 @@ impl Renderer {
             || previous.history_offset != current.history_offset;
         let mode_changed = previous.mode != current.mode;
         let title_changed = previous.terminal_title != current.terminal_title;
+        let status_changed = previous.border_status != current.border_status;
         let mut output = Vec::new();
         // Keep potentially multi-megabyte image uploads outside synchronized
         // text updates. Some terminals cap or time out synchronized buffers;
@@ -1816,6 +1867,7 @@ impl Renderer {
             || history_changed
             || mode_changed
             || title_changed
+            || status_changed
         {
             // DEC synchronized output makes the terminal display this diff as one
             // frame. Unknown DEC private modes are safely ignored by terminals
@@ -1835,6 +1887,14 @@ impl Renderer {
         if title_changed {
             let _ = write!(output, "\x1b[2;1H\x1b[32m");
             draw_terminal_border(&mut output, &current.terminal_title, terminal_size.0);
+        }
+        if status_changed && terminal_size.1 > 1 {
+            let _ = write!(output, "\x1b[{};1H\x1b[32m", terminal_size.1);
+            draw_bottom_border(
+                &mut output,
+                terminal_size.0,
+                current.border_status.as_deref(),
+            );
         }
         for (row, first, last) in changes {
             let _ = write!(output, "\x1b[{};{}H", row + 3, first + 2);
@@ -1861,6 +1921,7 @@ impl Renderer {
             || history_changed
             || mode_changed
             || title_changed
+            || status_changed
         {
             append_terminal_state_diff(
                 &mut output,
@@ -1870,7 +1931,8 @@ impl Renderer {
                     || graphics_changed
                     || history_changed
                     || mode_changed
-                    || title_changed,
+                    || title_changed
+                    || status_changed,
             );
             output.extend_from_slice(b"\x1b[?2026l");
         }
@@ -1886,6 +1948,7 @@ struct FrameSnapshot {
     tabs: Vec<(usize, String)>,
     mode: String,
     terminal_title: String,
+    border_status: Option<String>,
     history_mode: bool,
     history_offset: usize,
     cells: Vec<CellSnapshot>,
@@ -1899,6 +1962,7 @@ impl FrameSnapshot {
         terminal_size: (u16, u16),
         mode: &str,
         selection: Option<&TextSelection>,
+        border_status: Option<&str>,
     ) -> Self {
         let screen = windows[active].terminal.screen();
         let (columns, rows) = content_size(terminal_size);
@@ -1926,6 +1990,7 @@ impl FrameSnapshot {
                 .collect(),
             mode: mode.to_owned(),
             terminal_title: windows[active].terminal_title().to_owned(),
+            border_status: border_status.map(str::to_owned),
             history_mode: windows[active].history_mode,
             history_offset: screen.scrollback(),
             cells,
@@ -1997,6 +2062,7 @@ fn render_frame(
     terminal_size: (u16, u16),
     mode: &str,
     selection: Option<&TextSelection>,
+    border_status: Option<&str>,
     graphics: &[Vec<u8>],
 ) -> Vec<u8> {
     let (width, height) = terminal_size;
@@ -2042,13 +2108,8 @@ fn render_frame(
     }
 
     if height > 1 {
-        let _ = write!(output, "\x1b[{height};1H\x1b[32m└");
-        for _ in 0..width.saturating_sub(2) {
-            output.extend_from_slice("─".as_bytes());
-        }
-        if width > 1 {
-            output.extend_from_slice("┘".as_bytes());
-        }
+        let _ = write!(output, "\x1b[{height};1H\x1b[32m");
+        draw_bottom_border(&mut output, width, border_status);
     }
 
     append_terminal_state(&mut output, &state, windows[active].id);
@@ -2179,6 +2240,25 @@ fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16) {
     }
     if width > 1 {
         output.extend_from_slice("┐".as_bytes());
+    }
+}
+
+fn draw_bottom_border(output: &mut Vec<u8>, width: u16, status: Option<&str>) {
+    if width == 0 {
+        return;
+    }
+    output.extend_from_slice("└".as_bytes());
+    let inner_width = usize::from(width.saturating_sub(2));
+    let label = status
+        .map(|status| format!("─ {status} "))
+        .unwrap_or_default();
+    let label = label.chars().take(inner_width).collect::<String>();
+    output.extend_from_slice(label.as_bytes());
+    for _ in label.chars().count()..inner_width {
+        output.extend_from_slice("─".as_bytes());
+    }
+    if width > 1 {
+        output.extend_from_slice("┘".as_bytes());
     }
 }
 
@@ -2874,6 +2954,27 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_status_is_drawn_in_the_bottom_border_incrementally() {
+        let window = test_window(3, "fish", 3, 38);
+        let windows = vec![window];
+        let mut renderer = Renderer::default();
+        renderer.render(&windows, 0, (40, 6), "locked", None, &[]);
+        renderer.set_border_status(Some(CLIPBOARD_STATUS));
+
+        let shown = renderer.render(&windows, 0, (40, 6), "locked", None, &[]);
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(shown.contains("\x1b[6;1H"));
+        assert!(shown.contains("└─ clipped to system clipboard "));
+        assert!(!shown.contains("\x1b[2J"));
+
+        renderer.set_border_status(None);
+        let cleared = renderer.render(&windows, 0, (40, 6), "locked", None, &[]);
+        let cleared = String::from_utf8(cleared).unwrap();
+        assert!(cleared.contains("\x1b[6;1H"));
+        assert!(!cleared.contains(CLIPBOARD_STATUS));
+    }
+
+    #[test]
     fn history_mode_renders_offset_without_clearing_the_screen() {
         let mut window = test_window(1, "fish", 3, 18);
         window.terminal.process(b"one\r\ntwo\r\nthree\r\nfour");
@@ -2905,7 +3006,7 @@ mod tests {
         first.terminal.process(b"\x1b]2;nvim project\x07");
         let second = test_window(2, "fish", 3, 18);
 
-        let frame = render_frame(&[first, second], 0, (20, 5), "locked", None, &[]);
+        let frame = render_frame(&[first, second], 0, (20, 5), "locked", None, None, &[]);
         let frame = String::from_utf8(frame).expect("rendered frame is UTF-8");
 
         assert!(frame.contains("\x1b[32m"));
