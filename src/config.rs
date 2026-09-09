@@ -66,6 +66,8 @@ enabled = true
 command_duration_seconds = 10
 exclude_applications = ["yazi", "nvim"]
 
+# A binding can also use { actions = [...], display = "always" }.
+# display: "always" = status + help, "help" = help only, "hidden" = not listed.
 [keybinds.locked]
 "Ctrl b" = [{ action = "switch-mode", mode = "normal" }]
 
@@ -203,7 +205,24 @@ pub struct Config {
     notifications_enabled: bool,
     command_duration_seconds: u64,
     notification_excluded_applications: Vec<String>,
-    bindings: HashMap<String, HashMap<String, Vec<Action>>>,
+    bindings: HashMap<String, HashMap<String, Binding>>,
+}
+
+#[derive(Clone, Debug)]
+struct Binding {
+    actions: Vec<Action>,
+    display: BindingDisplay,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum BindingDisplay {
+    #[default]
+    Always,
+    #[serde(alias = "help-menu")]
+    Help,
+    #[serde(alias = "never")]
+    Hidden,
 }
 
 #[derive(Default, Deserialize)]
@@ -216,7 +235,7 @@ struct ConfigFile {
     scrollback_lines: Option<usize>,
     notifications: Option<NotificationsFile>,
     #[serde(default)]
-    keybinds: HashMap<String, HashMap<String, Vec<ActionSpec>>>,
+    keybinds: HashMap<String, HashMap<String, BindingSpec>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -237,6 +256,20 @@ enum ActionSpec {
         index: Option<usize>,
         key: Option<String>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BindingSpec {
+    Actions(Vec<ActionSpec>),
+    Detailed(BindingFile),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindingFile {
+    actions: Option<Vec<ActionSpec>>,
+    display: Option<BindingDisplay>,
 }
 
 impl Config {
@@ -322,21 +355,56 @@ impl Config {
 
     fn merge_bindings(
         &mut self,
-        modes: HashMap<String, HashMap<String, Vec<ActionSpec>>>,
+        modes: HashMap<String, HashMap<String, BindingSpec>>,
     ) -> Result<(), String> {
         for (mode, bindings) in modes {
             let mode = normalize_mode(&mode)?;
-            let target = self.bindings.entry(mode).or_default();
-            for (key, actions) in bindings {
+            let target = self.bindings.entry(mode.clone()).or_default();
+            for (key, binding) in bindings {
                 let key = canonical_key_name(&key)?;
-                let actions = actions
-                    .into_iter()
-                    .map(Action::try_from)
-                    .collect::<Result<Vec<_>, _>>()?;
-                if actions.is_empty() {
-                    target.remove(&key);
-                } else {
-                    target.insert(key, actions);
+                match binding {
+                    BindingSpec::Actions(actions) => {
+                        let actions = parse_actions(actions)?;
+                        if actions.is_empty() {
+                            target.remove(&key);
+                        } else {
+                            target.insert(
+                                key,
+                                Binding {
+                                    actions,
+                                    display: BindingDisplay::Always,
+                                },
+                            );
+                        }
+                    }
+                    BindingSpec::Detailed(binding) => {
+                        let actions = binding.actions.map(parse_actions).transpose()?;
+                        if actions.as_ref().is_some_and(Vec::is_empty) {
+                            target.remove(&key);
+                            continue;
+                        }
+                        if let Some(existing) = target.get_mut(&key) {
+                            if let Some(actions) = actions {
+                                existing.actions = actions;
+                            }
+                            if let Some(display) = binding.display {
+                                existing.display = display;
+                            }
+                        } else {
+                            let actions = actions.ok_or_else(|| {
+                                format!(
+                                    "binding '{key}' in mode '{mode}' needs actions because it does not already exist"
+                                )
+                            })?;
+                            target.insert(
+                                key,
+                                Binding {
+                                    actions,
+                                    display: binding.display.unwrap_or_default(),
+                                },
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -351,8 +419,8 @@ impl Config {
             ));
         }
         for bindings in self.bindings.values() {
-            for actions in bindings.values() {
-                for action in actions {
+            for binding in bindings.values() {
+                for action in &binding.actions {
                     if let Action::SwitchMode(mode) = action
                         && !self.bindings.contains_key(mode)
                     {
@@ -368,7 +436,7 @@ impl Config {
         self.bindings
             .get(mode)
             .and_then(|bindings| bindings.get(key))
-            .map(Vec::as_slice)
+            .map(|binding| binding.actions.as_slice())
     }
 
     pub fn has_mode(&self, mode: &str) -> bool {
@@ -410,14 +478,28 @@ impl Config {
         self.scrollback_lines
     }
 
-    pub fn describe_mode(&self, mode: &str) -> Vec<String> {
+    pub fn describe_status_mode(&self, mode: &str) -> Vec<String> {
+        self.describe_bindings(mode, |display| display == BindingDisplay::Always)
+    }
+
+    pub fn describe_help_mode(&self, mode: &str) -> Vec<String> {
+        self.describe_bindings(mode, |display| display != BindingDisplay::Hidden)
+    }
+
+    fn describe_bindings(
+        &self,
+        mode: &str,
+        include: impl Fn(BindingDisplay) -> bool,
+    ) -> Vec<String> {
         let Some(bindings) = self.bindings.get(mode) else {
             return Vec::new();
         };
         let mut descriptions = bindings
             .iter()
-            .map(|(key, actions)| {
-                let actions = actions
+            .filter(|(_, binding)| include(binding.display))
+            .map(|(key, binding)| {
+                let actions = binding
+                    .actions
                     .iter()
                     .map(Action::label)
                     .collect::<Vec<_>>()
@@ -477,6 +559,13 @@ impl Action {
             Self::CopySelection => "copy-selection".to_owned(),
         }
     }
+}
+
+fn parse_actions(actions: Vec<ActionSpec>) -> Result<Vec<Action>, String> {
+    actions
+        .into_iter()
+        .map(Action::try_from)
+        .collect::<Result<Vec<_>, _>>()
 }
 
 impl TryFrom<ActionSpec> for Action {
@@ -906,6 +995,64 @@ z = ["new-window"]
             Some(&[Action::NewWindow][..])
         );
         assert!(config.actions("locked", "ctrl b").is_some());
+    }
+
+    #[test]
+    fn binding_display_controls_status_and_help_visibility() {
+        let defaults: ConfigFile = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
+        let mut config = Config::from_file(defaults, None).unwrap();
+        let user: ConfigFile = toml::from_str(
+            r#"
+[keybinds.normal]
+c = { display = "help" }
+n = { display = "hidden" }
+z = { actions = ["new-window"], display = "help" }
+"#,
+        )
+        .unwrap();
+
+        config.apply_user(user).unwrap();
+
+        assert_eq!(config.actions("normal", "c").unwrap()[0], Action::NewWindow);
+        assert_eq!(
+            config.actions("normal", "z"),
+            Some(&[Action::NewWindow][..])
+        );
+        let status = config.describe_status_mode("normal");
+        assert!(!status.iter().any(|hint| hint.starts_with("c=")));
+        assert!(!status.iter().any(|hint| hint.starts_with("n=")));
+        assert!(!status.iter().any(|hint| hint.starts_with("z=")));
+        let help = config.describe_help_mode("normal");
+        assert!(help.iter().any(|hint| hint.starts_with("c=")));
+        assert!(!help.iter().any(|hint| hint.starts_with("n=")));
+        assert!(help.iter().any(|hint| hint.starts_with("z=")));
+    }
+
+    #[test]
+    fn binding_display_rejects_unknown_values_and_display_only_new_bindings() {
+        assert!(
+            toml::from_str::<ConfigFile>(
+                r#"
+[keybinds.normal]
+c = { display = "sometimes" }
+"#
+            )
+            .is_err()
+        );
+
+        let defaults: ConfigFile = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
+        let mut config = Config::from_file(defaults, None).unwrap();
+        let user: ConfigFile = toml::from_str(
+            r#"
+[keybinds.normal]
+z = { display = "help" }
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.apply_user(user).unwrap_err(),
+            "binding 'z' in mode 'normal' needs actions because it does not already exist"
+        );
     }
 
     #[test]

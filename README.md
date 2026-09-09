@@ -131,6 +131,15 @@ key = [{ action = "go-to-window", index = 2 }]
 key = [{ action = "send-key", key = "Ctrl c" }]
 ```
 
+快捷键默认使用 `display = "always"`，同时出现在底部状态栏和帮助浮窗。使用详细写法可以单独控制显示位置：`help` 只显示在帮助浮窗，`hidden` 在两处都不显示但仍然生效。覆盖已有快捷键时可以只写 `display`；新增快捷键时需要同时提供 `actions`：
+
+```toml
+[keybinds.normal]
+c = { display = "help" }
+d = { display = "hidden" }
+z = { actions = ["new-window", { action = "switch-mode", mode = "locked" }], display = "always" }
+```
+
 默认布局会在最下面一行显示当前 mode 以及该 mode 的常用快捷键提示。同类快捷键会自动合并，状态栏会根据终端宽度隐藏放不下的项目并显示 `? MORE (+N)`，不会截断半个提示；按 `?` 可在居中的帮助框中查看当前 mode 的完整绑定，直接按其中的快捷键即可关闭帮助并执行对应操作，Esc 关闭帮助。设置 `compact = true` 后不会保留底部状态栏，pane 会使用腾出的空间，当前 mode 则显示在顶部标签栏右侧：
 
 ```toml

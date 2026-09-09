@@ -548,6 +548,17 @@ impl App {
             self.mode = config.default_mode.clone();
         }
         self.config = config;
+        if let Some(help_mode) = self.help_mode.clone() {
+            if self.config.has_mode(&help_mode) {
+                self.renderer.set_help(Some(HelpView {
+                    mode: help_mode.clone(),
+                    hints: self.config.describe_help_mode(&help_mode),
+                }));
+            } else {
+                self.help_mode = None;
+                self.renderer.set_help(None);
+            }
+        }
         if compact_changed {
             self.resize_windows()?;
             self.renderer.invalidate();
@@ -2343,8 +2354,10 @@ impl App {
         if self.client.is_none() {
             return Ok(());
         }
-        self.renderer
-            .set_ui(self.config.compact(), self.config.describe_mode(&self.mode));
+        self.renderer.set_ui(
+            self.config.compact(),
+            self.config.describe_status_mode(&self.mode),
+        );
         let graphics = std::mem::take(&mut self.windows[self.active].pending_graphics);
         let frame = self.renderer.render(
             &self.windows,
@@ -2424,7 +2437,7 @@ impl App {
         self.help_mode = Some(self.mode.clone());
         self.renderer.set_help(Some(HelpView {
             mode: self.mode.clone(),
-            hints: self.config.describe_mode(&self.mode),
+            hints: self.config.describe_help_mode(&self.mode),
         }));
         self.redraw()
     }
