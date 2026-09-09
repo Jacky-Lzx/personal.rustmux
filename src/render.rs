@@ -27,6 +27,7 @@ pub(super) struct Renderer {
     border_status: Option<String>,
     compact: bool,
     mode_hints: Vec<String>,
+    session_name: String,
 }
 
 impl Renderer {
@@ -36,6 +37,10 @@ impl Renderer {
 
     pub(super) fn set_border_status(&mut self, status: Option<&str>) {
         self.border_status = status.map(str::to_owned);
+    }
+
+    pub(super) fn set_session_name(&mut self, session_name: &str) {
+        self.session_name = session_name.to_owned();
     }
 
     pub(super) fn set_ui(&mut self, compact: bool, mode_hints: Vec<String>) {
@@ -61,6 +66,7 @@ impl Renderer {
                 compact: self.compact,
                 mode_hints: &self.mode_hints,
                 border_status: self.border_status.as_deref(),
+                session_name: &self.session_name,
             },
             selection,
         );
@@ -77,6 +83,7 @@ impl Renderer {
             || previous.compact != current.compact
             || previous.active_id != current.active_id
             || previous.tabs != current.tabs
+            || previous.session_name != current.session_name
             || previous.cells.len() != current.cells.len()
         {
             let output = render_frame(windows, active, &current, graphics);
@@ -225,6 +232,7 @@ pub(super) struct FrameSnapshot {
     border_status: Option<String>,
     compact: bool,
     mode_hints: Vec<String>,
+    session_name: String,
     history_mode: bool,
     history_offset: usize,
     cells: Vec<CellSnapshot>,
@@ -250,6 +258,7 @@ impl FrameSnapshot {
                 compact: false,
                 mode_hints: &[],
                 border_status,
+                session_name: "",
             },
             selection,
         )
@@ -267,6 +276,7 @@ impl FrameSnapshot {
             compact,
             mode_hints,
             border_status,
+            session_name,
         } = ui;
         let base = render_base_index(windows, active);
         let tab_id = windows[base].tab_id;
@@ -374,6 +384,7 @@ impl FrameSnapshot {
             border_status: border_status.map(str::to_owned),
             compact,
             mode_hints: mode_hints.to_vec(),
+            session_name: session_name.to_owned(),
             history_mode: windows[active].history_mode,
             history_offset: active_screen.scrollback(),
             cells,
@@ -388,6 +399,7 @@ struct RenderUi<'a> {
     compact: bool,
     mode_hints: &'a [String],
     border_status: Option<&'a str>,
+    session_name: &'a str,
 }
 
 #[derive(Eq, PartialEq)]
@@ -904,6 +916,19 @@ fn draw_window_bar(
         .unwrap_or(0)
         .min(inner_width);
     let tabs_width = inner_width.saturating_sub(compact_width);
+    let session_label = (!snapshot.session_name.is_empty())
+        .then(|| format!(" Rustmux ({}) ", snapshot.session_name));
+    let session_width = session_label
+        .as_deref()
+        .map(|label| {
+            let available = tabs_width.saturating_sub(6);
+            let (label, label_width) = truncate_to_display_width(label, available);
+            write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), true);
+            output.extend_from_slice(label.as_bytes());
+            label_width
+        })
+        .unwrap_or(0);
+    let tabs_width = tabs_width.saturating_sub(session_width);
     let base = render_base_index(windows, active);
     let active_tab = windows[base].tab_id;
     let mut seen = Vec::new();

@@ -122,8 +122,11 @@ impl App {
         terminal_size: (u16, u16),
         terminal_pixels: (u16, u16),
         config: Config,
+        session_name: &str,
     ) -> Result<Self> {
         let mode = config.default_mode.clone();
+        let mut renderer = Renderer::default();
+        renderer.set_session_name(session_name);
         let mut app = Self {
             windows: Vec::new(),
             tabs: Vec::new(),
@@ -134,7 +137,7 @@ impl App {
             config,
             mode,
             selection: None,
-            renderer: Renderer::default(),
+            renderer,
             terminal_size,
             terminal_pixels,
             terminal_identity: outer_terminal_identity(),

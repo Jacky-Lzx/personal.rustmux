@@ -264,6 +264,24 @@ fn status_line_shows_mode_and_key_hints() {
 }
 
 #[test]
+fn window_bar_shows_the_session_name_before_the_first_window() {
+    let windows = vec![
+        test_window(1, "fish", 2, 78),
+        test_window(2, "editor", 2, 78),
+    ];
+    let mut renderer = Renderer::default();
+    renderer.set_session_name("personal");
+
+    let frame = renderer.render(&windows, 0, (80, 6), "locked", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+
+    let session = frame.find(" Rustmux (personal) ").unwrap();
+    let first_window = frame.find(" 1 fish ").unwrap();
+    assert!(session < first_window);
+    assert!(frame.contains("38;2;205;214;244;48;2;30;30;46"));
+}
+
+#[test]
 fn compact_layout_reclaims_status_row_and_shows_mode_at_top_right() {
     assert_eq!(content_size_for((20, 5), false), (18, 1));
     assert_eq!(content_size_for((20, 5), true), (18, 3));

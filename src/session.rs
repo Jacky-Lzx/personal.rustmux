@@ -226,13 +226,19 @@ pub(super) fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
     let rows = values[1].parse()?;
     let width = values[2].parse()?;
     let height = values[3].parse()?;
+    let session_name = socket
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or("session socket does not have a valid UTF-8 name")?
+        .to_owned();
+    validate_session_name(&session_name)?;
     validate_terminal_size((columns, rows))?;
     ensure_session_dir()?;
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     let _socket_guard = SocketGuard(socket);
     let config = Config::load().map_err(|error| format!("configuration error: {error}"))?;
-    let mut app = App::new((columns, rows), (width, height), config)?;
+    let mut app = App::new((columns, rows), (width, height), config, &session_name)?;
     let result = app.run_server(listener);
     app.shutdown();
     result

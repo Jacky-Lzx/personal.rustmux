@@ -4,7 +4,7 @@
 
 支持 macOS 和 Linux 等 Unix 终端；Windows 暂不支持。
 
-界面使用 Catppuccin Mocha 配色。最上方以 Zellij 风格的 powerline 箭头标签列出所有窗口并高亮当前窗口，底部使用同样的箭头分段显示 mode 与快捷键；两条状态行都使用暗色背景。当前程序通过 OSC 设置的终端标题会显示在上边框中。
+界面使用 Catppuccin Mocha 配色。最上方先显示当前 session 名称，再以 Zellij 风格的 powerline 箭头标签列出所有窗口并高亮当前窗口；底部使用同样的箭头分段显示 mode 与快捷键。两条状态行都使用暗色背景。当前程序通过 OSC 设置的终端标题会显示在上边框中。
 
 ## 快捷键
 
