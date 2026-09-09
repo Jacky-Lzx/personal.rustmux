@@ -14,6 +14,7 @@ use crossterm::terminal::window_size;
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, poll};
 use nix::unistd::read;
+use serde::{Deserialize, Serialize};
 
 use super::{
     CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
@@ -21,7 +22,77 @@ use super::{
     TerminalGuard,
 };
 use crate::app::App;
-use crate::layout::validate_terminal_size;
+use crate::layout::{PaneNode, validate_terminal_size};
+
+const SNAPSHOT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct SessionSnapshot {
+    pub(super) version: u32,
+    pub(super) tabs: Vec<SnapshotTab>,
+    pub(super) floating: Option<SnapshotFloating>,
+    pub(super) active_pane: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct SnapshotTab {
+    pub(super) id: usize,
+    pub(super) name: String,
+    pub(super) root: PaneNode,
+    pub(super) panes: Vec<SnapshotPane>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct SnapshotPane {
+    pub(super) id: usize,
+    pub(super) cwd: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct SnapshotFloating {
+    pub(super) cwd: Option<PathBuf>,
+    pub(super) visible: bool,
+    pub(super) return_to: Option<usize>,
+}
+
+impl SessionSnapshot {
+    pub(super) fn new(
+        tabs: Vec<SnapshotTab>,
+        floating: Option<SnapshotFloating>,
+        active_pane: usize,
+    ) -> Self {
+        Self {
+            version: SNAPSHOT_VERSION,
+            tabs,
+            floating,
+            active_pane,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.version != SNAPSHOT_VERSION {
+            return Err(format!("unsupported session snapshot version {}", self.version).into());
+        }
+        if self.tabs.is_empty() {
+            return Err("session snapshot has no tabs".into());
+        }
+        let mut all_panes = Vec::new();
+        for tab in &self.tabs {
+            let mut root_ids = crate::layout::pane_ids(&tab.root);
+            let mut pane_ids = tab.panes.iter().map(|pane| pane.id).collect::<Vec<_>>();
+            root_ids.sort_unstable();
+            pane_ids.sort_unstable();
+            if root_ids != pane_ids || pane_ids.iter().any(|id| all_panes.contains(id)) {
+                return Err(format!("invalid pane layout in saved tab '{}'", tab.name).into());
+            }
+            all_panes.extend(pane_ids);
+        }
+        if !all_panes.contains(&self.active_pane) {
+            return Err("saved active pane does not exist".into());
+        }
+        Ok(())
+    }
+}
 
 struct SocketGuard(PathBuf);
 
@@ -86,6 +157,91 @@ impl Drop for SocketGuard {
 fn session_dir() -> PathBuf {
     let uid = unsafe { nix::libc::getuid() };
     env::temp_dir().join(format!("rustmux-{uid}"))
+}
+
+fn snapshot_dir() -> PathBuf {
+    let state = env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from(".local/state"));
+    state.join("rustmux/sessions")
+}
+
+fn snapshot_path(name: &str) -> Result<PathBuf> {
+    validate_session_name(name)?;
+    Ok(snapshot_dir().join(format!("{name}.toml")))
+}
+
+pub(super) fn save_session_snapshot(name: &str, snapshot: &SessionSnapshot) -> Result<()> {
+    snapshot.validate()?;
+    let directory = snapshot_dir();
+    fs::create_dir_all(&directory)?;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+    let path = snapshot_path(name)?;
+    let temporary = directory.join(format!(".{name}.toml.tmp-{}", std::process::id()));
+    fs::write(&temporary, toml::to_string_pretty(snapshot)?)?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
+pub(super) fn load_session_snapshot(name: &str) -> Result<Option<SessionSnapshot>> {
+    let path = snapshot_path(name)?;
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let snapshot: SessionSnapshot = toml::from_str(&source)?;
+    snapshot.validate()?;
+    Ok(Some(snapshot))
+}
+
+pub(super) fn delete_session_snapshot(name: &str) -> Result<()> {
+    let path = snapshot_path(name)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn available_snapshots() -> Result<Vec<String>> {
+    let directory = snapshot_dir();
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let mut names = fs::read_dir(directory)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|value| value == "toml")
+        })
+        .filter_map(|entry| {
+            entry
+                .path()
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    Ok(names)
+}
+
+pub(super) fn rename_session_snapshot(old_name: &str, new_name: &str) -> Result<()> {
+    let old_path = snapshot_path(old_name)?;
+    if !old_path.exists() {
+        return Ok(());
+    }
+    let new_path = snapshot_path(new_name)?;
+    if new_path.exists() {
+        return Err(format!("saved session '{new_name}' already exists").into());
+    }
+    fs::rename(old_path, new_path)?;
+    Ok(())
 }
 
 pub(super) fn ensure_session_dir() -> Result<PathBuf> {
@@ -333,6 +489,7 @@ pub(super) struct SessionInfo {
     pub(super) panes: usize,
     pub(super) connected: bool,
     pub(super) created_at: u64,
+    pub(super) saved: bool,
 }
 
 fn control_session(name: &str, request: &[u8]) -> Result<Vec<u8>> {
@@ -349,32 +506,49 @@ fn control_session(name: &str, request: &[u8]) -> Result<Vec<u8>> {
 
 pub(super) fn available_session_info(local: Option<SessionInfo>) -> Result<Vec<SessionInfo>> {
     let mut sessions = Vec::new();
-    for name in available_sessions()? {
+    let live = available_sessions()?;
+    let saved = available_snapshots()?;
+    let mut names = live.iter().chain(&saved).cloned().collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    for name in names {
         if let Some(info) = local.as_ref().filter(|info| info.name == name) {
             sessions.push(info.clone());
             continue;
         }
-        let response = control_session(&name, &[CLIENT_QUERY_STATUS]).unwrap_or_default();
+        let is_live = live.contains(&name);
+        let response = if is_live {
+            control_session(&name, &[CLIENT_QUERY_STATUS]).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let fields = String::from_utf8_lossy(&response)
             .trim()
             .split('\t')
             .map(str::to_owned)
             .collect::<Vec<_>>();
+        let snapshot = load_session_snapshot(&name).ok().flatten();
+        let is_saved = saved.contains(&name);
         sessions.push(SessionInfo {
             name,
             tabs: fields
                 .first()
                 .and_then(|value| value.parse().ok())
-                .unwrap_or(0),
+                .unwrap_or_else(|| snapshot.as_ref().map_or(0, |value| value.tabs.len())),
             panes: fields
                 .get(1)
                 .and_then(|value| value.parse().ok())
-                .unwrap_or(0),
+                .unwrap_or_else(|| {
+                    snapshot.as_ref().map_or(0, |value| {
+                        value.tabs.iter().map(|tab| tab.panes.len()).sum()
+                    })
+                }),
             connected: fields.get(2).is_some_and(|value| value == "1"),
             created_at: fields
                 .get(3)
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0),
+            saved: is_saved,
         });
     }
     Ok(sessions)
@@ -386,6 +560,9 @@ pub(super) fn disconnect_session(name: &str) -> Result<()> {
 
 pub(super) fn rename_session(name: &str, new_name: &str) -> Result<()> {
     validate_session_name(new_name)?;
+    if !session_socket(name)?.exists() {
+        return rename_session_snapshot(name, new_name);
+    }
     let length = u8::try_from(new_name.len())?;
     let mut request = vec![CLIENT_RENAME_SESSION, length];
     request.extend_from_slice(new_name.as_bytes());
@@ -436,4 +613,68 @@ pub(super) fn available_sessions() -> Result<Vec<String>> {
 
 pub(super) fn kill_session(name: &str) -> Result<()> {
     control_session(name, &[CLIENT_SHUTDOWN]).map(|_| ())
+}
+
+pub(super) fn delete_session(name: &str) -> Result<()> {
+    if session_socket(name)?.exists() {
+        kill_session(name)?;
+    }
+    delete_session_snapshot(name)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::layout::SplitAxis;
+
+    #[test]
+    fn session_snapshot_round_trips_through_toml() {
+        let snapshot = SessionSnapshot::new(
+            vec![SnapshotTab {
+                id: 7,
+                name: "editor".to_owned(),
+                root: PaneNode::Split {
+                    axis: SplitAxis::Vertical,
+                    ratio: 650,
+                    first: Box::new(PaneNode::Leaf(10)),
+                    second: Box::new(PaneNode::Leaf(11)),
+                },
+                panes: vec![
+                    SnapshotPane {
+                        id: 10,
+                        cwd: Some(PathBuf::from("/tmp/project")),
+                    },
+                    SnapshotPane { id: 11, cwd: None },
+                ],
+            }],
+            Some(SnapshotFloating {
+                cwd: Some(PathBuf::from("/tmp")),
+                visible: true,
+                return_to: Some(11),
+            }),
+            11,
+        );
+
+        let encoded = toml::to_string_pretty(&snapshot).unwrap();
+        let decoded: SessionSnapshot = toml::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, snapshot);
+        decoded.validate().unwrap();
+    }
+
+    #[test]
+    fn session_snapshot_rejects_layouts_with_missing_panes() {
+        let snapshot = SessionSnapshot::new(
+            vec![SnapshotTab {
+                id: 1,
+                name: "broken".to_owned(),
+                root: PaneNode::Leaf(1),
+                panes: vec![SnapshotPane { id: 2, cwd: None }],
+            }],
+            None,
+            2,
+        );
+
+        assert!(snapshot.validate().is_err());
+    }
 }

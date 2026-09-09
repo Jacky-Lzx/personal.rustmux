@@ -1313,6 +1313,8 @@ fn status_segments(snapshot: &FrameSnapshot, width: usize) -> Vec<(String, Rgb)>
             ("DELETE".to_owned(), MOCHA_BLUE),
             ("Ctrl-x".to_owned(), MOCHA_PINK),
             ("DISCONNECT".to_owned(), MOCHA_LAVENDER),
+            ("Ctrl-a".to_owned(), MOCHA_PINK),
+            ("SAVE".to_owned(), MOCHA_BLUE),
         ];
     }
     if let Some(name) = &snapshot.rename_prompt {
@@ -1423,7 +1425,13 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             " "
         };
         let state = if session.connected {
-            "attached"
+            if session.saved {
+                "attached, saved"
+            } else {
+                "attached"
+            }
+        } else if session.saved {
+            "saved"
         } else {
             "detached"
         };

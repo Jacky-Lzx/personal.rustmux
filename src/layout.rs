@@ -1,10 +1,12 @@
 use nix::pty::Winsize;
+use serde::{Deserialize, Serialize};
 
 use super::Result;
 
 const MAX_TERMINAL_CELLS: usize = 1_000_000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(super) enum SplitAxis {
     Horizontal,
     Vertical,
@@ -18,7 +20,8 @@ pub(super) enum Direction {
     Down,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(super) enum PaneNode {
     Leaf(usize),
     Split {

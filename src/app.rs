@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::ffi::CString;
 use std::fs;
@@ -28,8 +29,10 @@ use crate::layout::{
 };
 use crate::render::{HelpView, Renderer, SessionManagerView, render_base_index};
 use crate::session::{
-    SessionInfo, available_session_info, disconnect_session, ensure_session_dir, kill_session,
-    rename_session, validate_session_name,
+    SessionInfo, SessionSnapshot, SnapshotFloating, SnapshotPane, SnapshotTab,
+    available_session_info, delete_session, delete_session_snapshot, disconnect_session,
+    ensure_session_dir, load_session_snapshot, rename_session, rename_session_snapshot,
+    save_session_snapshot, validate_session_name,
 };
 use crate::terminal::{
     CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
@@ -159,6 +162,27 @@ pub(super) fn rename_tab(windows: &mut [Window], tab_id: usize, name: &str) {
     }
 }
 
+fn remap_pane_node(node: &PaneNode, ids: &HashMap<usize, usize>) -> Result<PaneNode> {
+    Ok(match node {
+        PaneNode::Leaf(id) => PaneNode::Leaf(
+            ids.get(id)
+                .copied()
+                .ok_or("saved pane layout references a missing pane")?,
+        ),
+        PaneNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => PaneNode::Split {
+            axis: *axis,
+            ratio: *ratio,
+            first: Box::new(remap_pane_node(first, ids)?),
+            second: Box::new(remap_pane_node(second, ids)?),
+        },
+    })
+}
+
 struct RenameState {
     tab_id: usize,
     original_names: Vec<(usize, String)>,
@@ -257,8 +281,140 @@ impl App {
             outer_dnd_window: None,
             client_input: Vec::new(),
         };
-        app.create_window()?;
+        if let Some(snapshot) = load_session_snapshot(session_name)? {
+            app.restore_session(snapshot)?;
+        } else {
+            app.create_window()?;
+        }
         Ok(app)
+    }
+
+    fn restore_session(&mut self, snapshot: SessionSnapshot) -> Result<()> {
+        let shell_name = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
+        let shell_label = Path::new(&shell_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&shell_name)
+            .to_owned();
+        let shell = CString::new(shell_name)?;
+        let mut pane_ids_by_saved_id = HashMap::new();
+        for saved_tab in snapshot.tabs {
+            let tab_id = self.next_id;
+            for pane in &saved_tab.panes {
+                let pane_id = self.spawn_window(
+                    saved_tab.name.clone(),
+                    shell.clone(),
+                    vec![shell.clone()],
+                    SpawnOptions {
+                        temporary_file: None,
+                        return_to_window: None,
+                        floating: false,
+                        tab_id,
+                        current_directory: pane.cwd.clone(),
+                    },
+                )?;
+                pane_ids_by_saved_id.insert(pane.id, pane_id);
+            }
+            self.tabs.push(Tab {
+                id: tab_id,
+                root: remap_pane_node(&saved_tab.root, &pane_ids_by_saved_id)?,
+            });
+        }
+        let active_id = pane_ids_by_saved_id
+            .get(&snapshot.active_pane)
+            .copied()
+            .ok_or("saved active pane could not be restored")?;
+        self.active = self
+            .windows
+            .iter()
+            .position(|window| window.id == active_id)
+            .ok_or("restored active pane is missing")?;
+
+        if let Some(floating) = snapshot.floating {
+            let return_to = floating
+                .return_to
+                .and_then(|id| pane_ids_by_saved_id.get(&id).copied())
+                .unwrap_or(active_id);
+            let tab_id = self
+                .windows
+                .iter()
+                .find(|window| window.id == return_to)
+                .map(|window| window.tab_id)
+                .unwrap_or(self.tabs[0].id);
+            self.spawn_window(
+                shell_label,
+                shell.clone(),
+                vec![shell],
+                SpawnOptions {
+                    temporary_file: None,
+                    return_to_window: Some(return_to),
+                    floating: true,
+                    tab_id,
+                    current_directory: floating.cwd,
+                },
+            )?;
+            if !floating.visible {
+                self.active = self
+                    .windows
+                    .iter()
+                    .position(|window| window.id == active_id)
+                    .unwrap_or(0);
+            }
+        }
+        self.resize_windows()?;
+        Ok(())
+    }
+
+    fn session_snapshot(&self) -> Result<SessionSnapshot> {
+        let active_pane = if self.windows[self.active].floating {
+            self.windows[self.active]
+                .return_to_window
+                .ok_or("floating terminal has no return pane")?
+        } else {
+            self.windows[self.active].id
+        };
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                let panes = pane_ids(&tab.root)
+                    .into_iter()
+                    .filter_map(|id| self.windows.iter().find(|window| window.id == id))
+                    .map(|window| SnapshotPane {
+                        id: window.id,
+                        cwd: window.terminal.callbacks().current_directory.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                let name = self
+                    .windows
+                    .iter()
+                    .find(|window| !window.floating && window.tab_id == tab.id)
+                    .map(|window| window.name.clone())
+                    .unwrap_or_else(|| "shell".to_owned());
+                SnapshotTab {
+                    id: tab.id,
+                    name,
+                    root: tab.root.clone(),
+                    panes,
+                }
+            })
+            .collect();
+        let floating = self
+            .windows
+            .iter()
+            .find(|window| window.floating)
+            .map(|window| SnapshotFloating {
+                cwd: window.terminal.callbacks().current_directory.clone(),
+                visible: self.windows[self.active].id == window.id,
+                return_to: window.return_to_window,
+            });
+        Ok(SessionSnapshot::new(tabs, floating, active_pane))
+    }
+
+    fn save_current_session(&mut self) -> Result<()> {
+        save_session_snapshot(&self.session_name, &self.session_snapshot()?)?;
+        self.refresh_session_manager()?;
+        self.notify("session layout saved")
     }
 
     fn create_window(&mut self) -> Result<()> {
@@ -1149,17 +1305,19 @@ impl App {
                 self.sync_session_manager();
                 self.redraw()?;
             }
+            "ctrl a" => self.save_current_session()?,
             "delete" => {
                 let Some(target) = self.selected_session_name() else {
                     return Ok(true);
                 };
                 if target == self.session_name {
+                    delete_session_snapshot(&target)?;
                     for window in self.windows.drain(..) {
                         terminate_window(window);
                     }
                     return Ok(false);
                 }
-                kill_session(&target)?;
+                delete_session(&target)?;
                 self.session_manager
                     .as_mut()
                     .expect("session manager is open")
@@ -1253,6 +1411,10 @@ impl App {
                 .count(),
             connected: self.client.is_some(),
             created_at: self.created_at,
+            saved: load_session_snapshot(&self.session_name)
+                .ok()
+                .flatten()
+                .is_some(),
         }
     }
 
@@ -1319,11 +1481,16 @@ impl App {
     }
 
     fn rename_current_session(&mut self, new_name: &str) -> Result<()> {
+        let old_name = self.session_name.clone();
         let new_path = self.socket_path.with_file_name(format!("{new_name}.sock"));
         if new_path.exists() {
             return Err(format!("session '{new_name}' already exists").into());
         }
         fs::rename(&self.socket_path, &new_path)?;
+        if let Err(error) = rename_session_snapshot(&old_name, new_name) {
+            let _ = fs::rename(&new_path, &self.socket_path);
+            return Err(error);
+        }
         self.socket_path = new_path;
         self.session_name = new_name.to_owned();
         self.renderer.set_session_name(new_name);

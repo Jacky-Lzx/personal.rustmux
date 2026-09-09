@@ -1255,6 +1255,7 @@ fn session_manager_searches_case_insensitively() {
         panes: 1,
         connected: false,
         created_at: 1,
+        saved: false,
     });
     assert_eq!(matching_session_info(&sessions, "son")[0].name, "Personal");
     assert_eq!(matching_session_info(&sessions, "W")[0].name, "work");
@@ -1274,6 +1275,7 @@ fn session_manager_renders_search_results_and_actions() {
             panes: 3,
             connected: false,
             created_at: 1,
+            saved: true,
         }],
         selected: 0,
         current: "personal".to_owned(),
@@ -1285,7 +1287,7 @@ fn session_manager_renders_search_results_and_actions() {
 
     assert!(frame.contains("Session Manager"));
     assert!(frame.contains("Session: wo_"));
-    assert!(frame.contains(">   work  2 tabs, 3 panes  detached"));
+    assert!(frame.contains(">   work  2 tabs, 3 panes  saved"));
     assert!(frame.contains("ATTACH / CREATE"));
     assert!(frame.contains("\x1b[?25l"));
 }
@@ -1302,6 +1304,7 @@ fn session_manager_renders_rename_input() {
             panes: 1,
             connected: true,
             created_at: 1,
+            saved: false,
         }],
         selected: 0,
         current: "work".to_owned(),

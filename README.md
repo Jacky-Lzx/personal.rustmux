@@ -16,7 +16,7 @@
 - `,`：重命名当前窗口；输入时顶部标签会实时预览，Enter 确认，Esc 取消并恢复原名
 - `n`：下一个窗口
 - `p`：上一个窗口
-- `s`：打开 Session Manager；输入名称搜索，使用 `↑` / `↓` 选择、Tab 补全、Enter 进入、Esc 取消。没有匹配项时，Enter 会以当前输入创建新 session。列表会显示 tab/pane 数、连接状态和创建时间；`Ctrl-r` 重命名、Delete 删除、`Ctrl-x` 强制断开所选 session 的客户端
+- `s`：打开 Session Manager；输入名称搜索，使用 `↑` / `↓` 选择、Tab 补全、Enter 进入、Esc 取消。没有匹配项时，Enter 会以当前输入创建新 session。列表会显示 tab/pane 数、连接状态、保存状态和创建时间；`Ctrl-a` 保存当前 session 布局、`Ctrl-r` 重命名、Delete 删除、`Ctrl-x` 强制断开所选 session 的客户端
 - `[`：进入当前窗口的历史模式
 - `h`：用 `$VISUAL` 或 `$EDITOR`（默认 `vi`）打开当前窗口的完整历史
 - `e`：用编辑器打开上一条命令的输出
@@ -50,7 +50,7 @@ Pane mode 下可以使用：
 - `y`：复制键盘选区并退出 history 模式
 - `q` / Esc：退出历史模式并返回实时画面
 
-在 history 模式中也可以使用鼠标滚轮浏览；向下滚动到最底部后会自动返回实时画面。
+在 history 模式中也可以使用鼠标滚轮浏览；向下滚动到最底部后仍会留在 history 模式，使用 `q` 或 Esc 返回实时画面。
 
 进入 history（`scroll`）模式后，按住鼠标左键拖动可以选择当前窗口中的文本；选区会反色显示，松开左键后自动通过 OSC 52 复制到系统剪贴板，并在左下角边框短暂显示 `copied to system clipboard`。在默认的 `locked` 模式下，鼠标事件会根据内部程序启用的鼠标协议传入当前 pane，不会触发 rustmux 的文本选择。在包含多个 pane 的 tab 中，点击任意 pane 的内容或边框会先切换焦点；如果其中的程序启用了鼠标协议，同一次点击也会继续传给该程序。
 
@@ -192,6 +192,8 @@ rustmux list-sessions
 # 结束 session 及其窗口进程
 rustmux kill-session -t work
 ```
+
+Session Manager 中按 `Ctrl-a` 会把当前 session 的 window 名称、pane 分割布局与比例、活动 pane、各 pane 工作目录以及 floating terminal 状态保存到 `$XDG_STATE_HOME/rustmux/sessions`（默认 `~/.local/state/rustmux/sessions`）。进程和终端内容不会序列化；session server 停止后再次创建同名 session 时，rustmux 会在保存的目录中重新启动 shell 并重建布局。已保存但未运行的 session 也会出现在 Session Manager 中，Delete 会同时删除其快照。
 
 也可以安装到 Cargo 的二进制目录：
 
