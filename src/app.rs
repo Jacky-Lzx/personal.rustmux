@@ -24,8 +24,9 @@ use crate::input::{
 };
 use crate::layout::{
     Direction, PaneNode, PaneRect, SplitAxis, content_rect_for, directional_distance,
-    floating_layout_for, pane_ids, pane_pty_size, pane_rects, rect_in_direction, remove_pane,
-    resize_pane, split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
+    floating_layout_for, move_item, pane_ids, pane_pty_size, pane_rects, rect_in_direction,
+    remove_pane, resize_pane, split_pane, swap_panes, tiled_content_rect_for,
+    validate_terminal_size, window_winsize_for,
 };
 use crate::render::{HelpView, Renderer, SessionManagerView, render_base_index};
 use crate::session::{
@@ -1168,6 +1169,8 @@ impl App {
                 Action::RenameWindow => self.begin_window_rename()?,
                 Action::NextWindow => self.select_relative(1)?,
                 Action::PreviousWindow => self.select_relative(-1)?,
+                Action::MoveWindowLeft => self.move_active_window(-1)?,
+                Action::MoveWindowRight => self.move_active_window(1)?,
                 Action::SwitchSession => self.open_session_manager()?,
                 Action::GoToWindow(index) => self.select_window(*index)?,
                 Action::CloseWindow => self.close_active()?,
@@ -1196,6 +1199,10 @@ impl App {
                 Action::FocusUp => self.focus_pane(Direction::Up)?,
                 Action::FocusDown => self.focus_pane(Direction::Down)?,
                 Action::FocusNextPane => self.focus_next_pane()?,
+                Action::MovePaneLeft => self.move_active_pane(Direction::Left)?,
+                Action::MovePaneRight => self.move_active_pane(Direction::Right)?,
+                Action::MovePaneUp => self.move_active_pane(Direction::Up)?,
+                Action::MovePaneDown => self.move_active_pane(Direction::Down)?,
                 Action::ClosePane => self.close_pane()?,
                 Action::ResizePaneLeft => self.resize_active_pane(Direction::Left)?,
                 Action::ResizePaneRight => self.resize_active_pane(Direction::Right)?,
@@ -2282,32 +2289,50 @@ impl App {
     }
 
     fn focus_pane(&mut self, direction: Direction) -> Result<()> {
-        if self.windows[self.active].floating || self.windows[self.active].zoomed {
-            return Ok(());
-        }
-        let tab_id = self.windows[self.active].tab_id;
-        let active_id = self.windows[self.active].id;
-        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
-            return Ok(());
-        };
-        let rects = pane_rects(
-            &tab.root,
-            content_rect_for(self.terminal_size, self.config.compact()),
-        );
-        let Some((_, current)) = rects.iter().find(|(id, _)| *id == active_id) else {
-            return Ok(());
-        };
-        if let Some((target, _)) = rects
-            .iter()
-            .filter(|(id, rect)| *id != active_id && rect_in_direction(*current, *rect, direction))
-            .min_by_key(|(_, rect)| directional_distance(*current, *rect, direction))
-        {
+        if let Some(target) = self.pane_in_direction(direction) {
             self.active = self
                 .windows
                 .iter()
-                .position(|window| window.id == *target)
+                .position(|window| window.id == target)
                 .unwrap();
             self.selection = None;
+            self.renderer.invalidate();
+            self.redraw()?;
+        }
+        Ok(())
+    }
+
+    fn pane_in_direction(&self, direction: Direction) -> Option<usize> {
+        let active = self.windows.get(self.active)?;
+        if active.floating || active.zoomed {
+            return None;
+        }
+        self.windows
+            .iter()
+            .filter(|candidate| {
+                !candidate.floating
+                    && candidate.tab_id == active.tab_id
+                    && candidate.id != active.id
+                    && rect_in_direction(active.pane_rect, candidate.pane_rect, direction)
+            })
+            .min_by_key(|candidate| {
+                directional_distance(active.pane_rect, candidate.pane_rect, direction)
+            })
+            .map(|window| window.id)
+    }
+
+    fn move_active_pane(&mut self, direction: Direction) -> Result<()> {
+        let Some(target) = self.pane_in_direction(direction) else {
+            return self.notify("no pane in that direction");
+        };
+        let active_id = self.windows[self.active].id;
+        let tab_id = self.windows[self.active].tab_id;
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
+            return Ok(());
+        };
+        if swap_panes(&mut tab.root, active_id, target) {
+            self.selection = None;
+            self.resize_windows()?;
             self.renderer.invalidate();
             self.redraw()?;
         }
@@ -2444,6 +2469,36 @@ impl App {
             self.redraw()?;
         }
         Ok(())
+    }
+
+    fn move_active_window(&mut self, offset: isize) -> Result<()> {
+        let tab_id = self.windows[render_base_index(&self.windows, self.active)].tab_id;
+        let current = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == tab_id)
+            .unwrap_or(0);
+        if !move_item(&mut self.tabs, current, offset) {
+            return self.notify("window is already at the edge");
+        }
+
+        let active_id = self.windows[self.active].id;
+        let positions = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| (tab.id, index))
+            .collect::<HashMap<_, _>>();
+        self.windows
+            .sort_by_key(|window| positions.get(&window.tab_id).copied().unwrap_or(usize::MAX));
+        self.active = self
+            .windows
+            .iter()
+            .position(|window| window.id == active_id)
+            .unwrap();
+        self.selection = None;
+        self.renderer.invalidate();
+        self.redraw()
     }
 
     fn select_window(&mut self, index: usize) -> Result<()> {

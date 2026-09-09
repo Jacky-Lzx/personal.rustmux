@@ -98,6 +98,8 @@ i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
 x = ["close-window", { action = "switch-mode", mode = "locked" }]
 d = ["detach"]
 "?" = ["show-help", { action = "switch-mode", mode = "locked" }]
+"<" = { actions = ["move-window-left", { action = "switch-mode", mode = "locked" }], display = "help" }
+">" = { actions = ["move-window-right", { action = "switch-mode", mode = "locked" }], display = "help" }
 
 [keybinds.pane]
 r = ["new-pane-right", { action = "switch-mode", mode = "locked" }]
@@ -120,6 +122,10 @@ z = ["toggle-pane-zoom"]
 x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 q = [{ action = "switch-mode", mode = "locked" }]
 esc = [{ action = "switch-mode", mode = "locked" }]
+"Alt h" = { actions = ["move-pane-left"], display = "help" }
+"Alt j" = { actions = ["move-pane-down"], display = "help" }
+"Alt k" = { actions = ["move-pane-up"], display = "help" }
+"Alt l" = { actions = ["move-pane-right"], display = "help" }
 
 [keybinds.scroll]
 "/" = ["search-history"]
@@ -160,6 +166,8 @@ pub enum Action {
     RenameWindow,
     NextWindow,
     PreviousWindow,
+    MoveWindowLeft,
+    MoveWindowRight,
     SwitchSession,
     GoToWindow(usize),
     CloseWindow,
@@ -182,6 +190,10 @@ pub enum Action {
     FocusUp,
     FocusDown,
     FocusNextPane,
+    MovePaneLeft,
+    MovePaneRight,
+    MovePaneUp,
+    MovePaneDown,
     ClosePane,
     ResizePaneLeft,
     ResizePaneRight,
@@ -522,6 +534,8 @@ impl Action {
             Self::RenameWindow => "rename-window".to_owned(),
             Self::NextWindow => "next-window".to_owned(),
             Self::PreviousWindow => "previous-window".to_owned(),
+            Self::MoveWindowLeft => "move-window-left".to_owned(),
+            Self::MoveWindowRight => "move-window-right".to_owned(),
             Self::SwitchSession => "switch-session".to_owned(),
             Self::GoToWindow(index) => format!("window:{index}"),
             Self::CloseWindow => "close-window".to_owned(),
@@ -544,6 +558,10 @@ impl Action {
             Self::FocusUp => "focus-up".to_owned(),
             Self::FocusDown => "focus-down".to_owned(),
             Self::FocusNextPane => "focus-next-pane".to_owned(),
+            Self::MovePaneLeft => "move-pane-left".to_owned(),
+            Self::MovePaneRight => "move-pane-right".to_owned(),
+            Self::MovePaneUp => "move-pane-up".to_owned(),
+            Self::MovePaneDown => "move-pane-down".to_owned(),
             Self::ClosePane => "close-pane".to_owned(),
             Self::ResizePaneLeft => "resize-left".to_owned(),
             Self::ResizePaneRight => "resize-right".to_owned(),
@@ -647,6 +665,14 @@ fn parse_action(
             no_arguments()?;
             Action::PreviousWindow
         }
+        "move-window-left" => {
+            no_arguments()?;
+            Action::MoveWindowLeft
+        }
+        "move-window-right" => {
+            no_arguments()?;
+            Action::MoveWindowRight
+        }
         "switch-session" => {
             no_arguments()?;
             Action::SwitchSession
@@ -730,6 +756,22 @@ fn parse_action(
         "focus-next-pane" => {
             no_arguments()?;
             Action::FocusNextPane
+        }
+        "move-pane-left" => {
+            no_arguments()?;
+            Action::MovePaneLeft
+        }
+        "move-pane-right" => {
+            no_arguments()?;
+            Action::MovePaneRight
+        }
+        "move-pane-up" => {
+            no_arguments()?;
+            Action::MovePaneUp
+        }
+        "move-pane-down" => {
+            no_arguments()?;
+            Action::MovePaneDown
         }
         "close-pane" => {
             no_arguments()?;
@@ -931,6 +973,15 @@ mod tests {
                 ][..]
             )
         );
+        assert_eq!(
+            config.actions("normal", "<"),
+            Some(
+                &[
+                    Action::MoveWindowLeft,
+                    Action::SwitchMode("locked".to_owned())
+                ][..]
+            )
+        );
         assert_eq!(config.command_notification_seconds(), Some(10));
         assert!(config.notification_excludes_application(Some("yazi")));
         assert!(config.notification_excludes_application(Some("nvim")));
@@ -942,6 +993,10 @@ mod tests {
                     Action::SwitchMode("locked".to_owned())
                 ][..]
             )
+        );
+        assert_eq!(
+            config.actions("pane", "alt h"),
+            Some(&[Action::MovePaneLeft][..])
         );
     }
 

@@ -16,6 +16,7 @@
 - `,`：重命名当前窗口；输入时顶部标签会实时预览，Enter 确认，Esc 取消并恢复原名
 - `n`：下一个窗口
 - `p`：上一个窗口
+- `<` / `>`：将当前窗口向左 / 向右移动一个位置
 - `s`：打开 Session Manager；输入名称搜索，使用 `↑` / `↓` 选择、Tab 补全、Enter 进入、Esc 取消。没有匹配项时，Enter 会以当前输入创建新 session。列表会显示 tab/pane 数、连接状态、保存状态和创建时间；`Ctrl-a` 保存当前 session 布局、`Ctrl-r` 重命名、Delete 删除、`Ctrl-x` 强制断开所选 session 的客户端
 - `[`：进入当前窗口的历史模式
 - `h`：用 `$VISUAL` 或 `$EDITOR`（默认 `vi`）打开当前窗口的完整历史
@@ -34,6 +35,7 @@ Pane mode 下可以使用：
 - `h` / `j` / `k` / `l` 或方向键：向对应方向切换焦点
 - Tab：循环切换 pane
 - `H` / `J` / `K` / `L`：向左 / 下 / 上 / 右扩展当前 pane
+- `Alt-h` / `Alt-j` / `Alt-k` / `Alt-l`：与对应方向最近的 pane 交换位置；焦点跟随当前 pane，分割比例不变
 - `z`：切换当前 pane 的全屏显示
 - `x`：关闭当前 pane；若它是 tab 内最后一个 pane，则关闭整个 tab
 - `q` / Esc：退出 pane mode
@@ -89,6 +91,8 @@ c = ["new-window", { action = "switch-mode", mode = "locked" }]
 "," = ["rename-window"]
 n = ["next-window", { action = "switch-mode", mode = "locked" }]
 s = ["switch-session"]
+"<" = { actions = ["move-window-left", { action = "switch-mode", mode = "locked" }], display = "help" }
+">" = { actions = ["move-window-right", { action = "switch-mode", mode = "locked" }], display = "help" }
 "1" = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
 i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
 "Ctrl p" = [{ action = "switch-mode", mode = "pane" }]
@@ -119,11 +123,15 @@ H = ["resize-pane-left"]
 J = ["resize-pane-down"]
 K = ["resize-pane-up"]
 L = ["resize-pane-right"]
+"Alt h" = { actions = ["move-pane-left"], display = "help" }
+"Alt j" = { actions = ["move-pane-down"], display = "help" }
+"Alt k" = { actions = ["move-pane-up"], display = "help" }
+"Alt l" = { actions = ["move-pane-right"], display = "help" }
 z = ["toggle-pane-zoom"]
 x = ["close-pane", { action = "switch-mode", mode = "locked" }]
 ```
 
-一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`switch-session`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`resize-pane-left`、`resize-pane-right`、`resize-pane-up`、`resize-pane-down`、`toggle-pane-zoom`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`search-history`、`next-search-match`、`previous-search-match`、`toggle-history-selection`、`selection-left`、`selection-right`、`copy-selection`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
+一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`move-window-left`、`move-window-right`、`switch-session`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`move-pane-left`、`move-pane-right`、`move-pane-up`、`move-pane-down`、`resize-pane-left`、`resize-pane-right`、`resize-pane-up`、`resize-pane-down`、`toggle-pane-zoom`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`search-history`、`next-search-match`、`previous-search-match`、`toggle-history-selection`、`selection-left`、`selection-right`、`copy-selection`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
 
 ```toml
 key = [{ action = "switch-mode", mode = "locked" }]
@@ -212,4 +220,4 @@ rustmux 会通过 OSC 7 shell integration 跟踪每个 pane 的当前工作目�
 
 ## MVP 边界
 
-当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 tab 内的水平/垂直 pane、pane resize、全屏与鼠标点击聚焦、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现 pane 移动。
+当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 window 重排，以及 tab 内的水平/垂直 pane、pane resize、方向交换、全屏与鼠标点击聚焦、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。

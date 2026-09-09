@@ -15,8 +15,9 @@ use crate::input::{
 };
 use crate::layout::{
     Direction, FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for,
-    content_winsize_for, floating_layout_for, pane_ids, pane_rects, remove_pane, resize_pane,
-    split_pane, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
+    content_winsize_for, floating_layout_for, move_item, pane_ids, pane_rects, remove_pane,
+    resize_pane, split_pane, swap_panes, tiled_content_rect_for, validate_terminal_size,
+    window_winsize_for,
 };
 use crate::render::{
     CellStyle, FrameSnapshot, HelpView, Renderer, SessionManagerView, compact_status_hints,
@@ -753,6 +754,50 @@ fn pane_layout_splits_the_active_leaf_and_collapses_after_removal() {
     );
     let root = remove_pane(root, 2).unwrap();
     assert_eq!(pane_ids(&root), vec![1, 3]);
+}
+
+#[test]
+fn pane_layout_swaps_contents_without_changing_the_split_tree() {
+    let mut root = PaneNode::Split {
+        axis: SplitAxis::Vertical,
+        ratio: 420,
+        first: Box::new(PaneNode::Leaf(1)),
+        second: Box::new(PaneNode::Split {
+            axis: SplitAxis::Horizontal,
+            ratio: 630,
+            first: Box::new(PaneNode::Leaf(2)),
+            second: Box::new(PaneNode::Leaf(3)),
+        }),
+    };
+
+    assert!(swap_panes(&mut root, 1, 3));
+    assert_eq!(pane_ids(&root), vec![3, 2, 1]);
+    assert_eq!(
+        root,
+        PaneNode::Split {
+            axis: SplitAxis::Vertical,
+            ratio: 420,
+            first: Box::new(PaneNode::Leaf(3)),
+            second: Box::new(PaneNode::Split {
+                axis: SplitAxis::Horizontal,
+                ratio: 630,
+                first: Box::new(PaneNode::Leaf(2)),
+                second: Box::new(PaneNode::Leaf(1)),
+            }),
+        }
+    );
+    assert!(!swap_panes(&mut root, 1, 99));
+    assert!(!swap_panes(&mut root, 1, 1));
+}
+
+#[test]
+fn move_item_swaps_with_an_adjacent_item_without_wrapping() {
+    let mut items = vec!["one", "two", "three"];
+
+    assert!(move_item(&mut items, 1, -1));
+    assert_eq!(items, vec!["two", "one", "three"]);
+    assert!(!move_item(&mut items, 0, -1));
+    assert!(!move_item(&mut items, 2, 1));
 }
 
 #[test]

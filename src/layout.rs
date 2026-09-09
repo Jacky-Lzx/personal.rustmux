@@ -142,6 +142,42 @@ pub(super) fn pane_ids(node: &PaneNode) -> Vec<usize> {
     ids
 }
 
+pub(super) fn swap_panes(node: &mut PaneNode, first_id: usize, second_id: usize) -> bool {
+    if first_id == second_id {
+        return false;
+    }
+    let ids = pane_ids(node);
+    if !ids.contains(&first_id) || !ids.contains(&second_id) {
+        return false;
+    }
+
+    fn swap(node: &mut PaneNode, first_id: usize, second_id: usize) {
+        match node {
+            PaneNode::Leaf(id) if *id == first_id => *id = second_id,
+            PaneNode::Leaf(id) if *id == second_id => *id = first_id,
+            PaneNode::Leaf(_) => {}
+            PaneNode::Split { first, second, .. } => {
+                swap(first, first_id, second_id);
+                swap(second, first_id, second_id);
+            }
+        }
+    }
+
+    swap(node, first_id, second_id);
+    true
+}
+
+pub(super) fn move_item<T>(items: &mut [T], current: usize, offset: isize) -> bool {
+    let Some(target) = current.checked_add_signed(offset) else {
+        return false;
+    };
+    if target >= items.len() {
+        return false;
+    }
+    items.swap(current, target);
+    true
+}
+
 pub(super) fn pane_rects(node: &PaneNode, rect: PaneRect) -> Vec<(usize, PaneRect)> {
     let mut rects = Vec::new();
     fn layout(node: &PaneNode, rect: PaneRect, rects: &mut Vec<(usize, PaneRect)>) {
