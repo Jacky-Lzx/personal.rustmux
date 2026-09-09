@@ -30,6 +30,7 @@ const PREFIX: u8 = 0x02; // Ctrl-b
 const SCROLLBACK_LINES: usize = 1_000;
 const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(50);
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
+const EARLY_DISCONNECT_RETRY: Duration = Duration::from_millis(100);
 const MAX_KITTY_COMMAND_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PTY_READS_PER_TICK: usize = 32;
 const MOUSE_SCROLL_LINES: usize = 3;
@@ -587,6 +588,10 @@ impl App {
     }
 
     fn attach_client(&mut self, stream: UnixStream) -> Result<()> {
+        // The listener is nonblocking so it can share the server poll loop. On
+        // macOS an accepted socket can retain that mode; a large initial frame
+        // may then return EAGAIN, which must not be mistaken for a disconnect.
+        stream.set_nonblocking(false)?;
         self.client = Some(stream);
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
@@ -1870,15 +1875,30 @@ fn connect_with_retry(socket: &Path) -> Result<UnixStream> {
 
 fn attach_or_create(name: &str, create: bool) -> Result<()> {
     let socket = session_socket(name)?;
-    match UnixStream::connect(&socket) {
-        Ok(stream) => run_client(stream),
-        Err(error) if !create => Err(format!("session '{name}' not found: {error}").into()),
+    let stream = match UnixStream::connect(&socket) {
+        Ok(stream) => stream,
+        Err(error) if !create => {
+            return Err(format!("session '{name}' not found: {error}").into());
+        }
         Err(_) => {
             let size = window_size()?;
             start_server(&socket, size)?;
-            run_client(connect_with_retry(&socket)?)
+            connect_with_retry(&socket)?
+        }
+    };
+
+    let started = Instant::now();
+    run_client(stream)?;
+    if started.elapsed() < EARLY_DISCONNECT_RETRY {
+        // Servers started by an older rustmux build could accidentally apply a
+        // previous client's POLLHUP to a newly accepted connection. Retrying
+        // once preserves that in-memory session while recovering transparently.
+        thread::sleep(Duration::from_millis(20));
+        if let Ok(stream) = UnixStream::connect(&socket) {
+            run_client(stream)?;
         }
     }
+    Ok(())
 }
 
 fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
