@@ -804,16 +804,32 @@ impl App {
                         passthrough.clear();
                     }
                     self.apply_mouse_action(mouse)?;
-                } else if self.mode == "locked"
-                    && self.windows[self.active]
+                } else if self.mode == "locked" {
+                    if matches!(mouse, MouseAction::SelectStart(_))
+                        && let Some(target) = pane_at(&self.windows, self.active, mouse.position())
+                        && target != self.active
+                    {
+                        if !passthrough.is_empty() {
+                            self.write_active(&passthrough)?;
+                            passthrough.clear();
+                        }
+                        self.active = target;
+                        self.selection = None;
+                        self.renderer.invalidate();
+                        self.redraw()?;
+                    }
+                    if self.windows[self.active]
                         .terminal
                         .screen()
                         .mouse_protocol_mode()
                         != vt100::MouseProtocolMode::None
-                    && let Some(position) = self.content_position(mouse.position(), false)
-                    && let Some(sequence) = sgr_mouse_at(&bytes[index..index + consumed], position)
-                {
-                    passthrough.extend_from_slice(&sequence);
+                        && let Some(position) =
+                            self.content_position_for(self.active, mouse.position(), false)
+                        && let Some(sequence) =
+                            sgr_mouse_at(&bytes[index..index + consumed], position)
+                    {
+                        passthrough.extend_from_slice(&sequence);
+                    }
                 }
                 index += consumed;
                 continue;
@@ -1337,12 +1353,21 @@ impl App {
     }
 
     fn content_position(&self, position: MousePosition, clamp: bool) -> Option<MousePosition> {
-        let (origin_column, origin_row, columns, rows) = if self.windows[self.active].floating {
+        self.content_position_for(self.active, position, clamp)
+    }
+
+    fn content_position_for(
+        &self,
+        index: usize,
+        position: MousePosition,
+        clamp: bool,
+    ) -> Option<MousePosition> {
+        let (origin_column, origin_row, columns, rows) = if self.windows[index].floating {
             let layout = floating_layout_for(self.terminal_size, self.config.compact());
             let (columns, rows) = layout.content_size();
             (layout.column + 1, layout.row + 1, columns, rows)
         } else {
-            let window = &self.windows[self.active];
+            let window = &self.windows[index];
             let inset = u16::from(window.pane_framed);
             let (columns, rows) = pane_pty_size(window.pane_rect, window.pane_framed);
             let (base_column, base_row) = if window.pane_framed { (1, 2) } else { (2, 3) };
@@ -1999,6 +2024,27 @@ impl App {
             terminate_window(window);
         }
     }
+}
+
+pub(super) fn pane_at(windows: &[Window], active: usize, position: MousePosition) -> Option<usize> {
+    let active_window = windows.get(active)?;
+    if active_window.floating || active_window.zoomed || !active_window.pane_framed {
+        return Some(active);
+    }
+    windows.iter().enumerate().find_map(|(index, window)| {
+        if window.floating || window.tab_id != active_window.tab_id {
+            return None;
+        }
+        let left = window.pane_rect.column.saturating_add(1);
+        let top = window.pane_rect.row.saturating_add(2);
+        let right = left.saturating_add(window.pane_rect.width);
+        let bottom = top.saturating_add(window.pane_rect.height);
+        (position.column >= left
+            && position.column < right
+            && position.row >= top
+            && position.row < bottom)
+            .then_some(index)
+    })
 }
 
 pub(super) fn window_history(window: &mut Window) -> String {

@@ -5,7 +5,7 @@ use nix::unistd::Pid;
 
 use super::*;
 use crate::app::{
-    RenameEdit, TextSelection, Window, edit_window_name, matching_sessions, process_name,
+    RenameEdit, TextSelection, Window, edit_window_name, matching_sessions, pane_at, process_name,
     rename_tab, selected_text, selection_contains, window_history,
 };
 use crate::input::{
@@ -675,6 +675,44 @@ fn tiled_panes_are_composited_inside_one_tab() {
     assert!(!snapshot.outer_border);
     assert_eq!(snapshot.content_size, (40, 13));
     assert_eq!(snapshot.content_origin, (1, 2));
+}
+
+#[test]
+fn mouse_position_selects_a_visible_pane() {
+    let mut left = test_window(1, "left", 10, 18);
+    left.tab_id = 1;
+    left.pane_framed = true;
+    left.pane_rect = PaneRect {
+        column: 0,
+        row: 0,
+        width: 20,
+        height: 12,
+    };
+    let mut right = test_window(2, "right", 10, 18);
+    right.tab_id = 1;
+    right.pane_framed = true;
+    right.pane_rect = PaneRect {
+        column: 20,
+        row: 0,
+        width: 20,
+        height: 12,
+    };
+    let mut other_tab = test_window(3, "other", 10, 38);
+    other_tab.tab_id = 3;
+    let windows = vec![left, right, other_tab];
+
+    assert_eq!(
+        pane_at(&windows, 0, MousePosition { column: 5, row: 5 }),
+        Some(0)
+    );
+    assert_eq!(
+        pane_at(&windows, 0, MousePosition { column: 25, row: 5 }),
+        Some(1)
+    );
+    assert_eq!(
+        pane_at(&windows, 0, MousePosition { column: 1, row: 1 }),
+        None
+    );
 }
 
 #[test]

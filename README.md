@@ -49,7 +49,7 @@ Pane mode 下可以使用：
 
 在 history 模式中也可以使用鼠标滚轮浏览；向下滚动到最底部后会自动返回实时画面。
 
-进入 history（`scroll`）模式后，按住鼠标左键拖动可以选择当前窗口中的文本；选区会反色显示，松开左键后自动通过 OSC 52 复制到系统剪贴板，并在左下角边框短暂显示 `copied to system clipboard`。在默认的 `locked` 模式下，鼠标事件会根据内部程序启用的鼠标协议传入当前 pane，不会触发 rustmux 的文本选择。
+进入 history（`scroll`）模式后，按住鼠标左键拖动可以选择当前窗口中的文本；选区会反色显示，松开左键后自动通过 OSC 52 复制到系统剪贴板，并在左下角边框短暂显示 `copied to system clipboard`。在默认的 `locked` 模式下，鼠标事件会根据内部程序启用的鼠标协议传入当前 pane，不会触发 rustmux 的文本选择。在包含多个 pane 的 tab 中，点击任意 pane 的内容或边框会先切换焦点；如果其中的程序启用了鼠标协议，同一次点击也会继续传给该程序。
 
 在 Kitty 0.47.0 或更高版本中，rustmux 会转发 OSC 72 drag-and-drop protocol。Yazi 可以从当前 pane 向 Finder 等 GUI 应用拖出文件，也可以接收拖入的文件；协议响应会根据 pane ID 路由，并自动换算 pane 内的单元格和像素坐标。
 
@@ -189,4 +189,4 @@ rustmux 会通过 OSC 7 shell integration 跟踪每个 pane 的当前工作目�
 
 ## MVP 边界
 
-当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 tab 内的水平/垂直 pane、pane resize 与全屏、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现 pane 移动和鼠标点击切换焦点。
+当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 tab 内的水平/垂直 pane、pane resize、全屏与鼠标点击聚焦、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。尚未实现 pane 移动。
