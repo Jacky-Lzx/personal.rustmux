@@ -88,7 +88,6 @@ impl Renderer {
             || previous.outer_border != current.outer_border
             || previous.compact != current.compact
             || previous.active_id != current.active_id
-            || previous.tabs != current.tabs
             || previous.session_name != current.session_name
             || previous.cells.len() != current.cells.len()
         {
@@ -124,6 +123,7 @@ impl Renderer {
         let history_changed = previous.history_mode != current.history_mode
             || previous.history_offset != current.history_offset;
         let mode_changed = previous.mode != current.mode;
+        let tabs_changed = previous.tabs != current.tabs;
         let title_changed = previous.terminal_title != current.terminal_title;
         let status_changed = previous.border_status != current.border_status
             || previous.mode_hints != current.mode_hints
@@ -147,6 +147,7 @@ impl Renderer {
             || graphics_changed
             || history_changed
             || mode_changed
+            || tabs_changed
             || title_changed
             || status_changed
         {
@@ -161,7 +162,7 @@ impl Renderer {
         {
             output.extend_from_slice(b"\x1b[?25l");
         }
-        if history_changed || mode_changed || (status_changed && current.compact) {
+        if history_changed || mode_changed || tabs_changed || (status_changed && current.compact) {
             let _ = write!(output, "\x1b[1;1H");
             draw_window_bar(&mut output, windows, active, terminal_size.0, &current);
         }
@@ -204,6 +205,7 @@ impl Renderer {
             || graphics_changed
             || history_changed
             || mode_changed
+            || tabs_changed
             || title_changed
             || status_changed
         {
@@ -216,6 +218,7 @@ impl Renderer {
                     || graphics_changed
                     || history_changed
                     || mode_changed
+                    || tabs_changed
                     || title_changed
                     || status_changed,
             );

@@ -139,11 +139,15 @@ fn renaming_a_window_updates_all_panes_in_the_tab() {
     let third = test_window(3, "other", 2, 10);
     let mut windows = vec![first, second, third];
 
-    rename_tab(&mut windows, 1, " editor ");
+    rename_tab(&mut windows, 1, "editor");
 
     assert_eq!(windows[0].name, "editor");
     assert_eq!(windows[1].name, "editor");
     assert_eq!(windows[2].name, "other");
+
+    rename_tab(&mut windows, 1, "");
+    assert_eq!(windows[0].name, "");
+    assert_eq!(windows[1].name, "");
 }
 
 #[test]
@@ -337,6 +341,22 @@ fn window_bar_shows_the_session_name_before_the_first_window() {
     let first_window = frame.find(" 1 fish ").unwrap();
     assert!(session < first_window);
     assert!(frame.contains("38;2;205;214;244;48;2;30;30;46"));
+}
+
+#[test]
+fn window_name_changes_redraw_the_bar_without_clearing_the_screen() {
+    let window = test_window(1, "fish", 1, 38);
+    let mut windows = vec![window];
+    let mut renderer = Renderer::default();
+    renderer.render(&windows, 0, (40, 5), "normal", None, &[]);
+
+    windows[0].name = "editor".to_owned();
+    let update = renderer.render(&windows, 0, (40, 5), "normal", None, &[]);
+    let update_text = String::from_utf8_lossy(&update);
+
+    assert!(update_text.contains("\x1b[1;1H"));
+    assert!(update_text.contains(" 1 editor "));
+    assert!(!update.windows(4).any(|part| part == b"\x1b[2J"));
 }
 
 #[test]

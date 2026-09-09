@@ -127,16 +127,18 @@ pub(super) fn edit_window_name(name: &mut String, key: &DecodedKey) -> RenameEdi
 }
 
 pub(super) fn rename_tab(windows: &mut [Window], tab_id: usize, name: &str) {
-    let name = name.trim();
-    if name.is_empty() {
-        return;
-    }
     for window in windows
         .iter_mut()
         .filter(|window| !window.floating && window.tab_id == tab_id)
     {
         window.name = name.to_owned();
     }
+}
+
+struct RenameState {
+    tab_id: usize,
+    original_names: Vec<(usize, String)>,
+    input: String,
 }
 
 pub(super) struct App {
@@ -155,7 +157,7 @@ pub(super) struct App {
     terminal_identity: String,
     redraw_deadline: Option<Instant>,
     clipboard_status_until: Option<Instant>,
-    rename_input: Option<String>,
+    rename_state: Option<RenameState>,
     client: Option<UnixStream>,
     client_input: Vec<u8>,
 }
@@ -186,7 +188,7 @@ impl App {
             terminal_identity: outer_terminal_identity(),
             redraw_deadline: None,
             clipboard_status_until: None,
-            rename_input: None,
+            rename_state: None,
             client: None,
             client_input: Vec::new(),
         };
@@ -510,7 +512,7 @@ impl App {
         let mut index = 0;
         let mut selection_cleared = false;
         while index < bytes.len() {
-            if self.rename_input.is_some() {
+            if self.rename_state.is_some() {
                 let (key, consumed) = decode_key(&bytes[index..]);
                 self.handle_rename_key(&key)?;
                 index += consumed;
@@ -597,28 +599,53 @@ impl App {
     }
 
     fn begin_window_rename(&mut self) -> Result<()> {
-        self.rename_input = Some(String::new());
+        let tab_id = self.windows[self.active].tab_id;
+        let original_names = self
+            .windows
+            .iter()
+            .filter(|window| !window.floating && window.tab_id == tab_id)
+            .map(|window| (window.id, window.name.clone()))
+            .collect();
+        self.rename_state = Some(RenameState {
+            tab_id,
+            original_names,
+            input: String::new(),
+        });
+        rename_tab(&mut self.windows, tab_id, "");
         self.sync_rename_prompt();
         self.redraw()
     }
 
     fn handle_rename_key(&mut self, key: &DecodedKey) -> Result<()> {
         let edit = edit_window_name(
-            self.rename_input.as_mut().expect("rename input is active"),
+            &mut self
+                .rename_state
+                .as_mut()
+                .expect("rename input is active")
+                .input,
             key,
         );
         match edit {
             RenameEdit::Continue => {
+                let state = self.rename_state.as_ref().expect("rename input is active");
+                rename_tab(&mut self.windows, state.tab_id, &state.input);
                 self.sync_rename_prompt();
             }
             RenameEdit::Confirm => {
-                let name = self.rename_input.take().unwrap();
-                let tab_id = self.windows[self.active].tab_id;
-                rename_tab(&mut self.windows, tab_id, &name);
+                self.rename_state = None;
                 self.finish_window_rename();
             }
             RenameEdit::Cancel => {
-                self.rename_input = None;
+                let state = self.rename_state.take().expect("rename input is active");
+                for (window_id, name) in state.original_names {
+                    if let Some(window) = self
+                        .windows
+                        .iter_mut()
+                        .find(|window| window.id == window_id)
+                    {
+                        window.name = name;
+                    }
+                }
                 self.finish_window_rename();
             }
         }
@@ -627,14 +654,13 @@ impl App {
 
     fn sync_rename_prompt(&mut self) {
         self.renderer
-            .set_rename_prompt(self.rename_input.as_deref());
+            .set_rename_prompt(self.rename_state.as_ref().map(|state| state.input.as_str()));
     }
 
     fn finish_window_rename(&mut self) {
-        self.rename_input = None;
+        self.rename_state = None;
         self.renderer.set_rename_prompt(None);
         self.mode = self.config.default_mode.clone();
-        self.renderer.invalidate();
     }
 
     fn switch_mode(&mut self, mode: &str) -> Result<()> {
@@ -658,7 +684,17 @@ impl App {
         self.mode = self.config.default_mode.clone();
         self.selection = None;
         self.clipboard_status_until = None;
-        self.rename_input = None;
+        if let Some(state) = self.rename_state.take() {
+            for (window_id, name) in state.original_names {
+                if let Some(window) = self
+                    .windows
+                    .iter_mut()
+                    .find(|window| window.id == window_id)
+                {
+                    window.name = name;
+                }
+            }
+        }
         self.renderer.set_border_status(None);
         self.renderer.set_rename_prompt(None);
         for window in &mut self.windows {
