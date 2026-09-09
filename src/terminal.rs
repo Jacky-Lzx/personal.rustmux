@@ -712,10 +712,14 @@ pub(super) fn base64_encode(bytes: &[u8]) -> String {
 }
 
 pub(super) fn kitty_notification(identifier: &str, title: &str, body: &str) -> Vec<u8> {
+    let application = base64_encode(b"rustmux");
     let title = base64_encode(title.as_bytes());
     let body = base64_encode(body.as_bytes());
     format!(
-        "\x1b]99;i={identifier}:p=title:d=0:e=1;{title}\x1b\\\x1b]99;i={identifier}:p=body:d=1:e=1;{body}\x1b\\"
+        "\x1b]99;i={identifier}:d=0:f={application};\x1b\\\
+         \x1b]99;i={identifier}:d=0:e=1:p=title;{title}\x1b\\\
+         \x1b]99;i={identifier}:d=0:e=1:p=body;{body}\x1b\\\
+         \x1b]99;i={identifier};\x1b\\"
     )
     .into_bytes()
 }

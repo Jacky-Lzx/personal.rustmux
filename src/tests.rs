@@ -28,8 +28,8 @@ use crate::session::ServerOutputDecoder;
 use crate::session::SessionInfo;
 use crate::terminal::{
     CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
-    SemanticOutputCapture, TerminalMetadata, base64_encode, kitty_dnd_for_child, kitty_dnd_id,
-    kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
+    SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration, kitty_dnd_for_child,
+    kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
     kitty_graphics_uses_shared_memory, kitty_notification, osc7_path, terminal_parser_size,
     terminal_responses,
 };
@@ -1553,8 +1553,45 @@ fn kitty_notification_uses_osc_99_with_base64_title_and_body() {
     let notification = kitty_notification("rustmux-1-2", "done", "finished in 10.0s");
     let notification = String::from_utf8(notification).unwrap();
 
-    assert_eq!(notification.matches("\x1b]99;").count(), 2);
-    assert!(notification.contains("i=rustmux-1-2:p=title:d=0:e=1;ZG9uZQ=="));
-    assert!(notification.contains("p=body:d=1:e=1;ZmluaXNoZWQgaW4gMTAuMHM="));
-    assert!(notification.ends_with("\x1b\\"));
+    assert_eq!(notification.matches("\x1b]99;").count(), 4);
+    assert!(notification.contains("i=rustmux-1-2:d=0:f=cnVzdG11eA==;"));
+    assert!(notification.contains("d=0:e=1:p=title;ZG9uZQ=="));
+    assert!(notification.contains("d=0:e=1:p=body;ZmluaXNoZWQgaW4gMTAuMHM="));
+    assert!(notification.ends_with("\x1b]99;i=rustmux-1-2;\x1b\\"));
+}
+
+#[test]
+fn long_semantic_command_notification_reaches_the_outer_terminal() {
+    let mut capture = SemanticOutputCapture::default();
+    capture.process(b"\x1b]133;C;cmdline_url=sleep%2011\x1b\\");
+    capture.command_started_at = Some(Instant::now() - Duration::from_secs(11));
+    let duration = capture
+        .process(b"\x1b]133;D;0\x1b\\")
+        .into_iter()
+        .next()
+        .expect("OSC 133 command completion should produce a duration");
+    assert!(duration >= Duration::from_secs(10));
+
+    let notification = kitty_notification(
+        "rustmux-test",
+        "rustmux: command finished",
+        &format!("Window 1 (fish) completed in {}", format_duration(duration)),
+    );
+    let mut decoder = ServerOutputDecoder::default();
+    let split = notification.len() / 2;
+    let (first, switch) = decoder.push(&notification[..split]).unwrap();
+    assert_eq!(switch, None);
+    let (second, switch) = decoder.push(&notification[split..]).unwrap();
+    assert_eq!(switch, None);
+    let mut visible = first;
+    visible.extend(second);
+
+    assert_eq!(visible, notification);
+    assert_eq!(
+        visible
+            .windows(5)
+            .filter(|part| *part == b"\x1b]99;")
+            .count(),
+        4
+    );
 }
