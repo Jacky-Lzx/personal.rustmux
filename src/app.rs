@@ -1779,10 +1779,6 @@ impl App {
                     .terminal
                     .screen_mut()
                     .set_scrollback(current.saturating_sub(MOUSE_SCROLL_LINES));
-                if window.terminal.screen().scrollback() == 0 {
-                    window.history_mode = false;
-                    self.mode = self.config.default_mode.clone();
-                }
             }
             MouseAction::ScrollDown(_) => {
                 if selection_cleared {
