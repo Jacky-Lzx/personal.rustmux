@@ -1554,7 +1554,7 @@ fn kitty_notification_uses_osc_99_with_base64_title_and_body() {
     let notification = String::from_utf8(notification).unwrap();
 
     assert_eq!(notification.matches("\x1b]99;").count(), 4);
-    assert!(notification.contains("i=rustmux-1-2:d=0:f=cnVzdG11eA==;"));
+    assert!(notification.contains("i=rustmux-1-2:d=0:f=cnVzdG11eA==:o=always;"));
     assert!(notification.contains("d=0:e=1:p=title;ZG9uZQ=="));
     assert!(notification.contains("d=0:e=1:p=body;ZmluaXNoZWQgaW4gMTAuMHM="));
     assert!(notification.ends_with("\x1b]99;i=rustmux-1-2;\x1b\\"));
