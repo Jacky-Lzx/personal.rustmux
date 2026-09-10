@@ -504,6 +504,19 @@ fn control_session(name: &str, request: &[u8]) -> Result<Vec<u8>> {
     Ok(response)
 }
 
+fn send_control_session(name: &str, request: &[u8]) -> Result<()> {
+    let socket = session_socket(name)?;
+    let stream = UnixStream::connect(&socket)
+        .map_err(|error| format!("session '{name}' not found: {error}"))?;
+    send_control_request(stream, request)
+}
+
+fn send_control_request(mut stream: UnixStream, request: &[u8]) -> Result<()> {
+    stream.write_all(request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    Ok(())
+}
+
 pub(super) fn available_session_info(local: Option<SessionInfo>) -> Result<Vec<SessionInfo>> {
     let mut sessions = Vec::new();
     let live = available_sessions()?;
@@ -612,7 +625,7 @@ pub(super) fn available_sessions() -> Result<Vec<String>> {
 }
 
 pub(super) fn kill_session(name: &str) -> Result<()> {
-    control_session(name, &[CLIENT_SHUTDOWN]).map(|_| ())
+    send_control_session(name, &[CLIENT_SHUTDOWN])
 }
 
 pub(super) fn delete_session(name: &str) -> Result<()> {
@@ -626,6 +639,17 @@ pub(super) fn delete_session(name: &str) -> Result<()> {
 mod snapshot_tests {
     use super::*;
     use crate::layout::SplitAxis;
+
+    #[test]
+    fn shutdown_request_does_not_wait_for_a_response() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+
+        send_control_request(client, &[CLIENT_SHUTDOWN]).unwrap();
+
+        let mut request = Vec::new();
+        server.read_to_end(&mut request).unwrap();
+        assert_eq!(request, [CLIENT_SHUTDOWN]);
+    }
 
     #[test]
     fn session_snapshot_round_trips_through_toml() {
