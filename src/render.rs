@@ -533,7 +533,7 @@ impl FrameSnapshot {
                             candidate.tab_id == window.tab_id && candidate.bell_pending
                         });
                         let name = if bell_pending {
-                            format!("[!] {}", window.name)
+                            format!("{} [!]", window.name)
                         } else {
                             window.name.clone()
                         };
