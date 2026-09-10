@@ -183,6 +183,23 @@ exclude_applications = ["yazi", "nvim"]
 cargo run
 ```
 
+## 图片预览 benchmark
+
+项目包含一个针对 Kitty graphics 图片预览路径的 benchmark，覆盖 JPG、PNG、PDF 和 SVG 测试素材。它测量 Rustmux 接收 graphics 分块、解析 Unicode placeholder、合成 pane 并生成最终终端帧的 CPU 耗时；Yazi 调用外部工具把 PDF、SVG 或 JPEG 栅格化的时间，以及 Kitty 自身解码和绘制图片的时间不包含在内。
+
+```sh
+cargo bench --features benchmarks --bench image_preview
+```
+
+默认将每种素材归一化为 1 MiB 的预览 payload，并运行 20 次，输出 median、mean 和 MiB/s。可以用环境变量调整规模和次数：
+
+```sh
+RUSTMUX_BENCH_PAYLOAD_MIB=4 RUSTMUX_BENCH_ITERATIONS=50 \
+  cargo bench --features benchmarks --bench image_preview
+```
+
+运行时使用的四个测试文件会生成在 `target/image-preview-bench-fixtures/`，不会加入 Git。
+
 不带参数运行会连接已有的 `default` session；如果不存在则自动创建：
 
 ```sh

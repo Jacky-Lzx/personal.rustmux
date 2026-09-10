@@ -6,6 +6,10 @@ mod render;
 mod session;
 mod terminal;
 
+#[cfg(feature = "benchmarks")]
+#[doc(hidden)]
+pub mod benchmarking;
+
 use std::env;
 use std::error::Error;
 use std::io::{self, Write};

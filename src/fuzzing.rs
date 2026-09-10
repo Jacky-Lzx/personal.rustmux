@@ -11,8 +11,9 @@ use crate::input::{InputDecoder, MousePosition, decode_key, decode_sgr_mouse, sg
 use crate::layout::{PaneRect, content_size_for};
 use crate::render::Renderer;
 use crate::terminal::{
-    CursorStyleTracker, KittyDndParser, KittyGraphicsParser, SemanticOutputCapture,
-    TerminalMetadata, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id,
+    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndParser, KittyGraphicsParser,
+    KittyIpcParser, SemanticOutputCapture, TerminalMetadata, TerminalOscTracker,
+    kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id,
     kitty_graphics_query_response, kitty_graphics_uses_shared_memory, osc7_path,
     terminal_parser_size, terminal_responses,
 };
@@ -135,8 +136,12 @@ pub fn render(data: &[u8]) {
         child: Pid::from_raw(1),
         terminal,
         cursor_style: CursorStyleTracker::default(),
+        input_modes: InputModeTracker::default(),
+        terminal_osc: TerminalOscTracker::default(),
         kitty_graphics: KittyGraphicsParser::default(),
         kitty_dnd: KittyDndParser::default(),
+        kitty_ipc: KittyIpcParser::default(),
+        hyperlinks: HyperlinkTracker::default(),
         dnd_drag_registration: None,
         dnd_drop_registration: None,
         pending_graphics: Vec::new(),
