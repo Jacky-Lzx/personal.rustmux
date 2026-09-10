@@ -278,6 +278,8 @@ a {
 }
 
 .home-page main {
+  container-name: landing-page;
+  container-type: inline-size;
   max-width: 1080px;
   padding-top: 44px;
 }
@@ -897,6 +899,19 @@ kbd {
   }
 
   .terminal-window {
+    max-width: 650px;
+    transform: none;
+  }
+}
+
+@container landing-page (max-width: 1040px) {
+  .landing-hero {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .terminal-window {
+    width: 100%;
     max-width: 650px;
     transform: none;
   }
