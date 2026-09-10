@@ -4,6 +4,8 @@ use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -444,10 +446,7 @@ impl App {
     }
 
     fn create_window(&mut self) -> Result<()> {
-        let current_directory = self
-            .windows
-            .get(self.active)
-            .and_then(|window| window.terminal.callbacks().current_directory.clone());
+        let current_directory = self.active_spawn_directory();
         let shell = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
         let name = Path::new(&shell)
             .file_name()
@@ -505,11 +504,7 @@ impl App {
             .to_owned();
         let shell = CString::new(shell)?;
         let tab_id = self.windows[self.active].tab_id;
-        let current_directory = self.windows[self.active]
-            .terminal
-            .callbacks()
-            .current_directory
-            .clone();
+        let current_directory = self.active_spawn_directory();
         self.spawn_window(
             name,
             shell.clone(),
@@ -618,6 +613,22 @@ impl App {
                 unsafe { nix::libc::_exit(127) };
             }
         }
+    }
+
+    fn active_spawn_directory(&self) -> Option<PathBuf> {
+        let window = self.windows.get(self.active)?;
+        let tracked = window.terminal.callbacks().current_directory.clone();
+        let foreground = tcgetpgrp(&window.master).ok();
+        let application = foreground.and_then(process_name);
+        let process_directory = foreground
+            .filter(|_| {
+                application
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("yazi"))
+            })
+            .and_then(process_current_directory)
+            .filter(|path| path.is_dir());
+        preferred_spawn_directory(tracked, application.as_deref(), process_directory)
     }
 
     pub(super) fn run_server(&mut self, listener: UnixListener) -> Result<()> {
@@ -1885,6 +1896,7 @@ impl App {
         ];
         let return_to = self.windows[self.active].id;
         let tab_id = self.next_id;
+        let current_directory = self.active_spawn_directory();
         let pane_id = match self.spawn_window(
             label.to_owned(),
             shell,
@@ -1894,11 +1906,7 @@ impl App {
                 return_to_window: Some(return_to),
                 floating: false,
                 tab_id,
-                current_directory: self.windows[self.active]
-                    .terminal
-                    .callbacks()
-                    .current_directory
-                    .clone(),
+                current_directory,
             },
         ) {
             Ok(id) => id,
@@ -2508,6 +2516,7 @@ impl App {
             .unwrap_or(&shell_name)
             .to_owned();
         let shell = CString::new(shell_name)?;
+        let current_directory = self.active_spawn_directory();
         let new_id = self.spawn_window(
             name,
             shell.clone(),
@@ -2517,11 +2526,7 @@ impl App {
                 return_to_window: None,
                 floating: false,
                 tab_id,
-                current_directory: self.windows[self.active]
-                    .terminal
-                    .callbacks()
-                    .current_directory
-                    .clone(),
+                current_directory,
             },
         )?;
         let tab = self.tabs.iter_mut().find(|tab| tab.id == tab_id).unwrap();
@@ -3234,6 +3239,58 @@ fn signal_window_processes(foreground: Option<Pid>, child: Pid, signal: Signal) 
     }
     let _ = kill(Pid::from_raw(-child.as_raw()), signal);
     let _ = kill(child, signal);
+}
+
+pub(super) fn preferred_spawn_directory(
+    tracked: Option<PathBuf>,
+    foreground_application: Option<&str>,
+    foreground_directory: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if foreground_application.is_some_and(|name| name.eq_ignore_ascii_case("yazi")) {
+        foreground_directory.or(tracked)
+    } else {
+        tracked
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn process_current_directory(pid: Pid) -> Option<PathBuf> {
+    // SAFETY: proc_vnodepathinfo is a plain C data structure that may be zero-initialized.
+    let mut info = unsafe { std::mem::zeroed::<nix::libc::proc_vnodepathinfo>() };
+    let size = std::mem::size_of_val(&info);
+    // SAFETY: proc_pidinfo writes at most `size` bytes to the valid `info` buffer
+    // and does not retain its pointer.
+    let length = unsafe {
+        nix::libc::proc_pidinfo(
+            pid.as_raw(),
+            nix::libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&mut info as *mut nix::libc::proc_vnodepathinfo).cast(),
+            size.try_into().ok()?,
+        )
+    };
+    if usize::try_from(length).ok()? < size {
+        return None;
+    }
+    let path = info
+        .pvi_cdir
+        .vip_path
+        .iter()
+        .flatten()
+        .map(|byte| *byte as u8)
+        .take_while(|byte| *byte != 0)
+        .collect::<Vec<_>>();
+    (!path.is_empty()).then(|| PathBuf::from(std::ffi::OsString::from_vec(path)))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn process_current_directory(pid: Pid) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{}/cwd", pid.as_raw())).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(super) fn process_current_directory(_: Pid) -> Option<PathBuf> {
+    None
 }
 
 #[cfg(target_os = "macos")]

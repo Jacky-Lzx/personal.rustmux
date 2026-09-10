@@ -1,4 +1,5 @@
 use std::os::fd::{FromRawFd, OwnedFd};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use nix::unistd::Pid;
@@ -6,8 +7,8 @@ use nix::unistd::Pid;
 use super::*;
 use crate::app::{
     RenameEdit, TextSelection, Window, edit_window_name, matching_history_lines,
-    matching_session_info, pane_at, process_name, rename_tab, selected_text, selection_contains,
-    window_history,
+    matching_session_info, pane_at, preferred_spawn_directory, process_current_directory,
+    process_name, rename_tab, selected_text, selection_contains, window_history,
 };
 use crate::input::{
     DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
@@ -85,6 +86,42 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
 #[test]
 fn process_name_resolves_the_running_process() {
     assert!(process_name(Pid::this()).is_some());
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn process_current_directory_resolves_the_running_process() {
+    assert_eq!(
+        process_current_directory(Pid::this()),
+        std::env::current_dir().ok()
+    );
+}
+
+#[test]
+fn yazi_directory_overrides_stale_terminal_directory() {
+    let tracked = PathBuf::from("/shell/directory");
+    let foreground = PathBuf::from("/yazi/directory");
+
+    assert_eq!(
+        preferred_spawn_directory(
+            Some(tracked.clone()),
+            Some("yazi"),
+            Some(foreground.clone())
+        ),
+        Some(foreground)
+    );
+    assert_eq!(
+        preferred_spawn_directory(
+            Some(tracked.clone()),
+            Some("nvim"),
+            Some(PathBuf::from("/editor/directory"))
+        ),
+        Some(tracked.clone())
+    );
+    assert_eq!(
+        preferred_spawn_directory(Some(tracked.clone()), Some("yazi"), None),
+        Some(tracked)
+    );
 }
 
 #[test]
