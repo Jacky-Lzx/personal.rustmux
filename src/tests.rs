@@ -1619,6 +1619,17 @@ fn osc8_hyperlinks_follow_rendered_cells_and_are_namespaced_per_pane() {
 }
 
 #[test]
+fn osc8_hyperlink_tracker_handles_a_fragmented_introducer() {
+    let mut terminal = vt100::Parser::new_with_callbacks(2, 20, 0, TerminalMetadata::default());
+    let mut hyperlinks = HyperlinkTracker::default();
+    hyperlinks.process(b"plain\x1b]8", &mut terminal);
+    hyperlinks.process(b";;https://example.com\x1b\\linked", &mut terminal);
+
+    assert_eq!(hyperlinks.osc8_at(0, 0, 3), None);
+    assert!(hyperlinks.osc8_at(0, 5, 3).is_some());
+}
+
+#[test]
 fn rendered_frame_reemits_and_closes_osc8_hyperlinks() {
     let mut window = test_window(9, "links", 3, 30);
     let output = b"\x1b]8;;https://example.com\x1b\\click\x1b]8;;\x1b\\";

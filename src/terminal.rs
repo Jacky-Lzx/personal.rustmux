@@ -342,6 +342,14 @@ impl HyperlinkTracker {
     pub(super) fn process(&mut self, bytes: &[u8], terminal: &mut vt100::Parser<TerminalMetadata>) {
         let (rows, columns) = terminal.screen().size();
         self.resize(rows, columns);
+        if matches!(self.state, HyperlinkSequenceState::Ground)
+            && self.active.is_none()
+            && self.cells.iter().all(Option::is_none)
+            && !may_contain_osc8(bytes)
+        {
+            terminal.process(bytes);
+            return;
+        }
         for &byte in bytes {
             let state = std::mem::take(&mut self.state);
             let ground = matches!(state, HyperlinkSequenceState::Ground);
@@ -480,6 +488,14 @@ impl HyperlinkTracker {
 
 fn is_printable_terminal_byte(byte: u8) -> bool {
     matches!(byte, 0x20..=0x7e | 0xa0..=0xff)
+}
+
+fn may_contain_osc8(bytes: &[u8]) -> bool {
+    [b"\x1b]8;".as_slice(), b"\x9d8;".as_slice()]
+        .into_iter()
+        .any(|prefix| {
+            find_subslice(bytes, prefix).is_some() || partial_prefix_length(bytes, prefix) > 0
+        })
 }
 
 impl KittyIpcParser {
