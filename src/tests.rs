@@ -1139,6 +1139,33 @@ fn renderer_forwards_cursor_style_changes() {
 }
 
 #[test]
+fn renderer_uses_kitty_cursor_default_until_a_child_overrides_it() {
+    let window = test_window(1, "fish", 3, 18);
+    let mut windows = vec![window];
+    let mut renderer = Renderer::default();
+    let initial = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
+
+    assert!(initial.windows(7).any(|part| part == b"\x1b]112\x1b\\"));
+    assert!(
+        !initial
+            .windows(b"\x1b]12;".len())
+            .any(|part| part == b"\x1b]12;")
+    );
+
+    windows[0].terminal_osc.process(b"\x1b]12;#123456\x1b\\");
+    let custom = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
+    assert!(
+        custom
+            .windows(b"\x1b]12;#123456\x1b\\".len())
+            .any(|part| part == b"\x1b]12;#123456\x1b\\")
+    );
+
+    windows[0].terminal_osc.process(b"\x1b]112\x1b\\");
+    let reset = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
+    assert!(reset.windows(7).any(|part| part == b"\x1b]112\x1b\\"));
+}
+
+#[test]
 fn kitty_graphics_parser_handles_chunked_apc_commands() {
     let mut parser = KittyGraphicsParser::default();
     let command = b"\x1b_Ga=T,f=100,m=0;YWJj\x1b\\";
@@ -1410,6 +1437,7 @@ fn kitty_keyboard_modes_are_scoped_to_each_screen_and_answer_queries() {
 #[test]
 fn terminal_osc_colors_and_pointer_shapes_are_stateful() {
     let mut osc = TerminalOscTracker::default();
+    assert_eq!(osc.cursor(), None);
     assert!(osc.process(b"\x1b]11;?").responses.is_empty());
     let response = osc.process(b"\x1b\\");
     assert_eq!(response.responses, b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\");
@@ -1418,6 +1446,11 @@ fn terminal_osc_colors_and_pointer_shapes_are_stateful() {
     assert_eq!(osc.background(), (0x12, 0x34, 0x56));
     osc.process(b"\x1b]30101\x1b\\");
     assert_eq!(osc.background(), (30, 30, 46));
+
+    osc.process(b"\x1b]12;#123456\x1b\\");
+    assert_eq!(osc.cursor(), Some((0x12, 0x34, 0x56)));
+    osc.process(b"\x1b]112\x1b\\");
+    assert_eq!(osc.cursor(), None);
 
     let changed = osc.process(b"\x1b]22;>pointer\x1b\\");
     assert!(changed.pointer_changed);

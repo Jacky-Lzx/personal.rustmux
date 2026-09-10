@@ -22,7 +22,6 @@ const KITTY_KEYBOARD_FLAGS: u8 = 0b1_1111;
 const MAX_MODE_STACK_DEPTH: usize = 32;
 const MOCHA_TEXT: (u8, u8, u8) = (205, 214, 244);
 const MOCHA_BASE: (u8, u8, u8) = (30, 30, 46);
-const MOCHA_LAVENDER: (u8, u8, u8) = (180, 190, 254);
 
 pub(super) fn terminal_parser_size(columns: u16, rows: u16) -> (u16, u16) {
     // vt100's wrapping logic requires room for a double-width character and
@@ -1267,7 +1266,7 @@ impl InputModeTracker {
 struct ColorSnapshot {
     foreground: (u8, u8, u8),
     background: (u8, u8, u8),
-    cursor: (u8, u8, u8),
+    cursor: Option<(u8, u8, u8)>,
     palette: [Option<(u8, u8, u8)>; 256],
 }
 
@@ -1276,7 +1275,7 @@ impl Default for ColorSnapshot {
         Self {
             foreground: MOCHA_TEXT,
             background: MOCHA_BASE,
-            cursor: MOCHA_LAVENDER,
+            cursor: None,
             palette: [None; 256],
         }
     }
@@ -1320,7 +1319,7 @@ impl TerminalOscTracker {
         self.colors.background
     }
 
-    pub(super) fn cursor(&self) -> (u8, u8, u8) {
+    pub(super) fn cursor(&self) -> Option<(u8, u8, u8)> {
         self.colors.cursor
     }
 
@@ -1403,7 +1402,7 @@ impl TerminalOscTracker {
             }
             "110" => self.colors.foreground = MOCHA_TEXT,
             "111" => self.colors.background = MOCHA_BASE,
-            "112" => self.colors.cursor = MOCHA_LAVENDER,
+            "112" => self.colors.cursor = None,
             "21" => self.apply_kitty_colors(fields, output),
             "30001" => {
                 if self.color_stack.len() == MAX_MODE_STACK_DEPTH {
@@ -1447,17 +1446,19 @@ impl TerminalOscTracker {
     ) {
         let Some(value) = value else { return };
         let current = match code {
-            "10" => self.colors.foreground,
-            "11" => self.colors.background,
+            "10" => Some(self.colors.foreground),
+            "11" => Some(self.colors.background),
             _ => self.colors.cursor,
         };
         if value == "?" {
-            append_osc_color_response(&mut output.responses, code, None, current);
+            if let Some(current) = current {
+                append_osc_color_response(&mut output.responses, code, None, current);
+            }
         } else if let Some(color) = parse_color(value) {
             match code {
                 "10" => self.colors.foreground = color,
                 "11" => self.colors.background = color,
-                _ => self.colors.cursor = color,
+                _ => self.colors.cursor = Some(color),
             }
         }
     }
@@ -1475,7 +1476,7 @@ impl TerminalOscTracker {
             let current = match key {
                 "foreground" => Some(self.colors.foreground),
                 "background" => Some(self.colors.background),
-                "cursor" => Some(self.colors.cursor),
+                "cursor" => self.colors.cursor,
                 _ => key.parse::<u8>().ok().map(|index| {
                     self.colors.palette[usize::from(index)]
                         .unwrap_or_else(|| default_palette(index))
@@ -1489,7 +1490,7 @@ impl TerminalOscTracker {
                 match key {
                     "foreground" => self.colors.foreground = color,
                     "background" => self.colors.background = color,
-                    "cursor" => self.colors.cursor = color,
+                    "cursor" => self.colors.cursor = Some(color),
                     _ => {
                         if let Ok(index) = key.parse::<u8>() {
                             self.colors.palette[usize::from(index)] = Some(color);

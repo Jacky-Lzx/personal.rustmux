@@ -868,14 +868,14 @@ struct TerminalState {
     bracketed_paste: bool,
     hide_cursor: bool,
     cursor_style: u8,
-    cursor_color: Rgb,
+    cursor_color: Option<Rgb>,
 }
 
 impl TerminalState {
     fn capture(
         screen: &vt100::Screen,
         cursor_style: u8,
-        cursor_color: Rgb,
+        cursor_color: Option<Rgb>,
         force_hide_cursor: bool,
     ) -> Self {
         Self {
@@ -1110,13 +1110,11 @@ fn append_terminal_state(
     origin: (u16, u16),
 ) {
     let (cursor_row, cursor_column) = state.cursor;
+    let _ = write!(output, "\x1b[0m\x1b]0;rustmux:{}\x07", active_id,);
+    write_cursor_color(output, state.cursor_color);
     let _ = write!(
         output,
-        "\x1b[0m\x1b]0;rustmux:{}\x07\x1b]12;#{:02x}{:02x}{:02x}\x1b\\\x1b[?1{}\x1b[?2004{}\x1b[{} q\x1b[{};{}H\x1b[?25{}",
-        active_id,
-        state.cursor_color.0,
-        state.cursor_color.1,
-        state.cursor_color.2,
+        "\x1b[?1{}\x1b[?2004{}\x1b[{} q\x1b[{};{}H\x1b[?25{}",
         if state.application_cursor { 'h' } else { 'l' },
         if state.bracketed_paste { 'h' } else { 'l' },
         state.cursor_style,
@@ -1152,11 +1150,7 @@ fn append_terminal_state_diff(
         let _ = write!(output, "\x1b[{} q", current.cursor_style);
     }
     if previous.cursor_color != current.cursor_color {
-        let _ = write!(
-            output,
-            "\x1b]12;#{:02x}{:02x}{:02x}\x1b\\",
-            current.cursor_color.0, current.cursor_color.1, current.cursor_color.2
-        );
+        write_cursor_color(output, current.cursor_color);
     }
     if cells_changed || previous.cursor != current.cursor {
         let (row, column) = current.cursor;
@@ -1168,6 +1162,14 @@ fn append_terminal_state_diff(
             "\x1b[?25{}",
             if current.hide_cursor { 'l' } else { 'h' }
         );
+    }
+}
+
+fn write_cursor_color(output: &mut Vec<u8>, color: Option<Rgb>) {
+    if let Some((red, green, blue)) = color {
+        let _ = write!(output, "\x1b]12;#{red:02x}{green:02x}{blue:02x}\x1b\\");
+    } else {
+        output.extend_from_slice(b"\x1b]112\x1b\\");
     }
 }
 
