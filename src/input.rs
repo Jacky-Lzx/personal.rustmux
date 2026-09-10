@@ -114,6 +114,20 @@ pub(super) struct DecodedKey {
     pub(super) event_type: u8,
 }
 
+impl DecodedKey {
+    /// Returns the printable character represented by this key event.
+    ///
+    /// Applications using the Kitty keyboard protocol encode even ordinary
+    /// text as CSI sequences, so `raw` is not necessarily the text that the
+    /// user typed. Key-release events must not insert the character again.
+    pub(super) fn text(&self) -> Option<&str> {
+        (self.event_type != 3
+            && self.name.chars().count() == 1
+            && !self.name.chars().any(char::is_control))
+        .then_some(self.name.as_str())
+    }
+}
+
 pub(super) fn decode_key(bytes: &[u8]) -> (DecodedKey, usize) {
     let byte = bytes[0];
     let single = |name: &str| DecodedKey {

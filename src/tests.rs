@@ -210,6 +210,18 @@ fn window_name_editor_accepts_text_backspace_confirm_and_cancel() {
 }
 
 #[test]
+fn window_name_editor_accepts_kitty_text_and_ignores_key_releases() {
+    let mut name = String::new();
+    let (press, _) = decode_key(b"\x1b[121u");
+    let (release, _) = decode_key(b"\x1b[121;1:3u");
+
+    assert_eq!(edit_window_name(&mut name, &press), RenameEdit::Continue);
+    assert_eq!(name, "y");
+    assert_eq!(edit_window_name(&mut name, &release), RenameEdit::Continue);
+    assert_eq!(name, "y");
+}
+
+#[test]
 fn renaming_a_window_updates_all_panes_in_the_tab() {
     let first = test_window(1, "fish", 2, 10);
     let mut second = test_window(2, "fish", 2, 10);

@@ -150,8 +150,7 @@ pub(super) fn edit_window_name(name: &mut String, key: &DecodedKey) -> RenameEdi
             RenameEdit::Continue
         }
         _ => {
-            if let Ok(text) = std::str::from_utf8(&key.raw)
-                && text.chars().all(|character| !character.is_control())
+            if let Some(text) = key.text()
                 && name.chars().count() + text.chars().count() <= 64
             {
                 name.push_str(text);
@@ -1566,7 +1565,7 @@ impl App {
                 self.redraw()?;
             }
             _ => {
-                if let Ok(text) = std::str::from_utf8(&key.raw)
+                if let Some(text) = key.text()
                     && text
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
@@ -2012,9 +2011,7 @@ impl App {
                 self.refresh_history_search();
             }
             _ => {
-                if let Ok(text) = std::str::from_utf8(&key.raw)
-                    && !text.chars().any(char::is_control)
-                {
+                if let Some(text) = key.text() {
                     let search = self
                         .history_search
                         .as_mut()
