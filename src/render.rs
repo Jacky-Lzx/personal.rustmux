@@ -19,6 +19,7 @@ const MOCHA_SURFACE_1: Rgb = (69, 71, 90);
 const MOCHA_OVERLAY_0: Rgb = (108, 112, 134);
 const MOCHA_SUBTEXT_0: Rgb = (166, 173, 200);
 const MOCHA_TEXT: Rgb = (205, 214, 244);
+const MOCHA_RED: Rgb = (243, 139, 168);
 const MOCHA_GREEN: Rgb = (166, 227, 161);
 const MOCHA_PEACH: Rgb = (250, 179, 135);
 const MOCHA_YELLOW: Rgb = (249, 226, 175);
@@ -1473,23 +1474,19 @@ fn status_segments(snapshot: &FrameSnapshot, width: usize) -> Vec<(String, Rgb)>
     if let Some(query) = &snapshot.history_search_prompt {
         return vec![(format!("SEARCH: {query}_"), MOCHA_YELLOW)];
     }
-    let mut segments = Vec::new();
-    if snapshot.mode != "locked" {
-        segments.push((
-            mode_label(&snapshot.mode, snapshot.history_offset),
-            MOCHA_GREEN,
-        ));
-    }
+    let mode_color = if snapshot.mode == "locked" {
+        MOCHA_RED
+    } else {
+        MOCHA_GREEN
+    };
+    let mut segments = vec![(
+        mode_label(&snapshot.mode, snapshot.history_offset),
+        mode_color,
+    )];
     if let Some(status) = &snapshot.border_status {
         segments.push((status.clone(), MOCHA_YELLOW));
     }
     let hints = compact_status_hints(&snapshot.mode_hints);
-    if segments.is_empty() && hints.is_empty() {
-        return vec![(
-            mode_label(&snapshot.mode, snapshot.history_offset),
-            MOCHA_GREEN,
-        )];
-    }
     fit_status_hints(segments, hints, width)
 }
 

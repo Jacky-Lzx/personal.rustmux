@@ -473,14 +473,16 @@ fn warning_is_drawn_in_a_centered_floating_box_and_clears_cleanly() {
 
 #[test]
 fn status_line_shows_mode_and_key_hints() {
-    let window = test_window(1, "fish", 1, 18);
+    let window = test_window(1, "fish", 1, 38);
     let windows = vec![window];
     let mut renderer = Renderer::default();
     renderer.set_ui(false, vec!["Ctrl b=mode:normal".to_owned()]);
 
-    let frame = renderer.render(&windows, 0, (20, 5), "locked", None, &[]);
+    let frame = renderer.render(&windows, 0, (40, 5), "locked", None, &[]);
     let frame = String::from_utf8(frame).unwrap();
 
+    assert!(frame.contains(" LOCKED "));
+    assert!(frame.contains("48;2;243;139;168m"));
     assert!(frame.contains("Ctrl b"));
     assert!(frame.contains("UNLOCK"));
     assert!(frame.contains(''));
