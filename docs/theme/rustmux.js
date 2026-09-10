@@ -1,4 +1,16 @@
 (function () {
+  function isChinesePage() {
+    return document.documentElement.lang.toLowerCase().startsWith("zh") ||
+      window.location.pathname === "/zh" ||
+      window.location.pathname.startsWith("/zh/");
+  }
+
+  function markPage() {
+    if (document.querySelector("main .landing-hero")) {
+      document.body.classList.add("home-page");
+    }
+  }
+
   function enhanceBrand() {
     const title = document.querySelector(".menu-title");
     if (!title) return;
@@ -15,7 +27,7 @@
     const actions = document.querySelector(".right-buttons");
     if (!actions) return;
     const path = window.location.pathname;
-    const chinese = path === "/zh" || path.startsWith("/zh/");
+    const chinese = isChinesePage();
     const targetPath = chinese ? path.replace(/^\/zh(?=\/|$)/, "") || "/" : `/zh${path}`;
     const link = document.createElement("a");
     link.className = "language-switch";
@@ -29,7 +41,7 @@
   function addCopyButtons() {
     for (const pre of document.querySelectorAll("main pre")) {
       const code = pre.querySelector("code");
-      if (!code || pre.querySelector(".copy-button")) continue;
+      if (!code || pre.closest(".terminal-window") || pre.querySelector(".copy-button")) continue;
       const button = document.createElement("button");
       button.className = "copy-button";
       button.type = "button";
@@ -49,8 +61,11 @@
     if (headings.length < 2) return;
     const aside = document.createElement("aside");
     aside.className = "right-side-toc";
-    aside.setAttribute("aria-label", "本页内容");
-    aside.innerHTML = "<strong>本页内容</strong>";
+    const label = isChinesePage() ? "本页内容" : "On this page";
+    aside.setAttribute("aria-label", label);
+    const title = document.createElement("strong");
+    title.textContent = label;
+    aside.append(title);
 
     const links = headings.map((heading) => {
       const link = document.createElement("a");
@@ -90,6 +105,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    markPage();
     enhanceBrand();
     addLanguageSwitch();
     addCopyButtons();
