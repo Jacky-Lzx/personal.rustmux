@@ -329,6 +329,20 @@ pub(super) fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
     Some((action, final_index + 1))
 }
 
+pub(super) fn decode_focus_event(bytes: &[u8]) -> Option<(bool, usize)> {
+    if bytes.starts_with(b"\x1b[I") {
+        Some((true, 3))
+    } else if bytes.starts_with(b"\x1b[O") {
+        Some((false, 3))
+    } else if bytes.starts_with(b"\x9bI") {
+        Some((true, 2))
+    } else if bytes.starts_with(b"\x9bO") {
+        Some((false, 2))
+    } else {
+        None
+    }
+}
+
 pub(super) fn sgr_mouse_at(bytes: &[u8], position: MousePosition) -> Option<Vec<u8>> {
     let (_, consumed) = decode_sgr_mouse(bytes)?;
     let sequence = &bytes[..consumed];

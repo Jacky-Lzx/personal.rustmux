@@ -11,8 +11,8 @@ use crate::app::{
     process_name, rename_tab, selected_text, selection_contains, window_history,
 };
 use crate::input::{
-    DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
-    sgr_mouse_at,
+    DecodedKey, InputDecoder, MouseAction, MousePosition, decode_focus_event, decode_key,
+    decode_sgr_mouse, sgr_mouse_at,
 };
 use crate::layout::{
     Direction, FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for,
@@ -1751,6 +1751,19 @@ fn decoder_handles_split_kitty_sequence() {
 
     assert!(decoder.push(b"\x1b[98;").is_empty());
     assert_eq!(decoder.push(b"5u"), b"\x02");
+}
+
+#[test]
+fn focus_events_are_identified_before_key_passthrough() {
+    let mut decoder = InputDecoder::default();
+    assert!(decoder.push(b"\x1b[").is_empty());
+    let decoded = decoder.push(b"I\x1b[Otext");
+
+    assert_eq!(decode_focus_event(&decoded), Some((true, 3)));
+    assert_eq!(decode_focus_event(&decoded[3..]), Some((false, 3)));
+    assert_eq!(decode_focus_event(&decoded[6..]), None);
+    assert_eq!(decode_focus_event(b"\x9bI"), Some((true, 2)));
+    assert_eq!(decode_focus_event(b"\x9bO"), Some((false, 2)));
 }
 
 #[test]

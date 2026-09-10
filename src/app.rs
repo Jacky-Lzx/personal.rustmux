@@ -21,8 +21,8 @@ use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
 
 use crate::config::{Action, Config, ConfigReloader, config_path};
 use crate::input::{
-    DecodedKey, InputDecoder, MouseAction, MousePosition, decode_key, decode_sgr_mouse,
-    sgr_mouse_at,
+    DecodedKey, InputDecoder, MouseAction, MousePosition, decode_focus_event, decode_key,
+    decode_sgr_mouse, sgr_mouse_at,
 };
 use crate::layout::{
     Direction, PaneNode, PaneRect, PaneResizeHandle, SplitAxis, content_rect_for,
@@ -1451,6 +1451,15 @@ impl App {
         let mut index = 0;
         let mut selection_cleared = false;
         while index < bytes.len() {
+            if let Some((focused, consumed)) = decode_focus_event(&bytes[index..]) {
+                if !passthrough.is_empty() {
+                    self.write_active(&passthrough)?;
+                    passthrough.clear();
+                }
+                self.send_focus_event(self.active, focused);
+                index += consumed;
+                continue;
+            }
             if let Some(help_mode) = self.help_mode.clone() {
                 let (key, consumed) = decode_key(&bytes[index..]);
                 if matches!(key.name.as_str(), "esc" | "?") {
