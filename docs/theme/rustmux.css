@@ -23,6 +23,7 @@ html.light {
   --sidebar-fg: #aeb7c7;
   --sidebar-non-existant: #586273;
   --sidebar-active: var(--green);
+  --sidebar-header-border-color: var(--green);
   --sidebar-spacer: var(--border);
   --scrollbar: #3b4453;
   --icons: #98a2b3;
