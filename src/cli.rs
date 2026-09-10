@@ -59,6 +59,10 @@ pub(super) enum Command {
     #[command(visible_alias = "k")]
     KillSession(TargetSessionArgs),
 
+    /// Stop all running sessions and their processes
+    #[command(visible_alias = "ka")]
+    KillAllSessions(KillAllSessionsArgs),
+
     /// Inspect or generate configuration
     Setup(SetupArgs),
 
@@ -135,6 +139,13 @@ impl TargetSessionArgs {
 }
 
 #[derive(Debug, Args)]
+pub(super) struct KillAllSessionsArgs {
+    /// Skip the confirmation prompt
+    #[arg(short = 'y', long)]
+    pub(super) yes: bool,
+}
+
+#[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new("operation")
         .required(true)
@@ -200,6 +211,12 @@ mod tests {
             panic!("expected kill-session command");
         };
         assert_eq!(arguments.name(), "work");
+
+        let Some(Command::KillAllSessions(arguments)) = parse(&["rustmux", "ka", "--yes"]).command
+        else {
+            panic!("expected kill-all-sessions command");
+        };
+        assert!(arguments.yes);
     }
 
     #[test]

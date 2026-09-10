@@ -14,9 +14,12 @@ rustmux ls
 
 # 结束 session 及其进程
 rustmux k work
+
+# 无需确认，结束所有运行中的 session
+rustmux ka -y
 ```
 
-这些短写遵循 Zellij 的 CLI 习惯：`a` 是 `attach` 的别名，`ls` 是 `list-sessions` 的别名，`k` 是 `kill-session` 的别名。`rustmux attach -c work` 会在 session 不存在时创建它。原有的 `new-session -s work`、`attach-session -t work` 和 `kill-session -t work` 写法仍然可用。
+这些短写遵循 Zellij 的 CLI 习惯：`a` 是 `attach` 的别名，`ls` 是 `list-sessions` 的别名，`k` 是 `kill-session` 的别名，`ka` 是 `kill-all-sessions` 的别名。不带 `-y` 或 `--yes` 时，`kill-all-sessions` 会先要求确认；它会结束运行中的 session，但保留已保存的快照。`rustmux attach -c work` 会在 session 不存在时创建它。原有的 `new-session -s work`、`attach-session -t work` 和 `kill-session -t work` 写法仍然可用。
 
 在 Rustmux 内按 <kbd>Ctrl-b</kbd>、<kbd>d</kbd> detach。server 与其中的程序会继续运行。
 

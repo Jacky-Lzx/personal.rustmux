@@ -14,9 +14,12 @@ rustmux ls
 
 # Stop a session and its processes
 rustmux k work
+
+# Stop every running session without prompting
+rustmux ka -y
 ```
 
-The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` aliases `list-sessions`, and `k` aliases `kill-session`. `rustmux attach -c work` creates the session when it does not exist. The earlier `new-session -s work`, `attach-session -t work`, and `kill-session -t work` forms remain supported.
+The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` aliases `list-sessions`, `k` aliases `kill-session`, and `ka` aliases `kill-all-sessions`. Without `-y` or `--yes`, `kill-all-sessions` asks for confirmation. It stops running sessions but preserves saved snapshots. `rustmux attach -c work` creates the session when it does not exist. The earlier `new-session -s work`, `attach-session -t work`, and `kill-session -t work` forms remain supported.
 
 Press <kbd>Ctrl-b</kbd>, <kbd>d</kbd> inside Rustmux to detach. The server and its programs keep running.
 

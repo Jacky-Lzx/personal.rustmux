@@ -24,7 +24,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use session::{attach_or_create, kill_session, list_sessions, run_server};
+use session::{attach_or_create, available_sessions, kill_session, list_sessions, run_server};
 
 const PREFIX: u8 = 0x02;
 const SCROLLBACK_LINES: usize = 1_000;
@@ -87,6 +87,7 @@ pub fn run() -> Result<()> {
         Some(Command::Attach(arguments)) => attach_or_create(arguments.name(), arguments.create),
         Some(Command::ListSessions) => list_sessions(),
         Some(Command::KillSession(arguments)) => kill_session(arguments.name()),
+        Some(Command::KillAllSessions(arguments)) => kill_all_sessions(arguments.yes),
         Some(Command::DefaultConfig) => {
             print!("{DEFAULT_CONFIG_TOML}");
             Ok(())
@@ -99,6 +100,32 @@ pub fn run() -> Result<()> {
         Some(Command::Setup(arguments)) if arguments.check => check_config(),
         Some(Command::Setup(_)) => unreachable!("clap requires one setup operation"),
     }
+}
+
+fn kill_all_sessions(skip_confirmation: bool) -> Result<()> {
+    let sessions = available_sessions()?;
+    if sessions.is_empty() {
+        println!("no sessions");
+        return Ok(());
+    }
+
+    if !skip_confirmation {
+        eprint!("Kill all {} running session(s)? [y/N] ", sessions.len());
+        io::stderr().flush()?;
+        let mut response = String::new();
+        io::stdin().read_line(&mut response)?;
+        if !matches!(response.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("aborted");
+            return Ok(());
+        }
+    }
+
+    let count = sessions.len();
+    for session in sessions {
+        kill_session(&session)?;
+    }
+    println!("killed {count} session(s)");
+    Ok(())
 }
 
 fn check_config() -> Result<()> {
