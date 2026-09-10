@@ -1,294 +1,73 @@
 # rustmux
 
-一个用 Rust 编写的最小终端复用器。当前目标是先实现一个小而可靠的 MVP，支持在多个 PTY shell 窗口间切换。
+Rustmux is a terminal multiplexer written in Rust, built around a compact modal workflow and first-class support for modern terminal protocols.
 
-支持 macOS 和 Linux 等 Unix 终端；Windows 暂不支持。
+It runs on macOS and Linux. Windows is not currently supported.
 
-完整使用说明、配置参考和终端协议兼容性说明见 [Rustmux Documentation](docs/index.md)。文档默认使用英文，并在 `/zh/` 提供中文版。构建完整双语站点：
+For installation guides, keybindings, configuration, session management, and protocol compatibility, see the [Rustmux Documentation](docs/index.md). The documentation is written in English by default and also includes a Chinese translation.
 
-```sh
-./scripts/build-docs.sh
-```
+## Feature demos
 
-实时预览英文文档：
+### Windows, panes, and rearrangement
 
-```sh
-mdbook serve --open
-```
-
-界面使用 Catppuccin Mocha 配色。最上方先显示当前 session 名称，再以 Zellij 风格的 powerline 箭头标签列出所有窗口并高亮当前窗口；底部使用同样的箭头分段显示 mode 与快捷键。两条状态行都使用暗色背景。当前程序通过 OSC 设置的终端标题会显示在上边框中。
-
-## 功能演示
-
-### Window、Pane 与重排
-
-创建并重命名 window，拆分 pane、切换焦点，以及切换 pane 全屏状态：
+Create and rename windows, split and focus panes, rearrange layouts, and zoom the active pane.
 
 ![Rustmux window and pane workflow](demos/assets/windows-and-panes.gif)
 
 ### Session Manager
 
-搜索已有 session；没有匹配项时以输入内容创建并切换到新 session：
+Search and switch between running or saved sessions from a compact overlay. Entering a new name creates a session immediately.
 
 ![Rustmux session manager](demos/assets/session-manager.gif)
 
-### 快捷键帮助与历史搜索
+### History search and contextual help
 
-从帮助浮窗直接执行快捷键，并在 scroll mode 中浏览、搜索命令历史：
+Browse and search scrollback, select text with the keyboard or mouse, and execute shortcuts directly from the help overlay.
 
 ![Rustmux help overlay and history search](demos/assets/history-and-help.gif)
 
-这些动图由仓库中的 VHS tape 自动生成。录制或更新方式见 [demos/README.md](demos/README.md)。Kitty graphics、文件拖放和鼠标拖动等需要真实 Kitty 窗口的功能不使用 VHS 模拟。
+The demos are generated from reproducible [VHS tapes](demos/README.md).
 
-## 快捷键
+## Highlights
 
-默认按键采用类似 Zellij 的 mode：平时处于 `locked`，`Ctrl-b` 进入 `normal`，执行大多数动作后返回 `locked`。`normal` 和 `scroll` 等非 locked mode 会显示在活动窗口标签中。
+- **Zellij-inspired interface** — Catppuccin Mocha status lines, powerline window tabs, modal keybindings, and compact floating overlays.
+- **Persistent sessions** — Detach and reconnect without stopping applications, or save pane layouts and working directories for later restoration.
+- **Flexible layouts** — Split, resize, move, zoom, and close panes using the keyboard or by dragging pane borders with the mouse.
+- **Integrated history tools** — Search scrollback, copy selections through OSC 52, and open the full history or the previous command output in an editor.
+- **Kitty and Yazi interoperability** — Supports Kitty graphics, keyboard enhancements, file drag and drop, rich clipboard and file transfer, terminal notifications, and related OSC protocols.
+- **Attention indicators** — Bells and completed long-running commands mark the relevant window and pane until it receives focus.
+- **Efficient rendering** — Each pane maintains an independent terminal state, including alternate screens, scrollback, colors, mouse modes, and image placeholders; only changed cells are redrawn.
+- **Live configuration reloads** — Configuration changes are applied without restarting the session server, while invalid updates leave the last valid configuration active.
 
-按键兼容传统控制字符、Kitty keyboard protocol 和 xterm modified-key 编码，因此在 fish 启用扩展键盘模式后仍然有效。
+## Quick start
 
-- `c`：创建窗口
-- `,`：重命名当前窗口；输入时顶部标签会实时预览，Enter 确认，Esc 取消并恢复原名
-- `n`：下一个窗口
-- `p`：上一个窗口
-- `<` / `>`：将当前窗口向左 / 向右移动一个位置
-- `s`：打开 Session Manager；输入名称搜索，使用 `↑` / `↓` 选择、Tab 补全、Enter 进入、Esc 取消。没有匹配项时，Enter 会以当前输入创建新 session。列表会显示 tab/pane 数、连接状态、保存状态和创建时间；`Ctrl-a` 保存当前 session 布局、`Ctrl-r` 重命名、Delete 删除、`Ctrl-x` 强制断开所选 session 的客户端
-- `[`：进入当前窗口的历史模式
-- `h`：用 `$VISUAL` 或 `$EDITOR`（默认 `vi`）打开当前窗口的完整历史
-- `e`：用编辑器打开上一条命令的输出
-- `y`：通过 OSC 52 把上一条命令的输出复制到系统剪贴板
-- `i`：显示或隐藏居中的浮动 terminal；首次使用时创建一个独立 PTY shell
-- `Ctrl-p`：进入 pane mode
-- `&`：关闭当前窗口
-- `d`：detach，断开当前终端；session 和其中的程序继续在后台运行
-- 再按一次 `Ctrl-b`：把 `Ctrl-b` 发送给当前 shell
-
-Pane mode 下可以使用：
-
-- `r` / `n`：在当前 pane 右侧创建 pane
-- `d`：在当前 pane 下方创建 pane
-- `h` / `j` / `k` / `l` 或方向键：向对应方向切换焦点
-- Tab：循环切换 pane
-- `H` / `J` / `K` / `L`：向左 / 下 / 上 / 右扩展当前 pane
-- `Alt-h` / `Alt-j` / `Alt-k` / `Alt-l`：与对应方向最近的 pane 交换位置；焦点跟随当前 pane，分割比例不变
-- `z`：切换当前 pane 的全屏显示
-- `x`：关闭当前 pane；若它是 tab 内最后一个 pane，则关闭整个 tab
-- `q` / Esc：退出 pane mode
-
-历史模式下可以使用：
-
-- `↑` / `k`：向上滚动一行
-- `↓` / `j`：向下滚动一行
-- PageUp / `u`：向上滚动一页
-- PageDown / `d`：向下滚动一页
-- `g` / `G`：跳到最早记录 / 返回底部
-- `/`：输入文本搜索历史，Enter 确认；之后用 `n` / `N` 跳到下一个 / 上一个匹配行
-- `v`：从当前光标开始键盘选择；使用 `h` / `l` 或左右方向键横向扩展，`j` / `k` 或上下方向键纵向扩展
-- `y`：复制键盘选区并退出 history 模式
-- `q` / Esc：退出历史模式并返回实时画面
-
-在 history 模式中也可以使用鼠标滚轮浏览；向下滚动到最底部后仍会留在 history 模式，使用 `q` 或 Esc 返回实时画面。
-
-进入 history（`scroll`）模式后，按住鼠标左键拖动可以选择当前窗口中的文本；选区会反色显示，松开左键后自动通过 OSC 52 复制到系统剪贴板，并在左下角边框短暂显示 `copied to system clipboard`。在默认的 `locked` 模式下，鼠标事件会根据内部程序启用的鼠标协议传入当前 pane，不会触发 rustmux 的文本选择。在包含多个 pane 的 tab 中，点击任意 pane 的内容或边框会先切换焦点；拖动两个 pane 之间的共享边框可以连续调整分割比例。顶部状态栏中的 window 名称也可以直接点击切换；由 rustmux 处理的标签点击和边框拖动不会传给 pane 内程序。
-
-在 Kitty 0.47.0 或更高版本中，rustmux 会转发 OSC 72 drag-and-drop protocol。Yazi 可以从当前 pane 向 Finder 等 GUI 应用拖出文件，也可以接收拖入的文件；协议响应会根据 pane ID 路由，并自动换算 pane 内的单元格和像素坐标。
-
-rustmux 会为每个 pane、主屏幕和备用屏幕分别维护 Kitty keyboard protocol mode stack。应用请求的 progressive-enhancement flags 会在 pane 获得焦点时同步到外层终端，因此 CSI-u 修饰键、重复/释放事件和 associated text 可以原样到达对应程序；切换 pane 时也会为启用 `?1004` 的程序发送 focus-out/focus-in。
-
-终端颜色支持 OSC 4、OSC 10/11/12、对应的重置序列以及 Kitty OSC 21 和颜色栈。默认使用 Catppuccin Mocha，应用修改的默认前景、背景和光标颜色按 pane 保存并参与合成渲染。OSC 22 鼠标形状同样按 pane 隔离；悬停 window 标签或可拖动 pane 边框时会显示 pointer/resize 光标。
-
-上一条命令输出会优先使用 OSC 133 shell integration 提供的精确命令边界；fish 等现代 shell 可直接使用。没有 OSC 133 时，rustmux 会根据回车、命令回显和下一段提示符进行兼容性提取。OSC 52 剪贴板需要外层终端允许应用写入剪贴板。
-
-## 按键与 mode 配置
-
-rustmux 使用 TOML 配置，默认读取 `$XDG_CONFIG_HOME/rustmux/config.toml`；未设置 `XDG_CONFIG_HOME` 时读取 `~/.config/rustmux/config.toml`。可以生成一份包含所有默认绑定的配置：
+Run from the repository:
 
 ```sh
-mkdir -p ~/.config/rustmux
-rustmux default-config > ~/.config/rustmux/config.toml
-rustmux check-config
+cargo run --release
 ```
 
-配置结构与 Zellij 的 mode 思路一致，但不使用 KDL：
-
-```toml
-default_mode = "locked"
-clear_defaults = false
-compact = false
-scrollback_lines = 1000
-
-[notifications]
-enabled = true
-command_duration_seconds = 10
-exclude_applications = ["yazi", "nvim"]
-
-[keybinds.locked]
-"Ctrl b" = [{ action = "switch-mode", mode = "normal" }]
-
-[keybinds.normal]
-c = ["new-window", { action = "switch-mode", mode = "locked" }]
-"," = ["rename-window"]
-n = ["next-window", { action = "switch-mode", mode = "locked" }]
-s = ["switch-session"]
-"<" = { actions = ["move-window-left", { action = "switch-mode", mode = "locked" }], display = "help" }
-">" = { actions = ["move-window-right", { action = "switch-mode", mode = "locked" }], display = "help" }
-"1" = [{ action = "go-to-window", index = 1 }, { action = "switch-mode", mode = "locked" }]
-i = [{ action = "switch-mode", mode = "locked" }, "toggle-floating-terminal"]
-"Ctrl p" = [{ action = "switch-mode", mode = "pane" }]
-enter = [{ action = "switch-mode", mode = "scroll" }]
-d = ["detach"]
-
-[keybinds.scroll]
-"/" = ["search-history"]
-n = ["next-search-match"]
-N = ["previous-search-match"]
-v = ["toggle-history-selection"]
-h = ["selection-left"]
-l = ["selection-right"]
-k = ["scroll-up"]
-j = ["scroll-down"]
-E = ["scroll-bottom", { action = "switch-mode", mode = "locked" }, "edit-history"]
-y = ["copy-selection"]
-esc = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
-
-[keybinds.pane]
-r = ["new-pane-right", { action = "switch-mode", mode = "locked" }]
-d = ["new-pane-down", { action = "switch-mode", mode = "locked" }]
-h = ["focus-left", { action = "switch-mode", mode = "locked" }]
-j = ["focus-down", { action = "switch-mode", mode = "locked" }]
-k = ["focus-up", { action = "switch-mode", mode = "locked" }]
-l = ["focus-right", { action = "switch-mode", mode = "locked" }]
-H = ["resize-pane-left"]
-J = ["resize-pane-down"]
-K = ["resize-pane-up"]
-L = ["resize-pane-right"]
-"Alt h" = { actions = ["move-pane-left"], display = "help" }
-"Alt j" = { actions = ["move-pane-down"], display = "help" }
-"Alt k" = { actions = ["move-pane-up"], display = "help" }
-"Alt l" = { actions = ["move-pane-right"], display = "help" }
-z = ["toggle-pane-zoom"]
-x = ["close-pane", { action = "switch-mode", mode = "locked" }]
-```
-
-一个按键可以顺序执行多个动作。支持的简单动作包括 `send-prefix`、`new-window`、`rename-window`、`next-window`、`previous-window`、`move-window-left`、`move-window-right`、`switch-session`、`toggle-floating-terminal`、`new-pane-right`、`new-pane-down`、`focus-left`、`focus-right`、`focus-up`、`focus-down`、`focus-next-pane`、`move-pane-left`、`move-pane-right`、`move-pane-up`、`move-pane-down`、`resize-pane-left`、`resize-pane-right`、`resize-pane-up`、`resize-pane-down`、`toggle-pane-zoom`、`close-pane`、`close-window`、`detach`、`show-help`、`scroll-up`、`scroll-down`、`page-up`、`page-down`、`scroll-top`、`scroll-bottom`、`search-history`、`next-search-match`、`previous-search-match`、`toggle-history-selection`、`selection-left`、`selection-right`、`copy-selection`、`edit-history`、`edit-last-output` 和 `copy-last-output`。带参数的动作包括：
-
-```toml
-key = [{ action = "switch-mode", mode = "locked" }]
-key = [{ action = "go-to-window", index = 2 }]
-key = [{ action = "send-key", key = "Ctrl c" }]
-```
-
-快捷键默认使用 `display = "always"`，同时出现在底部状态栏和帮助浮窗。使用详细写法可以单独控制显示位置：`help` 只显示在帮助浮窗，`hidden` 在两处都不显示但仍然生效。覆盖已有快捷键时可以只写 `display`；新增快捷键时需要同时提供 `actions`：
-
-```toml
-[keybinds.normal]
-c = { display = "help" }
-d = { display = "hidden" }
-z = { actions = ["new-window", { action = "switch-mode", mode = "locked" }], display = "always" }
-```
-
-默认布局会在最下面一行显示当前 mode 以及该 mode 的常用快捷键提示。同类快捷键会自动合并，状态栏会根据终端宽度隐藏放不下的项目并显示 `? MORE (+N)`，不会截断半个提示；按 `?` 可在居中的帮助框中查看当前 mode 的完整绑定，直接按其中的快捷键即可关闭帮助并执行对应操作，Esc 关闭帮助。设置 `compact = true` 后不会保留底部状态栏，pane 会使用腾出的空间，当前 mode 则显示在顶部标签栏右侧：
-
-```toml
-compact = true
-```
-
-可配置普通字符、`Ctrl a` 到 `Ctrl z`、`Alt <key>`、方向键、`enter`、`tab`、`backspace`、`esc`、`pageup` 和 `pagedown`。将某个绑定设为空数组可取消默认绑定；`clear_defaults = true` 会先移除全部默认绑定。server 会每 500ms 检查一次配置变化并自动热重载；无效配置不会替换上一份有效配置，修正后会自动恢复，删除配置文件则恢复内置默认值。
-
-`scrollback_lines` 控制新建 pane 保存的历史行数，范围为 1 到 1,000,000；热重载后会应用于之后创建的 pane。
-
-## 长命令完成通知
-
-默认情况下，通过 OSC 133 检测到一条命令运行至少 10 秒并完成后，rustmux 会使用 Kitty 的 OSC 99 协议发送桌面通知。通知包含窗口编号、标题和实际运行时间；后台窗口中的命令也会触发。可以修改阈值或完全关闭：
-
-```toml
-[notifications]
-enabled = true
-command_duration_seconds = 10
-exclude_applications = ["yazi", "nvim"]
-```
-
-`exclude_applications` 按可执行文件名过滤通知，不区分大小写；即使这些应用运行时间超过阈值也不会通知。rustmux 会检查整条命令运行期间出现过的所有前台应用，因此 `yazi` 外面包有负责切换目录的 fish 函数时也能正确过滤。默认过滤 `yazi` 和 `nvim`，可以加入其他应用；设置为 `[]` 可取消过滤。该列表也支持热重载。
-
-该功能依赖 shell integration 提供的命令边界，默认的 fish 可以直接使用。通知需要 session 当前连接着一个 Kitty 客户端；detach 期间没有终端可接收通知。设置 `enabled = false` 可以关闭。
-
-## 运行
-
-```sh
-cargo run
-```
-
-## 图片预览 benchmark
-
-项目包含一个针对 Kitty graphics 图片预览路径的 benchmark，覆盖 JPG、PNG、PDF 和 SVG 测试素材。它测量 Rustmux 接收 graphics 分块、解析 Unicode placeholder、合成 pane 并生成最终终端帧的 CPU 耗时；Yazi 调用外部工具把 PDF、SVG 或 JPEG 栅格化的时间，以及 Kitty 自身解码和绘制图片的时间不包含在内。
-
-```sh
-cargo bench --features benchmarks --bench image_preview
-```
-
-默认将每种素材归一化为 1 MiB 的预览 payload，并运行 20 次，输出 median、mean 和 MiB/s。可以用环境变量调整规模和次数：
-
-```sh
-RUSTMUX_BENCH_PAYLOAD_MIB=4 RUSTMUX_BENCH_ITERATIONS=50 \
-  cargo bench --features benchmarks --bench image_preview
-```
-
-运行时使用的四个测试文件会生成在 `target/image-preview-bench-fixtures/`，不会加入 Git。
-
-不带参数运行会连接已有的 `default` session；如果不存在则自动创建：
-
-```sh
-rustmux
-```
-
-也可以创建和管理具名 session：
-
-```sh
-# 创建（或连接）名为 work 的 session
-rustmux new-session -s work
-
-# Ctrl-b d 后重新连接
-rustmux attach-session -t work
-
-# 列出 session
-rustmux list-sessions
-
-# 结束 session 及其窗口进程
-rustmux kill-session -t work
-```
-
-Session Manager 中按 `Ctrl-a` 会把当前 session 的 window 名称、pane 分割布局与比例、活动 pane、各 pane 工作目录以及 floating terminal 状态保存到 `$XDG_STATE_HOME/rustmux/sessions`（默认 `~/.local/state/rustmux/sessions`）。进程和终端内容不会序列化；session server 停止后再次创建同名 session 时，rustmux 会在保存的目录中重新启动 shell 并重建布局。已保存但未运行的 session 也会出现在 Session Manager 中，Delete 会同时删除其快照。
-
-也可以安装到 Cargo 的二进制目录：
+Or install the binary locally:
 
 ```sh
 cargo install --path .
 rustmux
 ```
 
-新窗口默认启动 `fish`。如需临时使用其他 shell，可以设置：
+Rustmux creates or attaches to the default session. Use `Ctrl-b` to enter normal mode and `?` to open the contextual keybinding help.
+
+## Documentation
+
+Build the complete English and Chinese documentation site with:
 
 ```sh
-RUSTMUX_SHELL=zsh rustmux
+./scripts/build-docs.sh
 ```
 
-rustmux 会通过 OSC 7 shell integration 跟踪每个 pane 的当前工作目录。新建 window、pane 或浮动 terminal 时会继承当前 pane 的目录；如果 shell 尚未报告目录，则使用 session server 的启动目录。
-
-## 测试与模糊测试
-
-macOS 和 Linux CI 会运行格式检查、完整测试与 Clippy，并使用 nightly Rust 编译全部 libFuzzer target。Linux CI 还会对每个 target 做短时 smoke test。当前 fuzz target 覆盖输入与鼠标解码、Kitty graphics、Kitty drag-and-drop、OSC/终端响应和完整终端帧渲染。
-
-本地安装 `cargo-fuzz` 后可以选择任一 target 持续运行：
+For live preview of the English documentation:
 
 ```sh
-cargo install cargo-fuzz --locked
-cargo fuzz list
-cargo fuzz run input-decode
-cargo fuzz run kitty-graphics
-cargo fuzz run kitty-dnd
-cargo fuzz run osc-terminal
-cargo fuzz run terminal-render
+mdbook serve --open
 ```
 
-## MVP 边界
-
-当前版本使用后台 server 保存 session。窗口内默认运行 `fish`（可通过 `RUSTMUX_SHELL` 覆盖），支持 window 重排，以及 tab 内的水平/垂直 pane、pane resize、方向交换、全屏与鼠标点击聚焦、终端字符与像素尺寸同步，并为每个 pane 维护独立的 VT100 屏幕状态和 1000 行回滚缓冲区。渲染器仅更新发生变化的单元格，避免 Vim 等全屏程序刷新时反复清屏闪烁；它们也可以安全地使用 alternate screen，边框和标签栏不会被覆盖。在支持 Kitty graphics protocol 的外层终端中，rustmux 会流式转发图片命令并渲染 Unicode placeholders，因此 Yazi 可以显示图片预览。
+Detailed configuration, commands, keybindings, benchmarks, fuzz targets, and terminal-protocol notes live in the [documentation](docs/index.md) rather than this README.
