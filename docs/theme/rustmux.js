@@ -1,10 +1,4 @@
 (function () {
-  function isChinesePage() {
-    return document.documentElement.lang.toLowerCase().startsWith("zh") ||
-      window.location.pathname === "/zh" ||
-      window.location.pathname.startsWith("/zh/");
-  }
-
   function markPage() {
     if (document.querySelector("main .landing-hero")) {
       document.body.classList.add("home-page");
@@ -23,21 +17,6 @@
       </span>`;
   }
 
-  function addLanguageSwitch() {
-    const actions = document.querySelector(".right-buttons");
-    if (!actions) return;
-    const path = window.location.pathname;
-    const chinese = isChinesePage();
-    const targetPath = chinese ? path.replace(/^\/zh(?=\/|$)/, "") || "/" : `/zh${path}`;
-    const link = document.createElement("a");
-    link.className = "language-switch";
-    link.href = `${targetPath}${window.location.search}${window.location.hash}`;
-    link.hreflang = chinese ? "en" : "zh-CN";
-    link.textContent = chinese ? "EN" : "中文";
-    link.setAttribute("aria-label", chinese ? "Read in English" : "阅读中文版");
-    actions.prepend(link);
-  }
-
   function addCopyButtons() {
     for (const pre of document.querySelectorAll("main pre")) {
       const code = pre.querySelector("code");
@@ -46,7 +25,7 @@
       button.className = "copy-button";
       button.type = "button";
       button.textContent = "COPY";
-      button.setAttribute("aria-label", "复制代码");
+      button.setAttribute("aria-label", "Copy code");
       button.addEventListener("click", async () => {
         await navigator.clipboard.writeText(code.textContent || "");
         button.textContent = "COPIED";
@@ -61,7 +40,7 @@
     if (headings.length < 2) return;
     const aside = document.createElement("aside");
     aside.className = "right-side-toc";
-    const label = isChinesePage() ? "本页内容" : "On this page";
+    const label = "On this page";
     aside.setAttribute("aria-label", label);
     const title = document.createElement("strong");
     title.textContent = label;
@@ -107,7 +86,6 @@
   document.addEventListener("DOMContentLoaded", () => {
     markPage();
     enhanceBrand();
-    addLanguageSwitch();
     addCopyButtons();
     addTableOfContents();
     bindSearchShortcut();

@@ -51,5 +51,4 @@ The documentation uses mdBook:
 mdbook serve --open
 ```
 
-The build script generates English at the site root and Chinese under `/zh/`. `mdbook serve` opens the English source with live reload.
-
+The build script generates the documentation in `dist/`. `mdbook serve` opens it with live reload.

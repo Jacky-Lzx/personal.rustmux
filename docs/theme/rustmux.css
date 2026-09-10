@@ -137,8 +137,7 @@ body::before {
   text-transform: uppercase;
 }
 
-.rustmux-version,
-.language-switch {
+.rustmux-version {
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   font: 750 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -150,23 +149,6 @@ body::before {
   padding: 5px 8px;
   color: var(--green);
   background: rgba(166, 227, 161, 0.05);
-}
-
-.language-switch {
-  display: inline-flex;
-  height: 30px;
-  align-items: center;
-  margin-right: 5px;
-  padding: 0 10px;
-  color: var(--fg);
-  text-decoration: none;
-  transition: 150ms ease;
-}
-
-.language-switch:hover {
-  color: #0b0d10;
-  border-color: var(--green);
-  background: var(--green);
 }
 
 .icon-button {
