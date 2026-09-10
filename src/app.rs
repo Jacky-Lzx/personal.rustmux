@@ -40,11 +40,12 @@ use crate::session::{
 use crate::terminal::{
     CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndEvent, KittyDndParser,
     KittyDndRegistration, KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture,
-    TerminalMetadata, TerminalOscTracker, base64_encode, format_duration,
-    kitty_dnd_drag_start_position, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
-    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
-    kitty_ipc_for_child, kitty_ipc_is_clipboard, kitty_ipc_with_pane, kitty_notification,
-    outer_terminal_identity, terminal_parser_size, terminal_responses,
+    TerminalMetadata, TerminalOscTracker, base64_encode, format_duration, kitty_dnd_command,
+    kitty_dnd_data_response, kitty_dnd_drag_start_position, kitty_dnd_for_child, kitty_dnd_id,
+    kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
+    kitty_graphics_uses_shared_memory, kitty_ipc_for_child, kitty_ipc_is_clipboard,
+    kitty_ipc_with_pane, kitty_notification, outer_terminal_identity, terminal_parser_size,
+    terminal_responses,
 };
 use crate::{
     CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
@@ -94,6 +95,102 @@ struct SpawnOptions {
     floating: bool,
     tab_id: usize,
     current_directory: Option<PathBuf>,
+}
+
+const MAX_INTERNAL_DND_DATA_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Default)]
+pub(super) struct InternalDndBridge {
+    source_window_id: Option<usize>,
+    source_mimes: Vec<String>,
+    source_data: HashMap<usize, Vec<u8>>,
+    source_data_bytes: usize,
+    current_pre_sent_index: Option<usize>,
+    target_window_id: Option<usize>,
+    target_mimes: Vec<String>,
+}
+
+impl InternalDndBridge {
+    pub(super) fn begin_source(&mut self, window_id: usize, payload: &[u8]) {
+        *self = Self::default();
+        self.source_window_id = Some(window_id);
+        self.source_mimes = mime_types(payload);
+    }
+
+    pub(super) fn cache_pre_sent_data(
+        &mut self,
+        window_id: usize,
+        index: Option<i32>,
+        more: bool,
+        payload: &[u8],
+    ) {
+        if self.source_window_id != Some(window_id) {
+            return;
+        }
+        let index = index
+            .and_then(|index| usize::try_from(index).ok())
+            .or(self.current_pre_sent_index);
+        let Some(index) = index else {
+            return;
+        };
+        if self.source_data_bytes.saturating_add(payload.len()) > MAX_INTERNAL_DND_DATA_BYTES {
+            self.clear();
+            return;
+        }
+        self.source_data
+            .entry(index)
+            .or_default()
+            .extend_from_slice(payload);
+        self.source_data_bytes += payload.len();
+        self.current_pre_sent_index = more.then_some(index);
+    }
+
+    pub(super) fn begin_target(&mut self, window_id: usize, payload: &[u8]) {
+        if self
+            .source_window_id
+            .is_some_and(|source| source != window_id)
+        {
+            self.target_window_id = Some(window_id);
+            self.target_mimes = mime_types(payload);
+        } else {
+            self.target_window_id = None;
+            self.target_mimes.clear();
+        }
+    }
+
+    pub(super) fn data_response(&self, window_id: usize, request_index: i32) -> Option<Vec<u8>> {
+        (self.target_window_id == Some(window_id)).then_some(())?;
+        let target_index = usize::try_from(request_index.checked_sub(1)?).ok()?;
+        let mime = self.target_mimes.get(target_index)?;
+        let source_index = self.source_mimes.iter().position(|source| source == mime)?;
+        let data = self.source_data.get(&source_index)?;
+        kitty_dnd_data_response(request_index, data)
+    }
+
+    pub(super) fn routes_response_to_source(&self, window_id: usize, kind: Option<char>) -> bool {
+        self.target_window_id == Some(window_id) && matches!(kind, Some('m' | 'r'))
+    }
+
+    fn source_window_id(&self) -> Option<usize> {
+        self.source_window_id
+    }
+
+    fn accepts_pre_sent_continuation(&self, window_id: usize) -> bool {
+        self.source_window_id == Some(window_id) && self.current_pre_sent_index.is_some()
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+fn mime_types(payload: &[u8]) -> Vec<String> {
+    std::str::from_utf8(payload)
+        .ok()
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .map(str::to_owned)
+        .collect()
 }
 
 impl Window {
@@ -231,6 +328,7 @@ pub(super) struct App {
     next_notification_id: u64,
     input_decoder: InputDecoder,
     dnd_input: KittyDndParser,
+    internal_dnd: InternalDndBridge,
     ipc_input: KittyIpcParser,
     config: Config,
     config_reloader: ConfigReloader,
@@ -279,6 +377,7 @@ impl App {
             next_notification_id: 1,
             input_decoder: InputDecoder::default(),
             dnd_input: KittyDndParser::default(),
+            internal_dnd: InternalDndBridge::default(),
             ipc_input: KittyIpcParser::default(),
             config,
             config_reloader,
@@ -818,6 +917,7 @@ impl App {
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
         self.dnd_input = KittyDndParser::default();
+        self.internal_dnd.clear();
         self.ipc_input = KittyIpcParser::default();
         self.reset_mode();
         self.renderer.invalidate();
@@ -885,6 +985,7 @@ impl App {
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
         self.dnd_input = KittyDndParser::default();
+        self.internal_dnd.clear();
         self.ipc_input = KittyIpcParser::default();
         self.outer_keyboard_flags = None;
         self.outer_pointer_shape = None;
@@ -1003,9 +1104,23 @@ impl App {
         if self.windows.is_empty() {
             return Ok(());
         }
+        let parsed = kitty_dnd_command(command);
+        let drop_position = parsed.and_then(|command| {
+            matches!(command.kind, Some('m' | 'M'))
+                .then(|| command.x.zip(command.y))
+                .flatten()
+                .filter(|(x, y)| *x >= 0 && *y >= 0)
+        });
         let index = match kitty_dnd_drag_start_position(command) {
             Some(position) => {
                 let Some(index) = self.dnd_drag_target(position) else {
+                    return Ok(());
+                };
+                index
+            }
+            None if drop_position.is_some() => {
+                let Some(index) = self.dnd_drop_target(drop_position.expect("position exists"))
+                else {
                     return Ok(());
                 };
                 index
@@ -1024,6 +1139,10 @@ impl App {
                 None => self.active,
             },
         };
+        if let Some(parsed) = parsed.filter(|command| matches!(command.kind, Some('m' | 'M'))) {
+            self.internal_dnd
+                .begin_target(self.windows[index].id, parsed.payload);
+        }
         let (origin, size) = self.dnd_geometry(index);
         let cell_pixels = (
             self.terminal_pixels.0 / self.terminal_size.0.max(1),
@@ -1032,11 +1151,32 @@ impl App {
         if let Some(command) = kitty_dnd_for_child(command, origin, size, cell_pixels) {
             write_fd(&self.windows[index].master, &command)?;
         }
+        if parsed.is_some_and(|command| {
+            (command.kind == Some('e') && command.x == Some(4))
+                || (command.kind == Some('E') && command.payload != b"OK")
+        }) {
+            self.internal_dnd.clear();
+        }
         Ok(())
     }
 
     fn dnd_drag_target(&self, position: (i32, i32)) -> Option<usize> {
+        self.dnd_target(position, true)
+    }
+
+    fn dnd_drop_target(&self, position: (i32, i32)) -> Option<usize> {
+        self.dnd_target(position, false)
+    }
+
+    fn dnd_target(&self, position: (i32, i32), drag: bool) -> Option<usize> {
         let active = self.windows.get(self.active)?;
+        let registered = |window: &Window| {
+            if drag {
+                window.dnd_drag_registration.is_some()
+            } else {
+                window.dnd_drop_registration.is_some()
+            }
+        };
         let contains = |index: usize| {
             let (origin, size) = self.dnd_geometry(index);
             position.0 >= origin.0
@@ -1044,16 +1184,13 @@ impl App {
                 && position.0 < origin.0 + i32::from(size.0)
                 && position.1 < origin.1 + i32::from(size.1)
         };
-        if (active.floating || active.zoomed)
-            && active.dnd_drag_registration.is_some()
-            && contains(self.active)
-        {
+        if (active.floating || active.zoomed) && registered(active) && contains(self.active) {
             return Some(self.active);
         }
         self.windows.iter().enumerate().find_map(|(index, window)| {
             (!window.floating
                 && window.tab_id == active.tab_id
-                && window.dnd_drag_registration.is_some()
+                && registered(window)
                 && contains(index))
             .then_some(index)
         })
@@ -1080,12 +1217,43 @@ impl App {
         ((1, 2), pane_pty_size(window.pane_rect, false))
     }
 
-    fn handle_window_dnd_command(&mut self, index: usize, command: &[u8]) {
-        let Ok(id) = u32::try_from(self.windows[index].id) else {
-            return;
+    fn handle_window_dnd_command(&mut self, index: usize, command: &[u8]) -> Result<()> {
+        let window_id = self.windows[index].id;
+        if let Some(parsed) = kitty_dnd_command(command) {
+            if parsed.kind == Some('o') && parsed.operation.is_some_and(|operation| operation > 0) {
+                self.internal_dnd.begin_source(window_id, parsed.payload);
+            } else if parsed.kind == Some('p')
+                || (parsed.kind.is_none()
+                    && self.internal_dnd.accepts_pre_sent_continuation(window_id))
+            {
+                self.internal_dnd.cache_pre_sent_data(
+                    window_id,
+                    parsed.x,
+                    parsed.more,
+                    parsed.payload,
+                );
+            } else if parsed.kind == Some('r')
+                && let Some(request_index) = parsed.x
+                && let Some(response) = self.internal_dnd.data_response(window_id, request_index)
+            {
+                write_fd(&self.windows[index].master, &response)?;
+                return Ok(());
+            }
+        }
+        let internal_target_response = kitty_dnd_command(command).is_some_and(|parsed| {
+            self.internal_dnd
+                .routes_response_to_source(window_id, parsed.kind)
+        });
+        let routed_window_id = if internal_target_response {
+            self.internal_dnd.source_window_id().unwrap_or(window_id)
+        } else {
+            window_id
+        };
+        let Ok(id) = u32::try_from(routed_window_id) else {
+            return Ok(());
         };
         let Some(command) = kitty_dnd_with_id(command, id) else {
-            return;
+            return Ok(());
         };
         match kitty_dnd_registration(&command) {
             Some(KittyDndRegistration::Drag(true)) => {
@@ -1107,7 +1275,10 @@ impl App {
             self.outer_dnd_window = (self.windows[index].dnd_drag_registration.is_some()
                 || self.windows[index].dnd_drop_registration.is_some())
             .then_some(self.windows[index].id);
+        } else if internal_target_response {
+            self.write_client_protocol(&command);
         }
+        Ok(())
     }
 
     fn write_client_protocol(&mut self, bytes: &[u8]) {
@@ -1369,7 +1540,6 @@ impl App {
                         }
                         self.set_active(target);
                         self.selection = None;
-                        self.renderer.invalidate();
                         self.redraw()?;
                     }
                     if self.windows[self.active]
@@ -2378,7 +2548,7 @@ impl App {
             match event {
                 KittyDndEvent::Terminal(bytes) => terminal.extend(bytes),
                 KittyDndEvent::Command(command) => {
-                    self.handle_window_dnd_command(index, &command);
+                    self.handle_window_dnd_command(index, &command)?;
                 }
             }
         }
@@ -2622,7 +2792,6 @@ impl App {
                 .unwrap();
             self.set_active(target);
             self.selection = None;
-            self.renderer.invalidate();
             self.redraw()?;
         }
         Ok(())
@@ -2637,7 +2806,6 @@ impl App {
                 .unwrap();
             self.set_active(target);
             self.selection = None;
-            self.renderer.invalidate();
             self.redraw()?;
         }
         Ok(())

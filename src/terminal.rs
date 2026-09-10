@@ -693,6 +693,17 @@ pub(super) enum KittyDndRegistration {
     Drop(bool),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct KittyDndCommand<'a> {
+    pub(super) kind: Option<char>,
+    pub(super) client_id: Option<u32>,
+    pub(super) operation: Option<i32>,
+    pub(super) x: Option<i32>,
+    pub(super) y: Option<i32>,
+    pub(super) more: bool,
+    pub(super) payload: &'a [u8],
+}
+
 impl KittyDndParser {
     pub(super) fn process(&mut self, bytes: &[u8]) -> KittyDndOutput {
         self.pending.extend_from_slice(bytes);
@@ -768,11 +779,37 @@ pub(super) fn kitty_dnd_id(command: &[u8]) -> Option<u32> {
     })
 }
 
+pub(super) fn kitty_dnd_command(command: &[u8]) -> Option<KittyDndCommand<'_>> {
+    let (metadata, payload) = kitty_dnd_parts(command)?;
+    Some(KittyDndCommand {
+        kind: metadata_value(metadata, "t").and_then(|value| value.chars().next()),
+        client_id: metadata_value(metadata, "i").and_then(|value| value.parse().ok()),
+        operation: metadata_value(metadata, "o").and_then(|value| value.parse().ok()),
+        x: metadata_value(metadata, "x").and_then(|value| value.parse().ok()),
+        y: metadata_value(metadata, "y").and_then(|value| value.parse().ok()),
+        more: metadata_value(metadata, "m") == Some("1"),
+        payload: payload.unwrap_or_default(),
+    })
+}
+
+pub(super) fn kitty_dnd_data_response(index: i32, data: &[u8]) -> Option<Vec<u8>> {
+    (index > 0).then_some(())?;
+    let mut response = Vec::with_capacity(data.len() + 64);
+    for chunk in data.chunks(4096) {
+        response.extend_from_slice(format!("\x1b]72;t=r:x={index}:m=1;").as_bytes());
+        response.extend_from_slice(chunk);
+        response.extend_from_slice(STRING_TERMINATOR);
+    }
+    response.extend_from_slice(format!("\x1b]72;t=r:x={index}:m=0;").as_bytes());
+    response.extend_from_slice(STRING_TERMINATOR);
+    Some(response)
+}
+
 pub(super) fn kitty_dnd_drag_start_position(command: &[u8]) -> Option<(i32, i32)> {
-    let (metadata, _) = kitty_dnd_parts(command)?;
-    (metadata_value(metadata, "t") == Some("o")).then_some(())?;
-    let x = metadata_value(metadata, "x")?.parse().ok()?;
-    let y = metadata_value(metadata, "y")?.parse().ok()?;
+    let command = kitty_dnd_command(command)?;
+    (command.kind == Some('o')).then_some(())?;
+    let x = command.x?;
+    let y = command.y?;
     (x >= 0 && y >= 0).then_some((x, y))
 }
 

@@ -6,7 +6,7 @@ use nix::unistd::Pid;
 
 use super::*;
 use crate::app::{
-    RenameEdit, TextSelection, Window, edit_window_name, matching_history_lines,
+    InternalDndBridge, RenameEdit, TextSelection, Window, edit_window_name, matching_history_lines,
     matching_session_info, pane_at, preferred_spawn_directory, process_current_directory,
     process_name, rename_tab, selected_text, selection_contains, window_history,
 };
@@ -30,11 +30,11 @@ use crate::session::SessionInfo;
 use crate::terminal::{
     CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndEvent, KittyDndParser,
     KittyDndRegistration, KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture,
-    TerminalMetadata, TerminalOscTracker, base64_encode, format_duration,
-    kitty_dnd_drag_start_position, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
-    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
-    kitty_ipc_for_child, kitty_ipc_with_pane, kitty_notification, osc7_path, terminal_parser_size,
-    terminal_responses,
+    TerminalMetadata, TerminalOscTracker, base64_encode, format_duration, kitty_dnd_command,
+    kitty_dnd_data_response, kitty_dnd_drag_start_position, kitty_dnd_for_child, kitty_dnd_id,
+    kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
+    kitty_graphics_uses_shared_memory, kitty_ipc_for_child, kitty_ipc_with_pane,
+    kitty_notification, osc7_path, terminal_parser_size, terminal_responses,
 };
 
 fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
@@ -1077,6 +1077,44 @@ fn tiled_panes_are_composited_inside_one_tab() {
 }
 
 #[test]
+fn changing_focused_pane_is_rendered_incrementally() {
+    let mut left = test_window(1, "left", 10, 18);
+    left.tab_id = 1;
+    left.pane_framed = true;
+    left.pane_rect = PaneRect {
+        column: 0,
+        row: 0,
+        width: 20,
+        height: 12,
+    };
+    left.terminal.process(b"left pane");
+    let mut right = test_window(2, "right", 10, 18);
+    right.tab_id = 1;
+    right.pane_framed = true;
+    right.pane_rect = PaneRect {
+        column: 20,
+        row: 0,
+        width: 20,
+        height: 12,
+    };
+    right.terminal.process(b"right pane");
+    let windows = vec![left, right];
+    let mut renderer = Renderer::default();
+
+    renderer.render(&windows, 0, (40, 15), "locked", None, &[]);
+    let update = renderer.render(&windows, 1, (40, 15), "locked", None, &[]);
+
+    assert!(!update.windows(4).any(|part| part == b"\x1b[2J"));
+    assert!(
+        update
+            .windows(b"\x1b]0;rustmux:2\x07".len())
+            .any(|part| part == b"\x1b]0;rustmux:2\x07")
+    );
+    assert!(update.starts_with(b"\x1b[?2026h"));
+    assert!(update.ends_with(b"\x1b[?2026l"));
+}
+
+#[test]
 fn mouse_position_selects_a_visible_pane() {
     let mut left = test_window(1, "left", 10, 18);
     left.tab_id = 1;
@@ -1321,6 +1359,53 @@ fn kitty_dnd_drag_start_uses_position_instead_of_a_stale_pane_id() {
         kitty_dnd_drag_start_position(b"\x1b]72;t=o:o=3:i=2;text/uri-list\x1b\\"),
         None
     );
+}
+
+#[test]
+fn kitty_dnd_commands_expose_data_transfer_metadata() {
+    let command = kitty_dnd_command(b"\x1b]72;t=p:x=0:m=1:i=2;ZmlsZTovLy90bXAvYQ==\x1b\\").unwrap();
+    assert_eq!(command.kind, Some('p'));
+    assert_eq!(command.client_id, Some(2));
+    assert_eq!(command.x, Some(0));
+    assert_eq!(command.y, None);
+    assert!(command.more);
+    assert_eq!(command.payload, b"ZmlsZTovLy90bXAvYQ==");
+    assert_eq!(
+        kitty_dnd_data_response(1, command.payload).unwrap(),
+        b"\x1b]72;t=r:x=1:m=1;ZmlsZTovLy90bXAvYQ==\x1b\\\x1b]72;t=r:x=1:m=0;\x1b\\"
+    );
+}
+
+#[test]
+fn internal_dnd_bridge_serves_yazi_uri_list_to_another_pane() {
+    let mut bridge = InternalDndBridge::default();
+    bridge.begin_source(1, b"text/uri-list text/plain");
+    bridge.cache_pre_sent_data(1, Some(0), false, b"ZmlsZTovLy90bXAvYQ==");
+    bridge.begin_target(2, b"text/uri-list");
+
+    assert!(bridge.routes_response_to_source(2, Some('m')));
+    assert!(bridge.routes_response_to_source(2, Some('r')));
+    assert!(!bridge.routes_response_to_source(1, Some('m')));
+    assert_eq!(
+        bridge.data_response(2, 1).unwrap(),
+        b"\x1b]72;t=r:x=1:m=1;ZmlsZTovLy90bXAvYQ==\x1b\\\x1b]72;t=r:x=1:m=0;\x1b\\"
+    );
+    assert!(bridge.data_response(1, 1).is_none());
+}
+
+#[test]
+fn internal_dnd_bridge_matches_target_mime_indexes_to_source_indexes() {
+    let mut bridge = InternalDndBridge::default();
+    bridge.begin_source(7, b"text/plain text/uri-list");
+    bridge.cache_pre_sent_data(7, Some(1), true, b"ZmlsZTov");
+    bridge.cache_pre_sent_data(7, None, false, b"Ly90bXAvYg==");
+    bridge.begin_target(9, b"text/uri-list text/plain");
+
+    assert_eq!(
+        bridge.data_response(9, 1).unwrap(),
+        b"\x1b]72;t=r:x=1:m=1;ZmlsZTovLy90bXAvYg==\x1b\\\x1b]72;t=r:x=1:m=0;\x1b\\"
+    );
+    assert!(bridge.data_response(9, 2).is_none());
 }
 
 #[test]

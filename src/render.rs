@@ -184,13 +184,26 @@ impl Renderer {
             self.previous = Some(current);
             return output;
         };
+        let active_changed = previous.active_id != current.active_id;
+        let active_change_requires_full_frame = active_changed
+            && !windows
+                .iter()
+                .find(|window| window.id == previous.active_id)
+                .zip(windows.get(active))
+                .is_some_and(|(previous, current)| {
+                    !previous.floating
+                        && !previous.zoomed
+                        && !current.floating
+                        && !current.zoomed
+                        && previous.tab_id == current.tab_id
+                });
 
         if previous.terminal_size != current.terminal_size
             || previous.content_size != current.content_size
             || previous.content_origin != current.content_origin
             || previous.outer_border != current.outer_border
             || previous.compact != current.compact
-            || previous.active_id != current.active_id
+            || active_change_requires_full_frame
             || previous.session_name != current.session_name
             || previous.cells.len() != current.cells.len()
         {
@@ -259,12 +272,16 @@ impl Renderer {
             || mode_changed
             || tabs_changed
             || title_changed
+            || active_changed
             || status_changed
         {
             // DEC synchronized output makes the terminal display this diff as one
             // frame. Unknown DEC private modes are safely ignored by terminals
             // which do not implement mode 2026.
             output.extend_from_slice(b"\x1b[?2026h");
+        }
+        if active_changed {
+            let _ = write!(output, "\x1b]0;rustmux:{}\x07", current.active_id);
         }
         if (cells_changed || history_changed)
             && !graphics_changed
@@ -340,6 +357,7 @@ impl Renderer {
             || mode_changed
             || tabs_changed
             || title_changed
+            || active_changed
             || status_changed
         {
             append_terminal_state_diff(
@@ -353,6 +371,7 @@ impl Renderer {
                     || mode_changed
                     || tabs_changed
                     || title_changed
+                    || active_changed
                     || status_changed,
             );
             output.extend_from_slice(b"\x1b[?2026l");
