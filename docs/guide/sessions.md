@@ -4,17 +4,19 @@
 
 ```sh
 # Create or attach to a named session
-rustmux new-session -s work
+rustmux -s work
 
 # Reattach
-rustmux attach-session -t work
+rustmux attach work
 
 # List sessions
-rustmux list-sessions
+rustmux ls
 
 # Stop a session and its processes
-rustmux kill-session -t work
+rustmux k work
 ```
+
+The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` aliases `list-sessions`, and `k` aliases `kill-session`. `rustmux attach -c work` creates the session when it does not exist. The earlier `new-session -s work`, `attach-session -t work`, and `kill-session -t work` forms remain supported.
 
 Press <kbd>Ctrl-b</kbd>, <kbd>d</kbd> inside Rustmux to detach. The server and its programs keep running.
 
@@ -46,4 +48,3 @@ $XDG_STATE_HOME/rustmux/sessions
 A snapshot contains window names, pane split trees and ratios, the active pane, working directories, and floating-terminal state. Processes and terminal contents are not serialized.
 
 After the server stops, creating the same session again starts fresh shells in the saved directories and rebuilds the layout. Saved sessions that are not running remain visible in the Session Manager.
-

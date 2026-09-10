@@ -43,6 +43,8 @@ rustmux default-config > ~/.config/rustmux/config.toml
 rustmux check-config
 ```
 
+对应的 Zellij 风格写法是 `rustmux setup --dump-config` 和 `rustmux setup --check`。
+
 配置文件保存后会在约 500ms 内热重载。无效配置不会替换上一份有效配置。
 
 ## 下一步
@@ -50,4 +52,3 @@ rustmux check-config
 - 阅读[快捷键与模式](../guide/keybindings.md)，理解输入如何在 Rustmux 与内部程序之间传递。
 - 在[配置文件](../configuration/index.md)中调整快捷键和状态栏显示方式。
 - 如果使用 Kitty 或 Yazi，查看[Yazi 与 Kitty](../guide/kitty-yazi.md)。
-

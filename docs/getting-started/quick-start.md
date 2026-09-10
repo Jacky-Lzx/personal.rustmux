@@ -43,6 +43,8 @@ rustmux default-config > ~/.config/rustmux/config.toml
 rustmux check-config
 ```
 
+The Zellij-style equivalents are `rustmux setup --dump-config` and `rustmux setup --check`.
+
 Saved changes hot-reload in about 500ms. Invalid changes never replace the last valid configuration.
 
 ## Next steps
@@ -50,4 +52,3 @@ Saved changes hot-reload in about 500ms. Invalid changes never replace the last 
 - Read [Keybindings and Modes](../guide/keybindings.md) to understand how input moves between Rustmux and terminal applications.
 - Customize bindings and status-line visibility in [Configuration File](../configuration/index.md).
 - If you use Kitty or Yazi, continue with [Yazi and Kitty](../guide/kitty-yazi.md).
-

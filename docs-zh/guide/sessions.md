@@ -4,17 +4,19 @@
 
 ```sh
 # 创建或连接具名 session
-rustmux new-session -s work
+rustmux -s work
 
 # 重新连接
-rustmux attach-session -t work
+rustmux attach work
 
 # 列出 session
-rustmux list-sessions
+rustmux ls
 
 # 结束 session 及其进程
-rustmux kill-session -t work
+rustmux k work
 ```
+
+这些短写遵循 Zellij 的 CLI 习惯：`a` 是 `attach` 的别名，`ls` 是 `list-sessions` 的别名，`k` 是 `kill-session` 的别名。`rustmux attach -c work` 会在 session 不存在时创建它。原有的 `new-session -s work`、`attach-session -t work` 和 `kill-session -t work` 写法仍然可用。
 
 在 Rustmux 内按 <kbd>Ctrl-b</kbd>、<kbd>d</kbd> detach。server 与其中的程序会继续运行。
 
@@ -46,4 +48,3 @@ $XDG_STATE_HOME/rustmux/sessions
 快照包含 window 名称、pane 分割布局与比例、活动 pane、各 pane 工作目录和 floating terminal 状态。进程和终端内容不会序列化。
 
 server 停止后再次创建同名 session，Rustmux 会在保存的目录中启动新 shell 并重建布局。已保存但未运行的 session 也会出现在 Session Manager 中。
-

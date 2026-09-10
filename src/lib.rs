@@ -1,4 +1,5 @@
 mod app;
+mod cli;
 mod config;
 mod input;
 mod layout;
@@ -10,12 +11,13 @@ mod terminal;
 #[doc(hidden)]
 pub mod benchmarking;
 
-use std::env;
 use std::error::Error;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use clap::Parser;
+use cli::{Cli, Command};
 use config::{Config, DEFAULT_CONFIG_TOML, config_path};
 use crossterm::{
     cursor::Show,
@@ -69,62 +71,45 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn print_help() {
-    println!(
-        "rustmux {}\n\nA minimal terminal multiplexer.\n\nUSAGE:\n    rustmux [new-session [-s NAME]]\n    rustmux attach-session [-t NAME]\n    rustmux list-sessions\n    rustmux kill-session [-t NAME]\n    rustmux check-config\n    rustmux default-config\n\nConfig: {}\n",
-        env!("CARGO_PKG_VERSION"),
-        config_path().display(),
-    );
-}
-
 pub fn run() -> Result<()> {
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
-    match arguments.as_slice() {
-        [] => attach_or_create("default", true),
-        [flag] if flag == "-h" || flag == "--help" => {
-            print_help();
-            Ok(())
-        }
-        [flag] if flag == "-V" || flag == "--version" => {
-            println!("rustmux {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        [command] if command == "default-config" => {
+    let cli = Cli::parse();
+    if let Some(values) = cli.server {
+        let (socket, values) = values.split_first().ok_or("missing server socket")?;
+        return run_server(PathBuf::from(socket), values);
+    }
+    if let Some(session) = cli.session {
+        return attach_or_create(&session, true);
+    }
+
+    match cli.command {
+        None => attach_or_create("default", true),
+        Some(Command::NewSession(arguments)) => attach_or_create(arguments.name(), true),
+        Some(Command::Attach(arguments)) => attach_or_create(arguments.name(), arguments.create),
+        Some(Command::ListSessions) => list_sessions(),
+        Some(Command::KillSession(arguments)) => kill_session(arguments.name()),
+        Some(Command::DefaultConfig) => {
             print!("{DEFAULT_CONFIG_TOML}");
             Ok(())
         }
-        [command] if command == "check-config" => {
-            Config::load().map_err(|error| format!("configuration error: {error}"))?;
-            let path = config_path();
-            if path.exists() {
-                println!("{}: ok", path.display());
-            } else {
-                println!("{}: not found; built-in defaults are valid", path.display());
-            }
+        Some(Command::CheckConfig) => check_config(),
+        Some(Command::Setup(arguments)) if arguments.dump_config => {
+            print!("{DEFAULT_CONFIG_TOML}");
             Ok(())
         }
-        [command] if command == "new" || command == "new-session" => {
-            attach_or_create("default", true)
-        }
-        [command, flag, name] if (command == "new" || command == "new-session") && flag == "-s" => {
-            attach_or_create(name, true)
-        }
-        [command] if command == "attach" || command == "attach-session" => {
-            attach_or_create("default", false)
-        }
-        [command, flag, name]
-            if (command == "attach" || command == "attach-session") && flag == "-t" =>
-        {
-            attach_or_create(name, false)
-        }
-        [command] if command == "ls" || command == "list-sessions" => list_sessions(),
-        [command] if command == "kill-session" => kill_session("default"),
-        [command, flag, name] if command == "kill-session" && flag == "-t" => kill_session(name),
-        [command, socket, values @ ..] if command == "--server" => {
-            run_server(PathBuf::from(socket), values)
-        }
-        _ => Err("invalid arguments (try --help)".into()),
+        Some(Command::Setup(arguments)) if arguments.check => check_config(),
+        Some(Command::Setup(_)) => unreachable!("clap requires one setup operation"),
     }
+}
+
+fn check_config() -> Result<()> {
+    Config::load().map_err(|error| format!("configuration error: {error}"))?;
+    let path = config_path();
+    if path.exists() {
+        println!("{}: ok", path.display());
+    } else {
+        println!("{}: not found; built-in defaults are valid", path.display());
+    }
+    Ok(())
 }
 
 #[cfg(feature = "fuzzing")]
