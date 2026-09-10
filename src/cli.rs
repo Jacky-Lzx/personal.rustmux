@@ -1,11 +1,28 @@
+use clap::builder::styling::{Color, RgbColor, Style, Styles};
 use clap::{ArgGroup, Args, Parser, Subcommand};
+
+const fn mocha(rgb: RgbColor) -> Style {
+    Style::new().fg_color(Some(Color::Rgb(rgb)))
+}
+
+const CATPPUCCIN_MOCHA_HELP: Styles = Styles::styled()
+    .header(mocha(RgbColor(166, 227, 161)).bold())
+    .usage(mocha(RgbColor(203, 166, 247)).bold())
+    .literal(mocha(RgbColor(137, 180, 250)).bold())
+    .placeholder(mocha(RgbColor(250, 179, 135)))
+    .error(mocha(RgbColor(243, 139, 168)).bold())
+    .valid(mocha(RgbColor(166, 227, 161)))
+    .invalid(mocha(RgbColor(249, 226, 175)))
+    .context(mocha(RgbColor(166, 173, 200)))
+    .context_value(mocha(RgbColor(180, 190, 254)));
 
 #[derive(Debug, Parser)]
 #[command(
     name = "rustmux",
     version,
     about = "A small terminal multiplexer written in Rust",
-    args_conflicts_with_subcommands = true
+    args_conflicts_with_subcommands = true,
+    styles = CATPPUCCIN_MOCHA_HELP
 )]
 pub(super) struct Cli {
     /// Create or attach to a session with this name
@@ -137,6 +154,7 @@ pub(super) struct SetupArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{ColorChoice, CommandFactory};
 
     fn parse(arguments: &[&str]) -> Cli {
         Cli::try_parse_from(arguments).unwrap()
@@ -146,6 +164,20 @@ mod tests {
     fn parses_zellij_style_session_option() {
         let cli = parse(&["rustmux", "--session", "work"]);
         assert_eq!(cli.session.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn help_uses_catppuccin_mocha_truecolor_styles() {
+        let help = Cli::command()
+            .color(ColorChoice::Always)
+            .render_help()
+            .ansi()
+            .to_string();
+
+        assert!(help.contains("\x1b[38;2;166;227;161m"));
+        assert!(help.contains("\x1b[38;2;203;166;247m"));
+        assert!(help.contains("\x1b[38;2;137;180;250m"));
+        assert!(help.contains("\x1b[38;2;250;179;135m"));
     }
 
     #[test]
