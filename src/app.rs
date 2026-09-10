@@ -36,11 +36,13 @@ use crate::session::{
     save_session_snapshot, validate_session_name,
 };
 use crate::terminal::{
-    CursorStyleTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
-    KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata, TerminalOscTracker,
-    base64_encode, format_duration, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
-    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
-    kitty_notification, outer_terminal_identity, terminal_parser_size, terminal_responses,
+    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
+    KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture, TerminalMetadata,
+    TerminalOscTracker, base64_encode, format_duration, kitty_dnd_for_child, kitty_dnd_id,
+    kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
+    kitty_graphics_uses_shared_memory, kitty_ipc_for_child, kitty_ipc_is_clipboard,
+    kitty_ipc_with_pane, kitty_notification, outer_terminal_identity, terminal_parser_size,
+    terminal_responses,
 };
 use crate::{
     CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
@@ -65,6 +67,8 @@ pub(super) struct Window {
     pub(super) terminal_osc: TerminalOscTracker,
     pub(super) kitty_graphics: KittyGraphicsParser,
     pub(super) kitty_dnd: KittyDndParser,
+    pub(super) kitty_ipc: KittyIpcParser,
+    pub(super) hyperlinks: HyperlinkTracker,
     pub(super) dnd_drag_registration: Option<Vec<u8>>,
     pub(super) dnd_drop_registration: Option<Vec<u8>>,
     pub(super) pending_graphics: Vec<Vec<u8>>,
@@ -226,6 +230,7 @@ pub(super) struct App {
     next_notification_id: u64,
     input_decoder: InputDecoder,
     dnd_input: KittyDndParser,
+    ipc_input: KittyIpcParser,
     config: Config,
     config_reloader: ConfigReloader,
     mode: String,
@@ -249,6 +254,7 @@ pub(super) struct App {
     outer_dnd_window: Option<usize>,
     outer_keyboard_flags: Option<u8>,
     outer_pointer_shape: Option<String>,
+    outer_rich_paste: Option<bool>,
     client_input: Vec<u8>,
 }
 
@@ -272,6 +278,7 @@ impl App {
             next_notification_id: 1,
             input_decoder: InputDecoder::default(),
             dnd_input: KittyDndParser::default(),
+            ipc_input: KittyIpcParser::default(),
             config,
             config_reloader,
             mode,
@@ -298,6 +305,7 @@ impl App {
             outer_dnd_window: None,
             outer_keyboard_flags: None,
             outer_pointer_shape: None,
+            outer_rich_paste: None,
             client_input: Vec::new(),
         };
         if let Some(snapshot) = load_session_snapshot(session_name)? {
@@ -580,6 +588,8 @@ impl App {
                     terminal_osc: TerminalOscTracker::default(),
                     kitty_graphics: KittyGraphicsParser::default(),
                     kitty_dnd: KittyDndParser::default(),
+                    kitty_ipc: KittyIpcParser::default(),
+                    hyperlinks: HyperlinkTracker::default(),
                     dnd_drag_registration: None,
                     dnd_drop_registration: None,
                     pending_graphics: Vec::new(),
@@ -592,6 +602,7 @@ impl App {
                 });
                 self.active = self.windows.len() - 1;
                 self.sync_keyboard_protocol();
+                self.sync_rich_paste_protocol();
                 self.send_focus_event(self.active, true);
                 self.renderer.invalidate();
                 Ok(id)
@@ -782,13 +793,16 @@ impl App {
         self.outer_dnd_window = None;
         self.outer_keyboard_flags = None;
         self.outer_pointer_shape = None;
+        self.outer_rich_paste = None;
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
         self.dnd_input = KittyDndParser::default();
+        self.ipc_input = KittyIpcParser::default();
         self.reset_mode();
         self.renderer.invalidate();
         self.sync_keyboard_protocol();
         self.sync_pointer_protocol();
+        self.sync_rich_paste_protocol();
         self.send_focus_event(self.active, true);
         self.redraw()
     }
@@ -850,8 +864,10 @@ impl App {
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
         self.dnd_input = KittyDndParser::default();
+        self.ipc_input = KittyIpcParser::default();
         self.outer_keyboard_flags = None;
         self.outer_pointer_shape = None;
+        self.outer_rich_paste = None;
         self.reset_mode();
         self.redraw_deadline = None;
         self.clipboard_status_until = None;
@@ -923,12 +939,32 @@ impl App {
     }
 
     fn handle_input(&mut self, bytes: &[u8]) -> Result<bool> {
-        let dnd = self.dnd_input.process(bytes);
+        let ipc = self.ipc_input.process(bytes);
+        for command in ipc.commands {
+            self.route_kitty_ipc_input(&command)?;
+        }
+        let dnd = self.dnd_input.process(&ipc.terminal);
         for command in dnd.commands {
             self.route_kitty_dnd_input(&command)?;
         }
         let decoded = self.input_decoder.push(&dnd.terminal);
         self.handle_decoded_input(&decoded)
+    }
+
+    fn route_kitty_ipc_input(&mut self, command: &[u8]) -> Result<()> {
+        if self.windows.is_empty() {
+            return Ok(());
+        }
+        if let Some((pane_id, command)) = kitty_ipc_for_child(command) {
+            if let Some(window) = self.windows.iter().find(|window| window.id == pane_id) {
+                write_fd(&window.master, &command)?;
+            }
+        } else if kitty_ipc_is_clipboard(command)
+            && self.windows[self.active].input_modes.rich_clipboard_paste()
+        {
+            write_fd(&self.windows[self.active].master, command)?;
+        }
+        Ok(())
     }
 
     fn route_kitty_dnd_input(&mut self, command: &[u8]) -> Result<()> {
@@ -1046,6 +1082,22 @@ impl App {
         self.set_outer_pointer_shape(&shape);
     }
 
+    fn sync_rich_paste_protocol(&mut self) {
+        if self.windows.is_empty() || self.client.is_none() {
+            return;
+        }
+        let enabled = self.windows[self.active].input_modes.rich_clipboard_paste();
+        if self.outer_rich_paste == Some(enabled) {
+            return;
+        }
+        self.write_client_protocol(if enabled {
+            b"\x1b[?5522h"
+        } else {
+            b"\x1b[?5522l"
+        });
+        self.outer_rich_paste = self.client.is_some().then_some(enabled);
+    }
+
     fn set_outer_pointer_shape(&mut self, shape: &str) {
         if self.client.is_none() || self.outer_pointer_shape.as_deref() == Some(shape) {
             return;
@@ -1098,6 +1150,7 @@ impl App {
         self.active = index;
         self.sync_keyboard_protocol();
         self.sync_pointer_protocol();
+        self.sync_rich_paste_protocol();
         self.send_focus_event(index, true);
     }
 
@@ -2264,15 +2317,22 @@ impl App {
         for command in dnd.commands {
             self.handle_window_dnd_command(index, &command);
         }
-        let terminal_changed = !dnd.terminal.is_empty();
+        let ipc = self.windows[index].kitty_ipc.process(&dnd.terminal);
+        for command in ipc.commands {
+            if let Some(command) = kitty_ipc_with_pane(&command, self.windows[index].id) {
+                self.write_client_protocol(&command);
+            }
+        }
+        let terminal_changed = !ipc.terminal.is_empty();
         let previous_keyboard_flags = self.windows[index].input_modes.keyboard_flags();
-        let mode_responses = self.windows[index].input_modes.process(&dnd.terminal);
+        let previous_rich_paste = self.windows[index].input_modes.rich_clipboard_paste();
+        let mode_responses = self.windows[index].input_modes.process(&ipc.terminal);
         let alternate_screen = self.windows[index].input_modes.alternate_screen();
         self.windows[index]
             .terminal_osc
             .set_alternate_screen(alternate_screen);
-        let osc_output = self.windows[index].terminal_osc.process(&dnd.terminal);
-        self.windows[index].cursor_style.process(&dnd.terminal);
+        let osc_output = self.windows[index].terminal_osc.process(&ipc.terminal);
+        self.windows[index].cursor_style.process(&ipc.terminal);
         let mut graphics_responses = Vec::new();
         let mut graphics_changed = false;
         let mut flush_graphics_immediately = false;
@@ -2289,7 +2349,7 @@ impl App {
             .command_output
             .command_started_at
             .is_some();
-        let completions = self.windows[index].command_output.process(&dnd.terminal);
+        let completions = self.windows[index].command_output.process(&ipc.terminal);
         if self.windows[index].command_output.take_bell() {
             self.windows[index].bell_pending = true;
         }
@@ -2301,13 +2361,18 @@ impl App {
         {
             self.windows[index].notification_applications.clear();
         }
-        self.windows[index].terminal.process(&dnd.terminal);
+        {
+            let window = &mut self.windows[index];
+            window
+                .hyperlinks
+                .process(&ipc.terminal, &mut window.terminal);
+        }
         let screen = self.windows[index].terminal.screen();
         let (screen_rows, screen_columns) = screen.size();
         let cell_width = self.terminal_pixels.0 / self.terminal_size.0.max(1);
         let cell_height = self.terminal_pixels.1 / self.terminal_size.1.max(1);
         graphics_responses.extend_from_slice(&terminal_responses(
-            &dnd.terminal,
+            &ipc.terminal,
             Winsize {
                 ws_col: screen_columns,
                 ws_row: screen_rows,
@@ -2327,6 +2392,11 @@ impl App {
             && previous_keyboard_flags != self.windows[index].input_modes.keyboard_flags()
         {
             self.sync_keyboard_protocol();
+        }
+        if index == self.active
+            && previous_rich_paste != self.windows[index].input_modes.rich_clipboard_paste()
+        {
+            self.sync_rich_paste_protocol();
         }
         if index == self.active && osc_output.pointer_changed {
             self.sync_pointer_protocol();
@@ -3269,5 +3339,6 @@ fn resize_window(
         return Err(io::Error::last_os_error().into());
     }
     window.terminal.screen_mut().set_size(rows, columns);
+    window.hyperlinks.resize(rows, columns);
     Ok(())
 }

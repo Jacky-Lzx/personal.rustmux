@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::env;
 use std::ffi::OsString;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
@@ -14,6 +15,8 @@ const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_KITTY_COMMAND_BYTES: usize = 64 * 1024 * 1024;
 const MAX_KITTY_DND_SEQUENCE_BYTES: usize = 16 * 1024;
 const KITTY_DND_PREFIX: &[u8] = b"\x1b]72;";
+const KITTY_CLIPBOARD_PREFIX: &[u8] = b"\x1b]5522;";
+const KITTY_FILE_PREFIX: &[u8] = b"\x1b]5113;";
 const STRING_TERMINATOR: &[u8] = b"\x1b\\";
 const KITTY_KEYBOARD_FLAGS: u8 = 0b1_1111;
 const MAX_MODE_STACK_DEPTH: usize = 32;
@@ -274,6 +277,346 @@ pub(super) fn fallback_command_output(bytes: &[u8]) -> String {
 pub(super) struct KittyDndParser {
     pending: Vec<u8>,
     pending_since: Option<Instant>,
+}
+
+#[derive(Default)]
+pub(super) struct KittyIpcParser {
+    pending: Vec<u8>,
+}
+
+#[derive(Default)]
+pub(super) struct KittyIpcOutput {
+    pub(super) terminal: Vec<u8>,
+    pub(super) commands: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct Hyperlink {
+    parameters: String,
+    uri: String,
+}
+
+#[derive(Default)]
+enum HyperlinkSequenceState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+    String,
+    StringEscape,
+    Osc(Vec<u8>),
+    OscEscape(Vec<u8>),
+}
+
+/// Mirrors OSC 8 state for the visible screen while vt100 handles the rest of
+/// terminal emulation. Links are re-emitted by the compositor when panes move.
+#[derive(Default)]
+pub(super) struct HyperlinkTracker {
+    state: HyperlinkSequenceState,
+    active: Option<Hyperlink>,
+    cells: Vec<Option<Hyperlink>>,
+    rows: u16,
+    columns: u16,
+}
+
+impl HyperlinkTracker {
+    pub(super) fn resize(&mut self, rows: u16, columns: u16) {
+        if self.rows == rows && self.columns == columns {
+            return;
+        }
+        let mut resized = vec![None; usize::from(rows) * usize::from(columns)];
+        for row in 0..self.rows.min(rows) {
+            for column in 0..self.columns.min(columns) {
+                resized[usize::from(row) * usize::from(columns) + usize::from(column)] = self
+                    .cells
+                    .get(usize::from(row) * usize::from(self.columns) + usize::from(column))
+                    .cloned()
+                    .flatten();
+            }
+        }
+        self.rows = rows;
+        self.columns = columns;
+        self.cells = resized;
+    }
+
+    pub(super) fn process(&mut self, bytes: &[u8], terminal: &mut vt100::Parser<TerminalMetadata>) {
+        let (rows, columns) = terminal.screen().size();
+        self.resize(rows, columns);
+        for &byte in bytes {
+            let state = std::mem::take(&mut self.state);
+            let ground = matches!(state, HyperlinkSequenceState::Ground);
+            let before = terminal.screen().cursor_position();
+            terminal.process(&[byte]);
+            let after = terminal.screen().cursor_position();
+
+            if ground && is_printable_terminal_byte(byte) {
+                self.set_cell(before.0, before.1, self.active.clone());
+                if after.0 == before.0 && after.1 > before.1 + 1 {
+                    for column in before.1 + 1..after.1 {
+                        self.set_cell(before.0, column, self.active.clone());
+                    }
+                }
+            } else if ground
+                && matches!(byte, b'\n' | 0x0b | 0x0c)
+                && before.0 + 1 == self.rows
+                && after.0 == before.0
+            {
+                self.scroll_up();
+            }
+
+            self.state = match state {
+                HyperlinkSequenceState::Ground => match byte {
+                    0x1b => HyperlinkSequenceState::Escape,
+                    0x9d => HyperlinkSequenceState::Osc(Vec::new()),
+                    _ => HyperlinkSequenceState::Ground,
+                },
+                HyperlinkSequenceState::Escape => match byte {
+                    b']' => HyperlinkSequenceState::Osc(Vec::new()),
+                    b'[' => HyperlinkSequenceState::Csi,
+                    b'P' | b'_' | b'^' => HyperlinkSequenceState::String,
+                    0x1b => HyperlinkSequenceState::Escape,
+                    _ => HyperlinkSequenceState::Ground,
+                },
+                HyperlinkSequenceState::Csi => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        HyperlinkSequenceState::Ground
+                    } else if byte == 0x1b {
+                        HyperlinkSequenceState::Escape
+                    } else {
+                        HyperlinkSequenceState::Csi
+                    }
+                }
+                HyperlinkSequenceState::String => match byte {
+                    0x1b => HyperlinkSequenceState::StringEscape,
+                    0x9c => HyperlinkSequenceState::Ground,
+                    _ => HyperlinkSequenceState::String,
+                },
+                HyperlinkSequenceState::StringEscape => {
+                    if byte == b'\\' {
+                        HyperlinkSequenceState::Ground
+                    } else {
+                        HyperlinkSequenceState::String
+                    }
+                }
+                HyperlinkSequenceState::Osc(mut content) => match byte {
+                    0x07 | 0x9c => {
+                        self.apply_osc(&content);
+                        HyperlinkSequenceState::Ground
+                    }
+                    0x1b => HyperlinkSequenceState::OscEscape(content),
+                    _ if content.len() < MAX_KITTY_DND_SEQUENCE_BYTES => {
+                        content.push(byte);
+                        HyperlinkSequenceState::Osc(content)
+                    }
+                    _ => HyperlinkSequenceState::Ground,
+                },
+                HyperlinkSequenceState::OscEscape(mut content) => {
+                    if byte == b'\\' {
+                        self.apply_osc(&content);
+                        HyperlinkSequenceState::Ground
+                    } else {
+                        if content.len() + 1 < MAX_KITTY_DND_SEQUENCE_BYTES {
+                            content.extend_from_slice(&[0x1b, byte]);
+                        }
+                        HyperlinkSequenceState::Osc(content)
+                    }
+                }
+            };
+        }
+    }
+
+    pub(super) fn osc8_at(&self, row: u16, column: u16, pane_id: usize) -> Option<String> {
+        let link = self
+            .cells
+            .get(usize::from(row) * usize::from(self.columns) + usize::from(column))?
+            .as_ref()?;
+        let mut parameters = link
+            .parameters
+            .split(':')
+            .filter(|field| !field.is_empty() && !field.starts_with("id="))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut hasher = DefaultHasher::new();
+        link.hash(&mut hasher);
+        parameters.push(format!("id=rustmux-{pane_id}-{:x}", hasher.finish()));
+        let parameters = parameters.join(":");
+        Some(format!("\x1b]8;{parameters};{}\x1b\\", link.uri))
+    }
+
+    fn apply_osc(&mut self, content: &[u8]) {
+        let Some(body) = content.strip_prefix(b"8;") else {
+            return;
+        };
+        let Some(separator) = body.iter().position(|byte| *byte == b';') else {
+            return;
+        };
+        let Ok(parameters) = std::str::from_utf8(&body[..separator]) else {
+            return;
+        };
+        let Ok(uri) = std::str::from_utf8(&body[separator + 1..]) else {
+            return;
+        };
+        self.active = (!uri.is_empty() && !uri.chars().any(char::is_control)).then(|| Hyperlink {
+            parameters: parameters.to_owned(),
+            uri: uri.to_owned(),
+        });
+    }
+
+    fn set_cell(&mut self, row: u16, column: u16, link: Option<Hyperlink>) {
+        if row < self.rows && column < self.columns {
+            self.cells[usize::from(row) * usize::from(self.columns) + usize::from(column)] = link;
+        }
+    }
+
+    fn scroll_up(&mut self) {
+        if self.columns == 0 || self.rows == 0 {
+            return;
+        }
+        self.cells.rotate_left(usize::from(self.columns));
+        let start = self.cells.len() - usize::from(self.columns);
+        self.cells[start..].fill(None);
+    }
+}
+
+fn is_printable_terminal_byte(byte: u8) -> bool {
+    matches!(byte, 0x20..=0x7e | 0xa0..=0xff)
+}
+
+impl KittyIpcParser {
+    pub(super) fn process(&mut self, bytes: &[u8]) -> KittyIpcOutput {
+        self.pending.extend_from_slice(bytes);
+        let mut output = KittyIpcOutput::default();
+        loop {
+            let starts = [KITTY_CLIPBOARD_PREFIX, KITTY_FILE_PREFIX];
+            let start = starts
+                .iter()
+                .filter_map(|prefix| find_subslice(&self.pending, prefix))
+                .min();
+            let Some(start) = start else {
+                let retained = starts
+                    .iter()
+                    .map(|prefix| partial_prefix_length(&self.pending, prefix))
+                    .max()
+                    .unwrap_or(0);
+                let visible = self.pending.len().saturating_sub(retained);
+                output.terminal.extend(self.pending.drain(..visible));
+                break;
+            };
+            output.terminal.extend(self.pending.drain(..start));
+            let Some(end) = find_subslice(&self.pending, STRING_TERMINATOR) else {
+                if self.pending.len() > MAX_KITTY_DND_SEQUENCE_BYTES {
+                    output.terminal.push(self.pending.remove(0));
+                    continue;
+                }
+                break;
+            };
+            let length = end + STRING_TERMINATOR.len();
+            output.commands.push(self.pending.drain(..length).collect());
+        }
+        output
+    }
+}
+
+pub(super) fn kitty_ipc_with_pane(command: &[u8], pane_id: usize) -> Option<Vec<u8>> {
+    rewrite_kitty_ipc(
+        command,
+        Some(format!(
+            "rm{pane_id}-{}",
+            hex_encode(kitty_ipc_id(command).unwrap_or_default().as_bytes())
+        )),
+    )
+}
+
+pub(super) fn kitty_ipc_for_child(command: &[u8]) -> Option<(usize, Vec<u8>)> {
+    let tagged = kitty_ipc_id(command)?;
+    let rest = tagged.strip_prefix("rm")?;
+    let (pane, original) = rest.split_once('-')?;
+    let pane = pane.parse().ok()?;
+    let original = String::from_utf8(hex_decode(original)?).ok()?;
+    let rewritten = rewrite_kitty_ipc(command, (!original.is_empty()).then_some(original))?;
+    Some((pane, rewritten))
+}
+
+pub(super) fn kitty_ipc_is_clipboard(command: &[u8]) -> bool {
+    command.starts_with(KITTY_CLIPBOARD_PREFIX)
+}
+
+fn kitty_ipc_id(command: &[u8]) -> Option<&str> {
+    let (prefix, separator) = if command.starts_with(KITTY_CLIPBOARD_PREFIX) {
+        (KITTY_CLIPBOARD_PREFIX, ':')
+    } else if command.starts_with(KITTY_FILE_PREFIX) {
+        (KITTY_FILE_PREFIX, ';')
+    } else {
+        return None;
+    };
+    let body = command
+        .strip_prefix(prefix)?
+        .strip_suffix(STRING_TERMINATOR)?;
+    let metadata = if command.starts_with(KITTY_CLIPBOARD_PREFIX) {
+        body.split(|byte| *byte == b';').next()?
+    } else {
+        body
+    };
+    std::str::from_utf8(metadata)
+        .ok()?
+        .split(separator)
+        .find_map(|field| field.strip_prefix("id="))
+}
+
+fn rewrite_kitty_ipc(command: &[u8], replacement_id: Option<String>) -> Option<Vec<u8>> {
+    let (prefix, separator) = if command.starts_with(KITTY_CLIPBOARD_PREFIX) {
+        (KITTY_CLIPBOARD_PREFIX, ':')
+    } else if command.starts_with(KITTY_FILE_PREFIX) {
+        (KITTY_FILE_PREFIX, ';')
+    } else {
+        return None;
+    };
+    let body = command
+        .strip_prefix(prefix)?
+        .strip_suffix(STRING_TERMINATOR)?;
+    let metadata_end = if command.starts_with(KITTY_CLIPBOARD_PREFIX) {
+        body.iter()
+            .position(|byte| *byte == b';')
+            .unwrap_or(body.len())
+    } else {
+        body.len()
+    };
+    let metadata = std::str::from_utf8(&body[..metadata_end]).ok()?;
+    let mut replaced = false;
+    let mut fields = Vec::new();
+    for field in metadata.split(separator) {
+        if field.starts_with("id=") {
+            if let Some(id) = replacement_id.as_ref() {
+                fields.push(format!("id={id}"));
+            }
+            replaced = true;
+        } else {
+            fields.push(field.to_owned());
+        }
+    }
+    if !replaced && let Some(id) = replacement_id {
+        fields.push(format!("id={id}"));
+    }
+    let mut result = prefix.to_vec();
+    result.extend_from_slice(fields.join(&separator.to_string()).as_bytes());
+    result.extend_from_slice(&body[metadata_end..]);
+    result.extend_from_slice(STRING_TERMINATOR);
+    Some(result)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hex_decode(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .collect()
 }
 
 #[derive(Default)]
@@ -736,6 +1079,7 @@ pub(super) struct InputModeTracker {
     alternate: KeyboardMode,
     alternate_screen: bool,
     focus_reporting: bool,
+    rich_clipboard_paste: bool,
 }
 
 #[derive(Default)]
@@ -760,6 +1104,10 @@ impl InputModeTracker {
 
     pub(super) fn focus_reporting(&self) -> bool {
         self.focus_reporting
+    }
+
+    pub(super) fn rich_clipboard_paste(&self) -> bool {
+        self.rich_clipboard_paste
     }
 
     pub(super) fn process(&mut self, bytes: &[u8]) -> Vec<u8> {
@@ -796,6 +1144,12 @@ impl InputModeTracker {
     }
 
     fn apply_csi(&mut self, parameters: &[u8], final_byte: u8, responses: &mut Vec<u8>) {
+        if final_byte == b'p' && parameters == b"?5522$" {
+            let status = if self.rich_clipboard_paste { 1 } else { 2 };
+            let _ = write!(responses, "\x1b[?5522;{status}$y");
+            return;
+        }
+
         if final_byte == b'u' {
             match parameters.first().copied() {
                 Some(b'?') if parameters == b"?" => {
@@ -848,6 +1202,7 @@ impl InputModeTracker {
                 match mode {
                     47 | 1047 | 1049 => self.alternate_screen = enabled,
                     1004 => self.focus_reporting = enabled,
+                    5522 => self.rich_clipboard_paste = enabled,
                     _ => {}
                 }
             }

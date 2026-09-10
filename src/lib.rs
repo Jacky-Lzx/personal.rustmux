@@ -40,7 +40,7 @@ const CLIPBOARD_STATUS: &str = "copied to system clipboard";
 const CLIPBOARD_STATUS_DURATION: Duration = Duration::from_secs(2);
 const NOTIFICATION_DURATION: Duration = Duration::from_secs(3);
 const TERMINAL_ENTER_SEQUENCE: &[u8] = b"\x1b[?1049h\x1b[>0u\x1b[?1004h\x1b[?1003h\x1b[?1006h";
-const TERMINAL_EXIT_SEQUENCE: &[u8] = b"\x1b[?2026l\x1b[0 q\x1b[0m\x1b]22;\x1b\\\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[<u\x1b>\x1b[?1049l";
+const TERMINAL_EXIT_SEQUENCE: &[u8] = b"\x1b[?2026l\x1b[0 q\x1b[0m\x1b]22;\x1b\\\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?5522l\x1b[<u\x1b>\x1b[?1049l";
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 

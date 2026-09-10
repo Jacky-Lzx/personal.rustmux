@@ -27,10 +27,11 @@ use crate::render::{
 use crate::session::ServerOutputDecoder;
 use crate::session::SessionInfo;
 use crate::terminal::{
-    CursorStyleTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
-    KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata, TerminalOscTracker,
-    base64_encode, format_duration, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
-    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
+    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
+    KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture, TerminalMetadata,
+    TerminalOscTracker, base64_encode, format_duration, kitty_dnd_for_child, kitty_dnd_id,
+    kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
+    kitty_graphics_uses_shared_memory, kitty_ipc_for_child, kitty_ipc_with_pane,
     kitty_notification, osc7_path, terminal_parser_size, terminal_responses,
 };
 
@@ -66,6 +67,8 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         terminal_osc: TerminalOscTracker::default(),
         kitty_graphics: KittyGraphicsParser::default(),
         kitty_dnd: KittyDndParser::default(),
+        kitty_ipc: KittyIpcParser::default(),
+        hyperlinks: HyperlinkTracker::default(),
         dnd_drag_registration: None,
         dnd_drop_registration: None,
         pending_graphics: Vec::new(),
@@ -1556,6 +1559,77 @@ fn decoder_keeps_split_arrow_sequence_together() {
     assert!(decoder.flush_deadline().is_some());
     assert_eq!(decoder.push(b"A"), b"\x1b[A");
     assert!(decoder.flush_deadline().is_none());
+}
+
+#[test]
+fn kitty_ipc_parser_extracts_split_clipboard_and_file_commands() {
+    let mut parser = KittyIpcParser::default();
+    assert_eq!(
+        parser.process(b"text\x1b]5522;type=read:id=a;").terminal,
+        b"text"
+    );
+    let output = parser.process(b"\x1b\\tail\x1b]5113;id=b;action=send\x1b\\");
+
+    assert_eq!(output.terminal, b"tail");
+    assert_eq!(output.commands.len(), 2);
+    assert!(output.commands[0].starts_with(b"\x1b]5522;"));
+    assert!(output.commands[1].starts_with(b"\x1b]5113;"));
+}
+
+#[test]
+fn kitty_ipc_ids_round_trip_through_a_pane_namespace() {
+    for command in [
+        b"\x1b]5522;type=write:mime=text/plain:id=clip;aGVsbG8=\x1b\\".as_slice(),
+        b"\x1b]5113;action=send;id=file;name=Zm9v\x1b\\".as_slice(),
+        b"\x1b]5522;type=read:mime=text/plain;\x1b\\".as_slice(),
+    ] {
+        let tagged = kitty_ipc_with_pane(command, 42).expect("valid Kitty IPC");
+        let (pane, restored) = kitty_ipc_for_child(&tagged).expect("namespaced response");
+        assert_eq!(pane, 42);
+        assert_eq!(restored, command);
+    }
+}
+
+#[test]
+fn input_modes_virtualize_rich_clipboard_paste_and_answer_queries() {
+    let mut modes = InputModeTracker::default();
+    assert_eq!(modes.process(b"\x1b[?5522$p"), b"\x1b[?5522;2$y");
+
+    modes.process(b"\x1b[?5522h");
+    assert!(modes.rich_clipboard_paste());
+    assert_eq!(modes.process(b"\x1b[?5522$p"), b"\x1b[?5522;1$y");
+
+    modes.process(b"\x1b[?5522l");
+    assert!(!modes.rich_clipboard_paste());
+}
+
+#[test]
+fn osc8_hyperlinks_follow_rendered_cells_and_are_namespaced_per_pane() {
+    let mut terminal = vt100::Parser::new_with_callbacks(2, 20, 0, TerminalMetadata::default());
+    let mut hyperlinks = HyperlinkTracker::default();
+    hyperlinks.process(
+        b"\x1b]8;id=source;https://example.com\x1b\\link\x1b]8;;\x1b\\ plain",
+        &mut terminal,
+    );
+
+    let first = hyperlinks.osc8_at(0, 0, 7).expect("linked cell");
+    assert!(first.contains("\x1b]8;id=rustmux-7-"));
+    assert!(first.ends_with(";https://example.com\x1b\\"));
+    assert_eq!(hyperlinks.osc8_at(0, 5, 7), None);
+}
+
+#[test]
+fn rendered_frame_reemits_and_closes_osc8_hyperlinks() {
+    let mut window = test_window(9, "links", 3, 30);
+    let output = b"\x1b]8;;https://example.com\x1b\\click\x1b]8;;\x1b\\";
+    window.hyperlinks.process(output, &mut window.terminal);
+
+    let mut renderer = Renderer::default();
+    let frame =
+        String::from_utf8(renderer.render(&[window], 0, (32, 7), "normal", None, &[])).unwrap();
+    assert!(frame.contains("\x1b]8;id=rustmux-9-"));
+    assert!(frame.contains(";https://example.com\x1b\\"));
+    assert!(frame.contains("click\x1b]8;;\x1b\\"));
 }
 
 #[test]

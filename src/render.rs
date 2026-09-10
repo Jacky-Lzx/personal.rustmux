@@ -299,9 +299,15 @@ impl Renderer {
                 first + usize::from(current.content_origin.0)
             );
             let mut previous_style = None;
+            let mut previous_hyperlink = None;
             for cell in &current.cells[row * columns + first..=row * columns + last] {
                 if cell.wide_continuation {
                     continue;
+                }
+                let hyperlink = cell.hyperlink.as_deref();
+                if previous_hyperlink != hyperlink {
+                    write_hyperlink(&mut output, hyperlink);
+                    previous_hyperlink = hyperlink;
                 }
                 if previous_style != Some(cell.style) {
                     write_cell_style(&mut output, cell.style);
@@ -312,6 +318,9 @@ impl Renderer {
                 } else {
                     output.extend_from_slice(cell.contents.as_bytes());
                 }
+            }
+            if previous_hyperlink.is_some() {
+                write_hyperlink(&mut output, None);
             }
         }
         if manager_changed || (cells_changed && current.session_manager.is_some()) {
@@ -472,6 +481,9 @@ impl FrameSnapshot {
                                 contents: cell.contents().to_owned(),
                                 style,
                                 wide_continuation: cell.is_wide_continuation(),
+                                hyperlink: (!cell.contents().is_empty())
+                                    .then(|| window.hyperlinks.osc8_at(row, column, window.id))
+                                    .flatten(),
                             };
                     }
                 }
@@ -582,6 +594,7 @@ pub(super) struct CellSnapshot {
     pub(super) contents: String,
     style: CellStyle,
     pub(super) wide_continuation: bool,
+    hyperlink: Option<String>,
 }
 
 pub(super) fn render_base_index(windows: &[Window], active: usize) -> usize {
@@ -619,6 +632,7 @@ fn overlay_pane_cells(
         contents: contents.to_string(),
         style: border_style,
         wide_continuation: false,
+        hyperlink: None,
     };
     let replace = |cells: &mut [CellSnapshot], row: u16, column: u16, cell: CellSnapshot| {
         let row = rect.row.saturating_add(row);
@@ -675,6 +689,9 @@ fn overlay_pane_cells(
                     contents: cell.contents().to_owned(),
                     style,
                     wide_continuation: cell.is_wide_continuation(),
+                    hyperlink: (!cell.contents().is_empty())
+                        .then(|| window.hyperlinks.osc8_at(row, column, window.id))
+                        .flatten(),
                 },
             );
         }
@@ -730,6 +747,7 @@ fn overlay_floating_cells(
         contents: contents.to_string(),
         style: CellStyle::active_border(),
         wide_continuation: false,
+        hyperlink: None,
     };
 
     for row in 0..layout.height {
@@ -780,6 +798,9 @@ fn overlay_floating_cells(
                     contents: cell.contents().to_owned(),
                     style,
                     wide_continuation: cell.is_wide_continuation(),
+                    hyperlink: (!cell.contents().is_empty())
+                        .then(|| window.hyperlinks.osc8_at(row, column, window.id))
+                        .flatten(),
                 },
             );
         }
@@ -792,6 +813,7 @@ impl CellSnapshot {
             contents: String::new(),
             style: CellStyle::plain(),
             wide_continuation: false,
+            hyperlink: None,
         }
     }
 }
@@ -817,11 +839,13 @@ pub(super) fn styled_text_cells(
             contents: grapheme.to_owned(),
             style,
             wide_continuation: false,
+            hyperlink: None,
         });
         cells.extend((1..width).map(|_| CellSnapshot {
             contents: String::new(),
             style,
             wide_continuation: true,
+            hyperlink: None,
         }));
     }
     cells
@@ -995,11 +1019,17 @@ pub(super) fn render_frame(
             output.extend_from_slice("│\x1b[0m".as_bytes());
         }
         let mut previous_style = None;
+        let mut previous_hyperlink = None;
         for column in 0..content_columns {
             let cell = &snapshot.cells
                 [usize::from(row) * usize::from(content_columns) + usize::from(column)];
             if cell.wide_continuation {
                 continue;
+            }
+            let hyperlink = cell.hyperlink.as_deref();
+            if previous_hyperlink != hyperlink {
+                write_hyperlink(&mut output, hyperlink);
+                previous_hyperlink = hyperlink;
             }
             if previous_style != Some(cell.style) {
                 write_cell_style(&mut output, cell.style);
@@ -1010,6 +1040,9 @@ pub(super) fn render_frame(
             } else {
                 output.push(b' ');
             }
+        }
+        if previous_hyperlink.is_some() {
+            write_hyperlink(&mut output, None);
         }
         if snapshot.outer_border {
             write_rgb_style(
@@ -1851,6 +1884,14 @@ fn draw_powerline_segments(
         write_rgb_style(output, *background, Some(bar_background), false);
         output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
         used += label_width + 2;
+    }
+}
+
+fn write_hyperlink(output: &mut Vec<u8>, hyperlink: Option<&str>) {
+    if let Some(open) = hyperlink {
+        output.extend_from_slice(open.as_bytes());
+    } else {
+        output.extend_from_slice(b"\x1b]8;;\x1b\\");
     }
 }
 
