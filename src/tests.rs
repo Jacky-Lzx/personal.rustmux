@@ -1577,6 +1577,18 @@ fn kitty_ipc_parser_extracts_split_clipboard_and_file_commands() {
 }
 
 #[test]
+fn kitty_ipc_parser_releases_an_ambiguous_escape() {
+    let mut parser = KittyIpcParser::default();
+
+    let output = parser.process(b"\x1b");
+    assert!(output.terminal.is_empty());
+    assert!(output.commands.is_empty());
+    assert!(parser.flush_deadline().is_some());
+    assert_eq!(parser.flush(), b"\x1b");
+    assert!(parser.flush_deadline().is_none());
+}
+
+#[test]
 fn kitty_ipc_ids_round_trip_through_a_pane_namespace() {
     for command in [
         b"\x1b]5522;type=write:mime=text/plain:id=clip;aGVsbG8=\x1b\\".as_slice(),

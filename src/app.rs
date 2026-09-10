@@ -630,6 +630,19 @@ impl App {
             self.track_foreground_applications();
             self.flush_scheduled_redraw()?;
             let mut expired_input = Vec::new();
+            let expired_ipc = self.ipc_input.flush_if_expired();
+            if !expired_ipc.is_empty() {
+                let dnd = self.dnd_input.process(&expired_ipc);
+                for command in dnd.commands {
+                    self.route_kitty_dnd_input(&command)?;
+                }
+                let mut terminal = dnd.terminal;
+                terminal.extend(self.dnd_input.flush());
+                expired_input.extend(self.input_decoder.push(&terminal));
+                // IPC already waited for the shared escape-sequence timeout;
+                // release ambiguity in the downstream parsers immediately.
+                expired_input.extend(self.input_decoder.flush());
+            }
             let expired_dnd = self.dnd_input.flush_if_expired();
             if !expired_dnd.is_empty() {
                 expired_input.extend(self.input_decoder.push(&expired_dnd));
@@ -2953,6 +2966,7 @@ impl App {
             self.redraw_deadline,
             self.clipboard_status_until,
             self.notification_until,
+            self.ipc_input.flush_deadline(),
             self.dnd_input.flush_deadline(),
             self.input_decoder.flush_deadline(),
         ]

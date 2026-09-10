@@ -282,6 +282,7 @@ pub(super) struct KittyDndParser {
 #[derive(Default)]
 pub(super) struct KittyIpcParser {
     pending: Vec<u8>,
+    pending_since: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -529,7 +530,35 @@ impl KittyIpcParser {
             let length = end + STRING_TERMINATOR.len();
             output.commands.push(self.pending.drain(..length).collect());
         }
+
+        let starts = [KITTY_CLIPBOARD_PREFIX, KITTY_FILE_PREFIX];
+        if self.pending.is_empty() || starts.iter().any(|prefix| self.pending.starts_with(prefix)) {
+            self.pending_since = None;
+        } else if self.pending_since.is_none() {
+            self.pending_since = Some(Instant::now());
+        }
         output
+    }
+
+    pub(super) fn flush_if_expired(&mut self) -> Vec<u8> {
+        if self
+            .pending_since
+            .is_some_and(|since| since.elapsed() >= ESCAPE_SEQUENCE_TIMEOUT)
+        {
+            self.flush()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub(super) fn flush_deadline(&self) -> Option<Instant> {
+        self.pending_since
+            .and_then(|since| since.checked_add(ESCAPE_SEQUENCE_TIMEOUT))
+    }
+
+    pub(super) fn flush(&mut self) -> Vec<u8> {
+        self.pending_since = None;
+        std::mem::take(&mut self.pending)
     }
 }
 
