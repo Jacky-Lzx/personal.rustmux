@@ -575,6 +575,7 @@ fn window_bar_marks_a_tab_when_one_of_its_panes_has_a_pending_bell() {
     let frame = renderer.render(&windows, 0, (40, 15), "locked", None, &[]);
     let frame = String::from_utf8(frame).unwrap();
     assert!(frame.contains(" 1 shell [!] "));
+    assert!(frame.contains("─ shell [!] "));
     assert!(frame.contains("38;2;250;179;135"));
 
     windows[1].bell_pending = false;

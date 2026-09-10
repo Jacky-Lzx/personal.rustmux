@@ -642,7 +642,11 @@ fn overlay_pane_cells(
             }
         }
     }
-    let title = format!("─ {} ", window.terminal_title());
+    let title = if window.bell_pending {
+        format!("─ {} [!] ", window.terminal_title())
+    } else {
+        format!("─ {} ", window.terminal_title())
+    };
     let title_cells = styled_text_cells(
         &title,
         usize::from(rect.width.saturating_sub(2)),
