@@ -4,7 +4,7 @@
     <h1 class="hero-title">
       <img class="hero-brand-icon" src="theme/rustmux-icon.svg" alt="" aria-hidden="true">
       <span class="hero-wordmark">
-        <span class="hero-wordmark-name">Rust<span>mux</span></span>
+        <span class="hero-wordmark-name">Rus<span class="hero-gradient-letter">t</span><span class="hero-wordmark-accent">mux</span></span>
         <span class="hero-wordmark-tagline">TERMINAL MULTIPLEXER</span>
       </span>
     </h1>
@@ -36,6 +36,7 @@
           <span class="mux-pane-title">~/projects/rustmux</span>
           <div class="mux-command"><span>❯</span> cargo test</div>
           <div class="mux-output"><strong>running 120 tests</strong><br><span class="mux-success">✓</span> 120 passed<br><span class="mux-muted">finished in 0.12s</span></div>
+          <div class="mux-command"><span>❯</span></div>
         </section>
         <section class="mux-pane">
           <span class="mux-pane-title">yazi</span>

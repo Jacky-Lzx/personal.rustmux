@@ -16,7 +16,7 @@
     title.innerHTML = `
       <span class="rustmux-brand">
         <img class="rustmux-header-icon" src="${iconUrl}" alt="" aria-hidden="true">
-        <span>Rustmux</span>
+        <span>Rus<span class="hero-gradient-letter">t</span><span class="hero-wordmark-accent">mux</span></span>
         <span class="rustmux-docs-label">Docs</span>
         <span class="rustmux-version">v0.1</span>
       </span>`;

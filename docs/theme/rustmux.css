@@ -208,9 +208,9 @@ body::before {
 .chapter .part-title {
   margin: 27px 11px 9px;
   color: var(--subtle);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 850;
-  letter-spacing: 0.16em;
+  /* letter-spacing: 0.16em; */
   text-transform: uppercase;
 }
 
@@ -291,6 +291,10 @@ a {
   margin-bottom: 62px;
 }
 
+.hero-copy {
+  min-width: 0;
+}
+
 .hero-kicker {
   display: inline-flex;
   align-items: center;
@@ -337,9 +341,18 @@ a {
   font-size: clamp(3.4rem, 6vw, 5.3rem);
   font-weight: 700;
   line-height: 0.86;
+  white-space: nowrap;
 }
 
-.hero-wordmark-name span {
+.hero-gradient-letter {
+  color: transparent;
+  background: linear-gradient(90deg, var(--fg) 12%, var(--green) 88%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.hero-wordmark-accent {
   color: var(--green);
 }
 
@@ -413,6 +426,7 @@ a {
 
 .terminal-window {
   position: relative;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: 14px;
@@ -490,7 +504,7 @@ a {
   padding: 3px 15px 3px 12px;
   clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%, 8px 50%);
   color: #1e1e2e;
-  background: #b4befe;
+  background: #cdd6f4;
   font-weight: 850;
 }
 
@@ -498,10 +512,10 @@ a {
   background: var(--green);
 }
 
-.mux-tab:last-child {
-  color: #cdd6f4;
-  background: #313244;
-}
+/* .mux-tab:last-child { */
+  /* color: #cdd6f4; */
+  /* background: #313244; */
+/* } */
 
 .mux-panes {
   display: grid;
@@ -515,7 +529,7 @@ a {
 .mux-pane {
   position: relative;
   min-width: 0;
-  padding: 27px 18px 18px;
+  padding: 10px 10px 10px;
   background: rgba(30, 30, 46, 0.42);
 }
 
@@ -542,7 +556,8 @@ a {
 }
 
 .mux-command {
-  margin-bottom: 38px;
+  margin-top: 8px;
+  margin-bottom: 8px;
   color: #cdd6f4;
   font-size: 13px;
 }
@@ -554,7 +569,7 @@ a {
 
 .mux-output {
   color: #bac2de;
-  line-height: 1.72;
+  /* line-height: 1.72; */
 }
 
 .mux-output strong {
@@ -567,8 +582,8 @@ a {
 
 .mux-files {
   display: grid;
-  gap: 3px;
-  margin: -7px 0 0 !important;
+  /* gap: 3px; */
+  /* margin: -7px 0 0 !important; */
   padding: 0 !important;
   list-style: none;
 }
@@ -771,7 +786,7 @@ table th {
   color: var(--green);
   background: var(--table-header-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12pt;
+  font-size: 0.941176rem;
 }
 
 table td,
@@ -875,7 +890,7 @@ kbd {
   }
 }
 
-@media (max-width: 980px) {
+@media (max-width: 980px), (max-aspect-ratio: 1/1) {
   .landing-hero {
     grid-template-columns: 1fr;
     min-height: 0;
