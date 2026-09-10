@@ -529,7 +529,15 @@ impl FrameSnapshot {
                 Vec::new(),
                 |mut tabs, window| {
                     if !tabs.iter().any(|(id, _)| *id == window.tab_id) {
-                        tabs.push((window.tab_id, window.name.clone()));
+                        let bell_pending = windows.iter().any(|candidate| {
+                            candidate.tab_id == window.tab_id && candidate.bell_pending
+                        });
+                        let name = if bell_pending {
+                            format!("[!] {}", window.name)
+                        } else {
+                            window.name.clone()
+                        };
+                        tabs.push((window.tab_id, name));
                     }
                     tabs
                 },
@@ -1122,20 +1130,15 @@ fn draw_window_bar(
     let tabs_width = tabs_width.saturating_sub(session_width);
     let base = render_base_index(windows, active);
     let active_tab = windows[base].tab_id;
-    let mut seen = Vec::new();
     let mut tabs = Vec::new();
-    for window in windows.iter().filter(|window| !window.floating) {
-        if seen.contains(&window.tab_id) {
-            continue;
-        }
-        seen.push(window.tab_id);
-        let display_index = seen.len();
-        let color = if window.tab_id == active_tab {
+    for (index, (tab_id, name)) in snapshot.tabs.iter().enumerate() {
+        let display_index = index + 1;
+        let color = if *tab_id == active_tab {
             MOCHA_GREEN
         } else {
             MOCHA_TEXT
         };
-        tabs.push((format!("{display_index} {}", window.name), color));
+        tabs.push((format!("{display_index} {name}"), color));
     }
     draw_powerline_segments(output, &tabs, tabs_width, MOCHA_BASE);
     if let Some(status) = compact_status {

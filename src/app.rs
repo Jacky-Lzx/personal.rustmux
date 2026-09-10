@@ -67,6 +67,7 @@ pub(super) struct Window {
     pub(super) dnd_drop_registration: Option<Vec<u8>>,
     pub(super) pending_graphics: Vec<Vec<u8>>,
     pub(super) history_mode: bool,
+    pub(super) bell_pending: bool,
     pub(super) command_output: SemanticOutputCapture,
     pub(super) notification_applications: Vec<String>,
     pub(super) temporary_file: Option<PathBuf>,
@@ -571,6 +572,7 @@ impl App {
                     dnd_drop_registration: None,
                     pending_graphics: Vec::new(),
                     history_mode: false,
+                    bell_pending: false,
                     command_output: SemanticOutputCapture::default(),
                     notification_applications: Vec::new(),
                     temporary_file: options.temporary_file,
@@ -2147,6 +2149,7 @@ impl App {
     }
 
     fn process_pty_output(&mut self, index: usize, output: &[u8]) -> Result<()> {
+        let bell_was_pending = self.windows[index].bell_pending;
         let parsed = self.windows[index].kitty_graphics.process(output);
         let dnd = self.windows[index].kitty_dnd.process(&parsed.terminal);
         for command in dnd.commands {
@@ -2171,6 +2174,9 @@ impl App {
             .command_started_at
             .is_some();
         let completions = self.windows[index].command_output.process(&dnd.terminal);
+        if self.windows[index].command_output.take_bell() {
+            self.windows[index].bell_pending = true;
+        }
         if !command_was_running
             && self.windows[index]
                 .command_output
@@ -2216,10 +2222,11 @@ impl App {
         if !completions.is_empty() {
             self.windows[index].notification_applications.clear();
         }
+        let bell_changed = bell_was_pending != self.windows[index].bell_pending;
         let base_tab = self.windows[render_base_index(&self.windows, self.active)].tab_id;
         let visible = index == self.active
             || (!self.windows[index].floating && self.windows[index].tab_id == base_tab);
-        if visible && (terminal_changed || graphics_changed) {
+        if bell_changed || (visible && (terminal_changed || graphics_changed)) {
             if flush_graphics_immediately {
                 // A shared-memory object must be opened by the outer terminal
                 // promptly. Flush every older graphics command with it so a
@@ -2242,6 +2249,7 @@ impl App {
             self.next_notification_id
         );
         self.next_notification_id = self.next_notification_id.wrapping_add(1).max(1);
+        self.windows[index].bell_pending = true;
         let window = &self.windows[index];
         let title = "rustmux: command finished";
         let window_title = window.terminal_title().chars().take(80).collect::<String>();
@@ -2662,6 +2670,9 @@ impl App {
 
     fn redraw(&mut self) -> Result<()> {
         self.redraw_deadline = None;
+        if let Some(window) = self.windows.get_mut(self.active) {
+            window.bell_pending = false;
+        }
         if self.windows.is_empty() || self.client.is_none() {
             return Ok(());
         }

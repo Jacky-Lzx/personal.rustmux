@@ -79,6 +79,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
 pub(super) struct SemanticOutputCapture {
     state: TextCaptureState,
     capturing: bool,
+    bell_received: bool,
     pub(super) semantic_boundaries: bool,
     current: Vec<u8>,
     last: Vec<u8>,
@@ -93,6 +94,8 @@ enum TextCaptureState {
     Csi,
     Osc(Vec<u8>),
     OscEscape(Vec<u8>),
+    String,
+    StringEscape,
 }
 
 impl SemanticOutputCapture {
@@ -103,6 +106,10 @@ impl SemanticOutputCapture {
             self.state = match state {
                 TextCaptureState::Ground => match byte {
                     0x1b => TextCaptureState::Escape,
+                    0x07 => {
+                        self.bell_received = true;
+                        TextCaptureState::Ground
+                    }
                     b'\r' => TextCaptureState::Ground,
                     b'\n' | b'\t' if self.capturing => {
                         self.push(byte);
@@ -121,6 +128,7 @@ impl SemanticOutputCapture {
                 TextCaptureState::Escape => match byte {
                     b'[' => TextCaptureState::Csi,
                     b']' => TextCaptureState::Osc(Vec::new()),
+                    b'P' | b'X' | b'^' | b'_' => TextCaptureState::String,
                     _ => TextCaptureState::Ground,
                 },
                 TextCaptureState::Csi => {
@@ -158,9 +166,29 @@ impl SemanticOutputCapture {
                         TextCaptureState::Osc(control)
                     }
                 }
+                TextCaptureState::String => {
+                    if byte == 0x1b {
+                        TextCaptureState::StringEscape
+                    } else {
+                        TextCaptureState::String
+                    }
+                }
+                TextCaptureState::StringEscape => {
+                    if byte == b'\\' {
+                        TextCaptureState::Ground
+                    } else if byte == 0x1b {
+                        TextCaptureState::StringEscape
+                    } else {
+                        TextCaptureState::String
+                    }
+                }
             };
         }
         completions
+    }
+
+    pub(super) fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.bell_received)
     }
 
     fn finish_osc(&mut self, control: &[u8]) -> Option<Duration> {

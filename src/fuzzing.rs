@@ -141,6 +141,7 @@ pub fn render(data: &[u8]) {
         dnd_drop_registration: None,
         pending_graphics: Vec::new(),
         history_mode: false,
+        bell_pending: false,
         command_output: SemanticOutputCapture::default(),
         notification_applications: Vec::new(),
         temporary_file: None,

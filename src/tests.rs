@@ -68,6 +68,7 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         dnd_drop_registration: None,
         pending_graphics: Vec::new(),
         history_mode: false,
+        bell_pending: false,
         command_output: SemanticOutputCapture::default(),
         notification_applications: Vec::new(),
         temporary_file: None,
@@ -546,6 +547,39 @@ fn window_bar_shows_the_session_name_before_the_first_window() {
     let first_window = frame.find(" 1 fish ").unwrap();
     assert!(session < first_window);
     assert!(frame.contains("38;2;205;214;244;48;2;30;30;46"));
+}
+
+#[test]
+fn window_bar_marks_a_tab_when_one_of_its_panes_has_a_pending_bell() {
+    let mut first = test_window(1, "shell", 10, 18);
+    first.pane_framed = true;
+    first.pane_rect = PaneRect {
+        column: 0,
+        row: 0,
+        width: 20,
+        height: 12,
+    };
+    let mut second = test_window(2, "shell", 10, 18);
+    second.tab_id = first.tab_id;
+    second.pane_framed = true;
+    second.pane_rect = PaneRect {
+        column: 20,
+        row: 0,
+        width: 20,
+        height: 12,
+    };
+    second.bell_pending = true;
+    let mut renderer = Renderer::default();
+    let mut windows = vec![first, second];
+
+    let frame = renderer.render(&windows, 0, (40, 15), "locked", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+    assert!(frame.contains(" 1 [!] shell "));
+
+    windows[1].bell_pending = false;
+    let frame = renderer.render(&windows, 0, (40, 15), "locked", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+    assert!(!frame.contains("[!]"));
 }
 
 #[test]
@@ -1558,6 +1592,18 @@ fn kitty_notification_uses_osc_99_with_base64_content_and_bell() {
     assert!(notification.contains("d=0:e=1:p=title;ZG9uZQ=="));
     assert!(notification.contains("d=0:e=1:p=body;ZmluaXNoZWQgaW4gMTAuMHM="));
     assert!(notification.ends_with("\x1b]99;i=rustmux-1-2;\x1b\\\x07"));
+}
+
+#[test]
+fn semantic_output_capture_reports_only_terminal_bells() {
+    let mut capture = SemanticOutputCapture::default();
+
+    capture.process(b"before\x07after");
+    assert!(capture.take_bell());
+    assert!(!capture.take_bell());
+
+    capture.process(b"\x1b]0;title\x07\x1bPpayload\x07\x1b\\");
+    assert!(!capture.take_bell());
 }
 
 #[test]
