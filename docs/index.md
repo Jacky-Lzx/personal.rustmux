@@ -1,7 +1,13 @@
 <section class="landing-hero">
   <div class="hero-copy">
     <p class="hero-kicker">Fast, persistent, terminal-native</p>
-    <h1 class="hero-title">Rust<span>mux</span></h1>
+    <h1 class="hero-title">
+      <img class="hero-brand-icon" src="theme/rustmux-icon.svg" alt="" aria-hidden="true">
+      <span class="hero-wordmark">
+        <span class="hero-wordmark-name">Rust<span>mux</span></span>
+        <span class="hero-wordmark-tagline">TERMINAL MULTIPLEXER</span>
+      </span>
+    </h1>
     <p class="hero-summary">A small terminal multiplexer built for focused work: persistent sessions, fluid pane layouts, and modern Kitty protocols without a heavy layer between you and your shell.</p>
     <div class="hero-actions">
       <a class="primary-button" href="getting-started/quick-start.html">Get started <span aria-hidden="true">→</span></a>
@@ -16,18 +22,39 @@
   <div class="terminal-window" aria-label="Rustmux terminal preview">
     <div class="terminal-chrome">
       <i class="terminal-dot"></i><i class="terminal-dot"></i><i class="terminal-dot"></i>
-      <span class="terminal-label">rustmux — work</span>
+      <span class="terminal-label">Rustmux — work</span>
     </div>
-    <pre><code><span class="dim">┌─ Rustmux (work) ─────────────────┐</span>
- <span class="accent">1 editor</span>  ›  <span class="prompt">2 server</span>  ›  3 notes
-<span class="dim">├────────────────┬─────────────────┤</span>
-│ <span class="prompt">❯</span> cargo test   │ <span class="prompt">❯</span> yazi          │
-│                │                 │
-│ <span class="accent">running 110</span>    │  src/           │
-│ tests          │  docs/          │
-│                │  Cargo.toml     │
-<span class="dim">└────────────────┴─────────────────┘</span>
- <span class="dim">Ctrl b</span>  ›  <span class="prompt">NORMAL</span>  ›  ? HELP</code></pre>
+    <div class="mux-preview">
+      <div class="mux-window-bar">
+        <span class="mux-session">Rustmux <span>(work)</span></span>
+        <span class="mux-tab">1 editor</span>
+        <span class="mux-tab active">2 server</span>
+        <span class="mux-tab">3 notes</span>
+      </div>
+      <div class="mux-panes">
+        <section class="mux-pane active">
+          <span class="mux-pane-title">~/projects/rustmux</span>
+          <div class="mux-command"><span>❯</span> cargo test</div>
+          <div class="mux-output"><strong>running 120 tests</strong><br><span class="mux-success">✓</span> 120 passed<br><span class="mux-muted">finished in 0.12s</span></div>
+        </section>
+        <section class="mux-pane">
+          <span class="mux-pane-title">yazi</span>
+          <div class="mux-command"><span>❯</span> yazi</div>
+          <ul class="mux-files">
+            <li class="selected"><b>›</b> src/</li>
+            <li><b>›</b> docs/</li>
+            <li><b>·</b> Cargo.toml</li>
+            <li><b>·</b> README.md</li>
+          </ul>
+        </section>
+      </div>
+      <div class="mux-status-bar">
+        <span class="mux-key">Ctrl b</span>
+        <span class="mux-mode">NORMAL</span>
+        <span class="mux-key">?</span>
+        <span class="mux-help">HELP</span>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -53,10 +80,10 @@ Rustmux runs a lightweight background session server. Detaching a client leaves 
 
 ## Platform support
 
-| Platform | Status | Notes |
-| --- | --- | --- |
-| macOS | Supported | Kitty provides the most complete feature set |
-| Linux | Supported | CI continuously runs tests and fuzz smoke tests |
-| Windows | Not yet supported | The current implementation depends on Unix PTYs |
+| Platform | Status            | Notes                                           |
+| -------- | ----------------- | ----------------------------------------------- |
+| macOS    | Supported         | Kitty provides the most complete feature set    |
+| Linux    | Supported         | CI continuously runs tests and fuzz smoke tests |
+| Windows  | Not yet supported | The current implementation depends on Unix PTYs |
 
 > Rustmux is still at an early stage. Configuration and persistence formats may evolve.

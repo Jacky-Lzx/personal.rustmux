@@ -55,7 +55,7 @@ html.light {
 }
 
 html {
-  font-size: 16px;
+  font-size: 17px;
   scroll-behavior: smooth;
   scrollbar-color: var(--scrollbar) transparent;
 }
@@ -114,24 +114,19 @@ body::before {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-size: 16px;
+  font-size: 24px;
 }
 
-.rustmux-mark {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  color: #0a110c;
-  border-radius: 8px;
-  background: linear-gradient(145deg, #c0f5ba, var(--green-strong));
-  box-shadow: 0 0 24px rgba(166, 227, 161, 0.18);
-  font-size: 14px;
+.rustmux-header-icon {
+  display: block;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
 }
 
 .rustmux-docs-label {
   color: var(--subtle);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -175,7 +170,7 @@ body::before {
 }
 
 .chapter {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .chapter li {
@@ -230,7 +225,7 @@ body::before {
 main {
   position: relative;
   max-width: var(--content-max-width);
-  padding-top: 52px;
+  padding-top: 46px;
   padding-bottom: 120px;
 }
 
@@ -253,7 +248,7 @@ main h2 {
   margin-top: 58px;
   padding-bottom: 11px;
   border-bottom: 1px solid var(--border);
-  font-size: 1.48rem;
+  font-size: 2.48rem;
 }
 
 main h2::before {
@@ -284,16 +279,16 @@ a {
 
 .home-page main {
   max-width: 1080px;
-  padding-top: 64px;
+  padding-top: 44px;
 }
 
 .landing-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr);
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 1fr);
   gap: clamp(44px, 7vw, 84px);
   align-items: center;
-  min-height: 510px;
-  margin-bottom: 72px;
+  min-height: 440px;
+  margin-bottom: 62px;
 }
 
 .hero-kicker {
@@ -317,22 +312,49 @@ a {
 }
 
 .hero-title {
+  display: flex;
+  align-items: center;
+  gap: clamp(18px, 2.4vw, 26px);
   margin: 0 0 22px;
-  font-size: clamp(3.6rem, 8vw, 6.2rem);
-  line-height: 0.92;
-  letter-spacing: -0.075em;
 }
 
-.hero-title span {
+.hero-brand-icon {
+  display: block;
+  width: clamp(120px, 14vw, 150px);
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.hero-wordmark {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.hero-wordmark-name {
+  color: var(--fg);
+  font-size: clamp(3.4rem, 6vw, 5.3rem);
+  font-weight: 700;
+  line-height: 0.86;
+}
+
+.hero-wordmark-name span {
   color: var(--green);
 }
 
+.hero-wordmark-tagline {
+  padding-left: 4px;
+  color: #778296;
+  font: 700 clamp(8px, 0.85vw, 11px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.34em;
+  white-space: nowrap;
+}
+
 .hero-summary {
-  max-width: 590px;
+  max-width: 600px;
   margin: 0;
   color: #aeb8c7;
-  font-size: 1.06rem;
-  line-height: 1.78;
 }
 
 .hero-actions {
@@ -380,7 +402,7 @@ a {
   flex-wrap: wrap;
   gap: 8px 18px;
   color: var(--subtle);
-  font: 650 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 650 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .hero-meta span::before {
@@ -434,28 +456,180 @@ a {
   font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.terminal-window pre {
-  min-height: 285px;
-  margin: 0;
-  padding: 24px !important;
-  border: 0;
-  border-radius: 0;
-  background: transparent !important;
-  box-shadow: none;
+.mux-preview {
+  padding: 20px;
+  color: #cdd6f4;
+  background:
+    radial-gradient(circle at 70% 16%, rgba(137, 180, 250, 0.08), transparent 42%),
+    #0c0e14;
+  font: 650 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-.terminal-window pre code {
-  color: #c8d1dc;
-  font-size: 12px;
-  line-height: 1.78;
+.mux-window-bar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 11px;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
-.terminal-window .prompt { color: var(--green); }
-.terminal-window .accent { color: var(--cyan); }
-.terminal-window .dim { color: #657084; }
+.mux-session {
+  flex: 0 0 auto;
+  color: #bac2de;
+  font-weight: 800;
+}
+
+.mux-session span {
+  color: #7f849c;
+}
+
+.mux-tab {
+  flex: 0 0 auto;
+  padding: 3px 15px 3px 12px;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%, 8px 50%);
+  color: #1e1e2e;
+  background: #b4befe;
+  font-weight: 850;
+}
+
+.mux-tab.active {
+  background: var(--green);
+}
+
+.mux-tab:last-child {
+  color: #cdd6f4;
+  background: #313244;
+}
+
+.mux-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 214px;
+  overflow: visible;
+  border: 1px solid #585b70;
+  border-radius: 3px;
+}
+
+.mux-pane {
+  position: relative;
+  min-width: 0;
+  padding: 27px 18px 18px;
+  background: rgba(30, 30, 46, 0.42);
+}
+
+.mux-pane + .mux-pane {
+  border-left: 1px solid #585b70;
+}
+
+.mux-pane.active {
+  box-shadow: 0 0 0 1px rgba(166, 227, 161, 0.78) inset;
+}
+
+.mux-pane-title {
+  position: absolute;
+  top: 0;
+  left: 13px;
+  padding: 1px 7px 2px;
+  color: #7f849c;
+  background: #0c0e14;
+  transform: translateY(-50%);
+}
+
+.mux-pane.active .mux-pane-title {
+  color: var(--green);
+}
+
+.mux-command {
+  margin-bottom: 38px;
+  color: #cdd6f4;
+  font-size: 13px;
+}
+
+.mux-command span,
+.mux-success {
+  color: var(--green);
+}
+
+.mux-output {
+  color: #bac2de;
+  line-height: 1.72;
+}
+
+.mux-output strong {
+  color: var(--cyan);
+}
+
+.mux-muted {
+  color: #6c7086;
+}
+
+.mux-files {
+  display: grid;
+  gap: 3px;
+  margin: -7px 0 0 !important;
+  padding: 0 !important;
+  list-style: none;
+}
+
+.mux-files li {
+  padding: 3px 9px;
+  color: #a6adc8;
+  border-radius: 3px;
+}
+
+.mux-files li.selected {
+  color: #cdd6f4;
+  background: #313244;
+}
+
+.mux-files b {
+  display: inline-block;
+  width: 14px;
+  color: var(--cyan);
+}
+
+.mux-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-top: 9px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.mux-key,
+.mux-mode,
+.mux-help {
+  padding: 3px 14px 3px 12px;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 0 100%, 7px 50%);
+}
+
+.mux-key:first-child {
+  padding-left: 8px;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 0 100%);
+}
+
+.mux-key {
+  color: #1e1e2e;
+  background: var(--pink);
+  font-weight: 850;
+}
+
+.mux-mode {
+  color: #1e1e2e;
+  background: var(--green);
+  font-weight: 900;
+}
+
+.mux-help {
+  color: #1e1e2e;
+  background: #b4befe;
+  font-weight: 850;
+}
 
 .section-intro {
-  max-width: 650px;
   margin: -4px 0 26px;
   color: var(--muted);
 }
@@ -499,7 +673,7 @@ a {
   display: block;
   margin-bottom: 25px;
   color: var(--green);
-  font: 750 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 750 15px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.12em;
 }
 
@@ -511,13 +685,13 @@ a {
 .feature-grid strong {
   margin-bottom: 9px;
   color: #edf3f8;
-  font: 760 0.94rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 760 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .feature-grid span {
   color: var(--muted);
-  font-size: 0.9rem;
-  line-height: 1.7;
+  /* font-size: 0.96rem; */
+  line-height: 1.3;
 }
 
 code {
@@ -597,8 +771,7 @@ table th {
   color: var(--green);
   background: var(--table-header-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
-  letter-spacing: 0.025em;
+  font-size: 12pt;
 }
 
 table td,
@@ -640,7 +813,7 @@ kbd {
   display: block;
   padding: 5px 0;
   color: var(--subtle);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
   text-decoration: none;
   transition: color 120ms ease;
@@ -715,6 +888,10 @@ kbd {
 }
 
 @media (max-width: 700px) {
+  html {
+    font-size: 16px;
+  }
+
   #menu-bar {
     padding: 0 9px;
   }
@@ -743,7 +920,24 @@ kbd {
   }
 
   .hero-title {
-    font-size: clamp(3.2rem, 18vw, 4.6rem);
+    gap: 13px;
+  }
+
+  .hero-brand-icon {
+    width: clamp(78px, 25vw, 104px);
+  }
+
+  .hero-wordmark {
+    gap: 9px;
+  }
+
+  .hero-wordmark-name {
+    font-size: clamp(2.5rem, 13vw, 3.4rem);
+  }
+
+  .hero-wordmark-tagline {
+    font-size: clamp(6px, 1.9vw, 8px);
+    letter-spacing: 0.22em;
   }
 
   .hero-actions a {
@@ -758,13 +952,32 @@ kbd {
     min-height: 0;
   }
 
-  .terminal-window pre {
-    min-height: 0;
-    padding: 18px !important;
+  .mux-preview {
+    padding: 15px;
+    font-size: 11px;
   }
 
-  .terminal-window pre code {
-    font-size: 10px;
+  .mux-window-bar {
+    gap: 3px;
+  }
+
+  .mux-tab {
+    padding-right: 12px;
+    padding-left: 10px;
+  }
+
+  .mux-panes {
+    min-height: 190px;
+  }
+
+  .mux-pane {
+    padding-right: 11px;
+    padding-left: 11px;
+  }
+
+  .mux-command {
+    margin-bottom: 28px;
+    font-size: 11px;
   }
 
   table {

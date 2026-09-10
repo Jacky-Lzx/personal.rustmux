@@ -1,4 +1,6 @@
 (function () {
+  const themeScriptUrl = document.currentScript?.src;
+
   function markPage() {
     if (document.querySelector("main .landing-hero")) {
       document.body.classList.add("home-page");
@@ -8,9 +10,12 @@
   function enhanceBrand() {
     const title = document.querySelector(".menu-title");
     if (!title) return;
+    const iconUrl = themeScriptUrl
+      ? new URL("../../theme/rustmux-icon.svg", themeScriptUrl).href
+      : "theme/rustmux-icon.svg";
     title.innerHTML = `
       <span class="rustmux-brand">
-        <span class="rustmux-mark" aria-hidden="true">R</span>
+        <img class="rustmux-header-icon" src="${iconUrl}" alt="" aria-hidden="true">
         <span>Rustmux</span>
         <span class="rustmux-docs-label">Docs</span>
         <span class="rustmux-version">v0.1</span>
@@ -20,7 +25,12 @@
   function addCopyButtons() {
     for (const pre of document.querySelectorAll("main pre")) {
       const code = pre.querySelector("code");
-      if (!code || pre.closest(".terminal-window") || pre.querySelector(".copy-button")) continue;
+      if (
+        !code ||
+        pre.closest(".terminal-window") ||
+        pre.querySelector(".copy-button")
+      )
+        continue;
       const button = document.createElement("button");
       button.className = "copy-button";
       button.type = "button";
@@ -60,7 +70,11 @@
       (entries) => {
         const visible = entries.find((entry) => entry.isIntersecting);
         if (!visible) return;
-        for (const link of links) link.classList.toggle("active", link.hash === `#${visible.target.id}`);
+        for (const link of links)
+          link.classList.toggle(
+            "active",
+            link.hash === `#${visible.target.id}`,
+          );
       },
       { rootMargin: "-20% 0px -70% 0px" },
     );
