@@ -28,10 +28,10 @@ use crate::session::ServerOutputDecoder;
 use crate::session::SessionInfo;
 use crate::terminal::{
     CursorStyleTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
-    KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration,
-    kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id,
-    kitty_graphics_query_response, kitty_graphics_uses_shared_memory, kitty_notification,
-    osc7_path, terminal_parser_size, terminal_responses,
+    KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata, TerminalOscTracker,
+    base64_encode, format_duration, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
+    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
+    kitty_notification, osc7_path, terminal_parser_size, terminal_responses,
 };
 
 fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
@@ -63,6 +63,7 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         ),
         cursor_style: CursorStyleTracker::default(),
         input_modes: InputModeTracker::default(),
+        terminal_osc: TerminalOscTracker::default(),
         kitty_graphics: KittyGraphicsParser::default(),
         kitty_dnd: KittyDndParser::default(),
         dnd_drag_registration: None,
@@ -1372,20 +1373,6 @@ fn terminal_queries_receive_local_responses() {
             .windows(terminal_identity.len())
             .any(|part| part == terminal_identity)
     );
-    let background = b"\x1b]11;rgb:0000/0000/0000\x1b\\";
-    assert!(
-        responses
-            .windows(background.len())
-            .any(|part| part == background)
-    );
-    let bell_background = terminal_responses(
-        b"\x1b]11;?\x07",
-        content_winsize_for((80, 24), (1360, 792), false),
-        "kitty 0.40.0",
-        (0, 0),
-        false,
-    );
-    assert_eq!(bell_background, background);
     assert!(
         responses
             .windows(b"\x1b[4;660;1326t".len())
@@ -1415,6 +1402,27 @@ fn kitty_keyboard_modes_are_scoped_to_each_screen_and_answer_queries() {
     assert!(modes.focus_reporting());
     modes.process(b"\x1b[?1049l");
     assert_eq!(modes.keyboard_flags(), 3);
+}
+
+#[test]
+fn terminal_osc_colors_and_pointer_shapes_are_stateful() {
+    let mut osc = TerminalOscTracker::default();
+    assert!(osc.process(b"\x1b]11;?").responses.is_empty());
+    let response = osc.process(b"\x1b\\");
+    assert_eq!(response.responses, b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\");
+
+    osc.process(b"\x1b]30001\x1b\\\x1b]11;#123456\x07");
+    assert_eq!(osc.background(), (0x12, 0x34, 0x56));
+    osc.process(b"\x1b]30101\x1b\\");
+    assert_eq!(osc.background(), (30, 30, 46));
+
+    let changed = osc.process(b"\x1b]22;>pointer\x1b\\");
+    assert!(changed.pointer_changed);
+    assert_eq!(osc.pointer_shape(), "pointer");
+    assert_eq!(
+        osc.process(b"\x1b]22;?__current__\x1b\\").responses,
+        b"\x1b]22;pointer\x1b\\"
+    );
 }
 
 #[test]

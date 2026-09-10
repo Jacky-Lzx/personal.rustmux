@@ -48,6 +48,12 @@ pub(super) struct PaneResizeHandle {
     pointer_offset: i32,
 }
 
+impl PaneResizeHandle {
+    pub(super) fn axis(&self) -> SplitAxis {
+        self.axis
+    }
+}
+
 pub(super) fn content_size_for((columns, rows): (u16, u16), compact: bool) -> (u16, u16) {
     (
         columns.saturating_sub(2).max(1),

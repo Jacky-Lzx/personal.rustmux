@@ -463,7 +463,7 @@ impl FrameSnapshot {
                 for row in 0..rows {
                     for column in 0..columns {
                         let cell = screen.cell(row, column).expect("cell is within screen");
-                        let mut style = CellStyle::from(cell);
+                        let mut style = CellStyle::from_window(cell, window);
                         if selection_contains(selection, window.id, row, column, columns) {
                             style.inverse = !style.inverse;
                         }
@@ -491,6 +491,7 @@ impl FrameSnapshot {
         let mut terminal_state = TerminalState::capture(
             active_screen,
             windows[active].cursor_style.style,
+            windows[active].terminal_osc.cursor(),
             windows[active].history_mode,
         );
         if windows[active].floating {
@@ -662,7 +663,7 @@ fn overlay_pane_cells(
             let Some(cell) = screen.cell(row, column) else {
                 continue;
             };
-            let mut style = CellStyle::from(cell);
+            let mut style = CellStyle::from_window(cell, window);
             if selection_contains(selection, window.id, row, column, content_columns) {
                 style.inverse = !style.inverse;
             }
@@ -767,7 +768,7 @@ fn overlay_floating_cells(
             let cell = screen
                 .cell(row, column)
                 .expect("floating cell is within screen");
-            let mut style = CellStyle::from(cell);
+            let mut style = CellStyle::from_window(cell, window);
             if selection_contains(selection, window.id, row, column, content_columns) {
                 style.inverse = !style.inverse;
             }
@@ -843,16 +844,23 @@ struct TerminalState {
     bracketed_paste: bool,
     hide_cursor: bool,
     cursor_style: u8,
+    cursor_color: Rgb,
 }
 
 impl TerminalState {
-    fn capture(screen: &vt100::Screen, cursor_style: u8, force_hide_cursor: bool) -> Self {
+    fn capture(
+        screen: &vt100::Screen,
+        cursor_style: u8,
+        cursor_color: Rgb,
+        force_hide_cursor: bool,
+    ) -> Self {
         Self {
             cursor: screen.cursor_position(),
             application_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
             hide_cursor: force_hide_cursor || screen.hide_cursor(),
             cursor_style,
+            cursor_color,
         }
     }
 }
@@ -883,6 +891,19 @@ impl From<&vt100::Cell> for CellStyle {
 }
 
 impl CellStyle {
+    fn from_window(cell: &vt100::Cell, window: &Window) -> Self {
+        let mut style = Self::from(cell);
+        if style.foreground == vt100::Color::Default {
+            let (red, green, blue) = window.terminal_osc.foreground();
+            style.foreground = vt100::Color::Rgb(red, green, blue);
+        }
+        if style.background == vt100::Color::Default {
+            let (red, green, blue) = window.terminal_osc.background();
+            style.background = vt100::Color::Rgb(red, green, blue);
+        }
+        style
+    }
+
     fn plain() -> Self {
         Self {
             foreground: vt100::Color::Default,
@@ -1058,8 +1079,11 @@ fn append_terminal_state(
     let (cursor_row, cursor_column) = state.cursor;
     let _ = write!(
         output,
-        "\x1b[0m\x1b]0;rustmux:{}\x07\x1b[?1{}\x1b[?2004{}\x1b[{} q\x1b[{};{}H\x1b[?25{}",
+        "\x1b[0m\x1b]0;rustmux:{}\x07\x1b]12;#{:02x}{:02x}{:02x}\x1b\\\x1b[?1{}\x1b[?2004{}\x1b[{} q\x1b[{};{}H\x1b[?25{}",
         active_id,
+        state.cursor_color.0,
+        state.cursor_color.1,
+        state.cursor_color.2,
         if state.application_cursor { 'h' } else { 'l' },
         if state.bracketed_paste { 'h' } else { 'l' },
         state.cursor_style,
@@ -1093,6 +1117,13 @@ fn append_terminal_state_diff(
     }
     if previous.cursor_style != current.cursor_style {
         let _ = write!(output, "\x1b[{} q", current.cursor_style);
+    }
+    if previous.cursor_color != current.cursor_color {
+        let _ = write!(
+            output,
+            "\x1b]12;#{:02x}{:02x}{:02x}\x1b\\",
+            current.cursor_color.0, current.cursor_color.1, current.cursor_color.2
+        );
     }
     if cells_changed || previous.cursor != current.cursor {
         let (row, column) = current.cursor;

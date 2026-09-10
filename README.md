@@ -60,6 +60,8 @@ Pane mode 下可以使用：
 
 rustmux 会为每个 pane、主屏幕和备用屏幕分别维护 Kitty keyboard protocol mode stack。应用请求的 progressive-enhancement flags 会在 pane 获得焦点时同步到外层终端，因此 CSI-u 修饰键、重复/释放事件和 associated text 可以原样到达对应程序；切换 pane 时也会为启用 `?1004` 的程序发送 focus-out/focus-in。
 
+终端颜色支持 OSC 4、OSC 10/11/12、对应的重置序列以及 Kitty OSC 21 和颜色栈。默认使用 Catppuccin Mocha，应用修改的默认前景、背景和光标颜色按 pane 保存并参与合成渲染。OSC 22 鼠标形状同样按 pane 隔离；悬停 window 标签或可拖动 pane 边框时会显示 pointer/resize 光标。
+
 上一条命令输出会优先使用 OSC 133 shell integration 提供的精确命令边界；fish 等现代 shell 可直接使用。没有 OSC 133 时，rustmux 会根据回车、命令回显和下一段提示符进行兼容性提取。OSC 52 剪贴板需要外层终端允许应用写入剪贴板。
 
 ## 按键与 mode 配置

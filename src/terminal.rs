@@ -17,6 +17,9 @@ const KITTY_DND_PREFIX: &[u8] = b"\x1b]72;";
 const STRING_TERMINATOR: &[u8] = b"\x1b\\";
 const KITTY_KEYBOARD_FLAGS: u8 = 0b1_1111;
 const MAX_MODE_STACK_DEPTH: usize = 32;
+const MOCHA_TEXT: (u8, u8, u8) = (205, 214, 244);
+const MOCHA_BASE: (u8, u8, u8) = (30, 30, 46);
+const MOCHA_LAVENDER: (u8, u8, u8) = (180, 190, 254);
 
 pub(super) fn terminal_parser_size(columns: u16, rows: u16) -> (u16, u16) {
     // vt100's wrapping logic requires room for a double-width character and
@@ -744,6 +747,9 @@ enum InputModeSequenceState {
 }
 
 impl InputModeTracker {
+    pub(super) fn alternate_screen(&self) -> bool {
+        self.alternate_screen
+    }
     pub(super) fn keyboard_flags(&self) -> u8 {
         if self.alternate_screen {
             self.alternate.flags
@@ -857,6 +863,415 @@ impl InputModeTracker {
     }
 }
 
+#[derive(Clone)]
+struct ColorSnapshot {
+    foreground: (u8, u8, u8),
+    background: (u8, u8, u8),
+    cursor: (u8, u8, u8),
+    palette: [Option<(u8, u8, u8)>; 256],
+}
+
+impl Default for ColorSnapshot {
+    fn default() -> Self {
+        Self {
+            foreground: MOCHA_TEXT,
+            background: MOCHA_BASE,
+            cursor: MOCHA_LAVENDER,
+            palette: [None; 256],
+        }
+    }
+}
+
+#[derive(Default)]
+enum OscSequenceState {
+    #[default]
+    Ground,
+    Escape,
+    Osc(Vec<u8>),
+    OscEscape(Vec<u8>),
+}
+
+#[derive(Default)]
+pub(super) struct TerminalOscTracker {
+    state: OscSequenceState,
+    colors: ColorSnapshot,
+    color_stack: Vec<ColorSnapshot>,
+    pointer_main: Vec<String>,
+    pointer_alternate: Vec<String>,
+    alternate_screen: bool,
+}
+
+#[derive(Default)]
+pub(super) struct TerminalOscOutput {
+    pub(super) responses: Vec<u8>,
+    pub(super) pointer_changed: bool,
+}
+
+impl TerminalOscTracker {
+    pub(super) fn set_alternate_screen(&mut self, alternate: bool) {
+        self.alternate_screen = alternate;
+    }
+
+    pub(super) fn foreground(&self) -> (u8, u8, u8) {
+        self.colors.foreground
+    }
+
+    pub(super) fn background(&self) -> (u8, u8, u8) {
+        self.colors.background
+    }
+
+    pub(super) fn cursor(&self) -> (u8, u8, u8) {
+        self.colors.cursor
+    }
+
+    pub(super) fn pointer_shape(&self) -> &str {
+        self.pointer_stack()
+            .last()
+            .map(String::as_str)
+            .unwrap_or("default")
+    }
+
+    pub(super) fn process(&mut self, bytes: &[u8]) -> TerminalOscOutput {
+        let mut output = TerminalOscOutput::default();
+        for &byte in bytes {
+            let state = std::mem::take(&mut self.state);
+            self.state = match state {
+                OscSequenceState::Ground => {
+                    if byte == 0x1b {
+                        OscSequenceState::Escape
+                    } else {
+                        OscSequenceState::Ground
+                    }
+                }
+                OscSequenceState::Escape => match byte {
+                    b']' => OscSequenceState::Osc(Vec::new()),
+                    0x1b => OscSequenceState::Escape,
+                    _ => OscSequenceState::Ground,
+                },
+                OscSequenceState::Osc(mut control) => match byte {
+                    0x07 => {
+                        self.apply_osc(&control, &mut output);
+                        OscSequenceState::Ground
+                    }
+                    0x1b => OscSequenceState::OscEscape(control),
+                    _ if control.len() < 64 * 1024 => {
+                        control.push(byte);
+                        OscSequenceState::Osc(control)
+                    }
+                    _ => OscSequenceState::Ground,
+                },
+                OscSequenceState::OscEscape(mut control) => {
+                    if byte == b'\\' {
+                        self.apply_osc(&control, &mut output);
+                        OscSequenceState::Ground
+                    } else {
+                        if control.len() < 64 * 1024 {
+                            control.extend_from_slice(&[0x1b, byte]);
+                        }
+                        OscSequenceState::Osc(control)
+                    }
+                }
+            };
+        }
+        output
+    }
+
+    fn apply_osc(&mut self, control: &[u8], output: &mut TerminalOscOutput) {
+        let Ok(control) = std::str::from_utf8(control) else {
+            return;
+        };
+        let mut fields = control.split(';');
+        let Some(code) = fields.next() else { return };
+        match code {
+            "4" => self.apply_palette(fields.collect(), output),
+            "10" => self.apply_special_color("10", fields.next(), output),
+            "11" => self.apply_special_color("11", fields.next(), output),
+            "12" => self.apply_special_color("12", fields.next(), output),
+            "104" => {
+                let indices = fields
+                    .filter_map(|value| value.parse::<usize>().ok())
+                    .collect::<Vec<_>>();
+                if indices.is_empty() {
+                    self.colors.palette = [None; 256];
+                } else {
+                    for index in indices {
+                        if index < 256 {
+                            self.colors.palette[index] = None;
+                        }
+                    }
+                }
+            }
+            "110" => self.colors.foreground = MOCHA_TEXT,
+            "111" => self.colors.background = MOCHA_BASE,
+            "112" => self.colors.cursor = MOCHA_LAVENDER,
+            "21" => self.apply_kitty_colors(fields, output),
+            "30001" => {
+                if self.color_stack.len() == MAX_MODE_STACK_DEPTH {
+                    self.color_stack.remove(0);
+                }
+                self.color_stack.push(self.colors.clone());
+            }
+            "30101" => {
+                if let Some(colors) = self.color_stack.pop() {
+                    self.colors = colors;
+                }
+            }
+            "22" => self.apply_pointer(fields.next().unwrap_or_default(), output),
+            _ => {}
+        }
+    }
+
+    fn apply_palette(&mut self, fields: Vec<&str>, output: &mut TerminalOscOutput) {
+        for pair in fields.chunks_exact(2) {
+            let Ok(index) = pair[0].parse::<usize>() else {
+                continue;
+            };
+            if index >= 256 {
+                continue;
+            }
+            if pair[1] == "?" {
+                let color =
+                    self.colors.palette[index].unwrap_or_else(|| default_palette(index as u8));
+                append_osc_color_response(&mut output.responses, "4", Some(index), color);
+            } else if let Some(color) = parse_color(pair[1]) {
+                self.colors.palette[index] = Some(color);
+            }
+        }
+    }
+
+    fn apply_special_color(
+        &mut self,
+        code: &str,
+        value: Option<&str>,
+        output: &mut TerminalOscOutput,
+    ) {
+        let Some(value) = value else { return };
+        let current = match code {
+            "10" => self.colors.foreground,
+            "11" => self.colors.background,
+            _ => self.colors.cursor,
+        };
+        if value == "?" {
+            append_osc_color_response(&mut output.responses, code, None, current);
+        } else if let Some(color) = parse_color(value) {
+            match code {
+                "10" => self.colors.foreground = color,
+                "11" => self.colors.background = color,
+                _ => self.colors.cursor = color,
+            }
+        }
+    }
+
+    fn apply_kitty_colors<'a>(
+        &mut self,
+        fields: impl Iterator<Item = &'a str>,
+        output: &mut TerminalOscOutput,
+    ) {
+        let mut response = Vec::new();
+        for field in fields {
+            let Some((key, value)) = field.split_once('=') else {
+                continue;
+            };
+            let current = match key {
+                "foreground" => Some(self.colors.foreground),
+                "background" => Some(self.colors.background),
+                "cursor" => Some(self.colors.cursor),
+                _ => key.parse::<u8>().ok().map(|index| {
+                    self.colors.palette[usize::from(index)]
+                        .unwrap_or_else(|| default_palette(index))
+                }),
+            };
+            if value == "?" {
+                if let Some(color) = current {
+                    response.push(format!("{key}={}", color_spec(color)));
+                }
+            } else if let Some(color) = parse_color(value) {
+                match key {
+                    "foreground" => self.colors.foreground = color,
+                    "background" => self.colors.background = color,
+                    "cursor" => self.colors.cursor = color,
+                    _ => {
+                        if let Ok(index) = key.parse::<u8>() {
+                            self.colors.palette[usize::from(index)] = Some(color);
+                        }
+                    }
+                }
+            }
+        }
+        if !response.is_empty() {
+            let _ = write!(output.responses, "\x1b]21;{}\x1b\\", response.join(";"));
+        }
+    }
+
+    fn apply_pointer(&mut self, value: &str, output: &mut TerminalOscOutput) {
+        let stack = self.pointer_stack_mut();
+        if let Some(query) = value.strip_prefix('?') {
+            let reply = if query == "__current__" {
+                stack.last().map(String::as_str).unwrap_or("0").to_owned()
+            } else {
+                query
+                    .split(',')
+                    .map(|shape| u8::from(valid_pointer_shape(shape)).to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            let _ = write!(output.responses, "\x1b]22;{reply}\x1b\\");
+            return;
+        }
+        if let Some(shapes) = value.strip_prefix('>') {
+            for shape in shapes.split(',').filter(|shape| valid_pointer_shape(shape)) {
+                if stack.len() == MAX_MODE_STACK_DEPTH {
+                    stack.remove(0);
+                }
+                stack.push(shape.to_owned());
+            }
+        } else if value.starts_with('<') {
+            stack.pop();
+        } else {
+            stack.clear();
+            let shape = value.strip_prefix('=').unwrap_or(value);
+            if valid_pointer_shape(shape) {
+                stack.push(shape.to_owned());
+            }
+        }
+        output.pointer_changed = true;
+    }
+
+    fn pointer_stack(&self) -> &Vec<String> {
+        if self.alternate_screen {
+            &self.pointer_alternate
+        } else {
+            &self.pointer_main
+        }
+    }
+
+    fn pointer_stack_mut(&mut self) -> &mut Vec<String> {
+        if self.alternate_screen {
+            &mut self.pointer_alternate
+        } else {
+            &mut self.pointer_main
+        }
+    }
+}
+
+fn parse_color(value: &str) -> Option<(u8, u8, u8)> {
+    if let Some(hex) = value.strip_prefix('#').filter(|value| value.len() == 6) {
+        return Some((
+            u8::from_str_radix(&hex[..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..], 16).ok()?,
+        ));
+    }
+    let rgb = value.strip_prefix("rgb:")?;
+    let mut components = rgb.split('/');
+    let component = |value: &str| -> Option<u8> {
+        let parsed = u16::from_str_radix(value, 16).ok()?;
+        let max = (1_u32 << (value.len() * 4).min(16)) - 1;
+        Some(((u32::from(parsed) * 255 + max / 2) / max) as u8)
+    };
+    Some((
+        component(components.next()?)?,
+        component(components.next()?)?,
+        component(components.next()?)?,
+    ))
+}
+
+fn color_spec((red, green, blue): (u8, u8, u8)) -> String {
+    format!(
+        "rgb:{:04x}/{:04x}/{:04x}",
+        u16::from(red) * 257,
+        u16::from(green) * 257,
+        u16::from(blue) * 257
+    )
+}
+
+fn append_osc_color_response(
+    output: &mut Vec<u8>,
+    code: &str,
+    index: Option<usize>,
+    color: (u8, u8, u8),
+) {
+    let spec = color_spec(color);
+    if let Some(index) = index {
+        let _ = write!(output, "\x1b]{code};{index};{spec}\x1b\\");
+    } else {
+        let _ = write!(output, "\x1b]{code};{spec}\x1b\\");
+    }
+}
+
+fn default_palette(index: u8) -> (u8, u8, u8) {
+    const ANSI: [(u8, u8, u8); 16] = [
+        (69, 71, 90),
+        (243, 139, 168),
+        (166, 227, 161),
+        (249, 226, 175),
+        (137, 180, 250),
+        (245, 194, 231),
+        (148, 226, 213),
+        (166, 173, 200),
+        (88, 91, 112),
+        (243, 139, 168),
+        (166, 227, 161),
+        (249, 226, 175),
+        (137, 180, 250),
+        (245, 194, 231),
+        (148, 226, 213),
+        (205, 214, 244),
+    ];
+    match index {
+        0..=15 => ANSI[usize::from(index)],
+        16..=231 => {
+            let value = index - 16;
+            let component = |part: u8| if part == 0 { 0 } else { 55 + part * 40 };
+            (
+                component(value / 36),
+                component((value / 6) % 6),
+                component(value % 6),
+            )
+        }
+        _ => {
+            let gray = 8 + (index - 232) * 10;
+            (gray, gray, gray)
+        }
+    }
+}
+
+fn valid_pointer_shape(shape: &str) -> bool {
+    matches!(
+        shape,
+        "alias"
+            | "cell"
+            | "copy"
+            | "crosshair"
+            | "default"
+            | "e-resize"
+            | "ew-resize"
+            | "grab"
+            | "grabbing"
+            | "help"
+            | "move"
+            | "n-resize"
+            | "ne-resize"
+            | "nesw-resize"
+            | "no-drop"
+            | "not-allowed"
+            | "ns-resize"
+            | "nw-resize"
+            | "nwse-resize"
+            | "pointer"
+            | "progress"
+            | "s-resize"
+            | "se-resize"
+            | "sw-resize"
+            | "text"
+            | "vertical-text"
+            | "w-resize"
+            | "wait"
+            | "zoom-in"
+            | "zoom-out"
+    )
+}
+
 fn parse_csi_numbers(parameters: &[u8]) -> Vec<u16> {
     parameters
         .split(|byte| *byte == b';')
@@ -960,8 +1375,6 @@ pub(super) fn terminal_responses(
             let _ = write!(responses, "\x1b[{};{}R", cursor.0 + 1, cursor.1 + 1);
         } else if query.starts_with(b"\x1b[>0q") || query.starts_with(b"\x1b[>q") {
             let _ = write!(responses, "\x1bP>|{terminal_identity}\x1b\\");
-        } else if query.starts_with(b"\x1b]11;?\x1b\\") || query.starts_with(b"\x1b]11;?\x07") {
-            responses.extend_from_slice(b"\x1b]11;rgb:0000/0000/0000\x1b\\");
         } else if window.ws_xpixel > 0 && window.ws_ypixel > 0 && query.starts_with(b"\x1b[14t") {
             let _ = write!(
                 responses,

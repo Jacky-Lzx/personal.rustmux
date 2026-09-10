@@ -37,10 +37,10 @@ use crate::session::{
 };
 use crate::terminal::{
     CursorStyleTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
-    KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration,
-    kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id,
-    kitty_graphics_query_response, kitty_graphics_uses_shared_memory, kitty_notification,
-    outer_terminal_identity, terminal_parser_size, terminal_responses,
+    KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata, TerminalOscTracker,
+    base64_encode, format_duration, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
+    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
+    kitty_notification, outer_terminal_identity, terminal_parser_size, terminal_responses,
 };
 use crate::{
     CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
@@ -62,6 +62,7 @@ pub(super) struct Window {
     pub(super) terminal: vt100::Parser<TerminalMetadata>,
     pub(super) cursor_style: CursorStyleTracker,
     pub(super) input_modes: InputModeTracker,
+    pub(super) terminal_osc: TerminalOscTracker,
     pub(super) kitty_graphics: KittyGraphicsParser,
     pub(super) kitty_dnd: KittyDndParser,
     pub(super) dnd_drag_registration: Option<Vec<u8>>,
@@ -247,6 +248,7 @@ pub(super) struct App {
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
     outer_keyboard_flags: Option<u8>,
+    outer_pointer_shape: Option<String>,
     client_input: Vec<u8>,
 }
 
@@ -295,6 +297,7 @@ impl App {
             client: None,
             outer_dnd_window: None,
             outer_keyboard_flags: None,
+            outer_pointer_shape: None,
             client_input: Vec::new(),
         };
         if let Some(snapshot) = load_session_snapshot(session_name)? {
@@ -574,6 +577,7 @@ impl App {
                     ),
                     cursor_style: CursorStyleTracker::default(),
                     input_modes: InputModeTracker::default(),
+                    terminal_osc: TerminalOscTracker::default(),
                     kitty_graphics: KittyGraphicsParser::default(),
                     kitty_dnd: KittyDndParser::default(),
                     dnd_drag_registration: None,
@@ -777,12 +781,14 @@ impl App {
         self.client = Some(stream);
         self.outer_dnd_window = None;
         self.outer_keyboard_flags = None;
+        self.outer_pointer_shape = None;
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
         self.dnd_input = KittyDndParser::default();
         self.reset_mode();
         self.renderer.invalidate();
         self.sync_keyboard_protocol();
+        self.sync_pointer_protocol();
         self.send_focus_event(self.active, true);
         self.redraw()
     }
@@ -845,6 +851,7 @@ impl App {
         self.input_decoder = InputDecoder::default();
         self.dnd_input = KittyDndParser::default();
         self.outer_keyboard_flags = None;
+        self.outer_pointer_shape = None;
         self.reset_mode();
         self.redraw_deadline = None;
         self.clipboard_status_until = None;
@@ -1028,6 +1035,46 @@ impl App {
         self.outer_keyboard_flags = self.client.is_some().then_some(flags);
     }
 
+    fn sync_pointer_protocol(&mut self) {
+        if self.windows.is_empty() || self.client.is_none() {
+            return;
+        }
+        let shape = self.windows[self.active]
+            .terminal_osc
+            .pointer_shape()
+            .to_owned();
+        self.set_outer_pointer_shape(&shape);
+    }
+
+    fn set_outer_pointer_shape(&mut self, shape: &str) {
+        if self.client.is_none() || self.outer_pointer_shape.as_deref() == Some(shape) {
+            return;
+        }
+        self.write_client_protocol(format!("\x1b]22;{shape}\x1b\\").as_bytes());
+        self.outer_pointer_shape = self.client.is_some().then(|| shape.to_owned());
+    }
+
+    fn update_pointer_for_position(&mut self, position: MousePosition) {
+        let shape = if self.mouse_drag.is_some() {
+            "grabbing"
+        } else if self
+            .renderer
+            .window_tab_at((position.column, position.row))
+            .is_some()
+        {
+            "pointer"
+        } else if let Some((_, handle)) = self.pane_resize_at(position) {
+            match handle.axis() {
+                SplitAxis::Vertical => "ew-resize",
+                SplitAxis::Horizontal => "ns-resize",
+            }
+        } else {
+            self.windows[self.active].terminal_osc.pointer_shape()
+        }
+        .to_owned();
+        self.set_outer_pointer_shape(&shape);
+    }
+
     fn send_focus_event(&self, index: usize, focused: bool) {
         if self.client.is_some()
             && self
@@ -1050,6 +1097,7 @@ impl App {
         self.send_focus_event(previous, false);
         self.active = index;
         self.sync_keyboard_protocol();
+        self.sync_pointer_protocol();
         self.send_focus_event(index, true);
     }
 
@@ -1161,6 +1209,7 @@ impl App {
                 continue;
             }
             if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
+                self.update_pointer_for_position(mouse.position());
                 if self.mouse_drag.is_some() {
                     if !passthrough.is_empty() {
                         self.write_active(&passthrough)?;
@@ -2050,6 +2099,7 @@ impl App {
     }
 
     fn update_mouse_drag(&mut self, action: MouseAction) -> Result<()> {
+        let pointer_position = action.position();
         let drag = self.mouse_drag.clone();
         let finished = matches!(action, MouseAction::SelectEnd(_));
         if let (
@@ -2067,6 +2117,7 @@ impl App {
         }
         if finished {
             self.mouse_drag = None;
+            self.update_pointer_for_position(pointer_position);
         }
         Ok(())
     }
@@ -2216,6 +2267,11 @@ impl App {
         let terminal_changed = !dnd.terminal.is_empty();
         let previous_keyboard_flags = self.windows[index].input_modes.keyboard_flags();
         let mode_responses = self.windows[index].input_modes.process(&dnd.terminal);
+        let alternate_screen = self.windows[index].input_modes.alternate_screen();
+        self.windows[index]
+            .terminal_osc
+            .set_alternate_screen(alternate_screen);
+        let osc_output = self.windows[index].terminal_osc.process(&dnd.terminal);
         self.windows[index].cursor_style.process(&dnd.terminal);
         let mut graphics_responses = Vec::new();
         let mut graphics_changed = false;
@@ -2263,6 +2319,7 @@ impl App {
             screen.bracketed_paste(),
         ));
         graphics_responses.extend_from_slice(&mode_responses);
+        graphics_responses.extend_from_slice(&osc_output.responses);
         if !graphics_responses.is_empty() {
             write_fd(&self.windows[index].master, &graphics_responses)?;
         }
@@ -2270,6 +2327,9 @@ impl App {
             && previous_keyboard_flags != self.windows[index].input_modes.keyboard_flags()
         {
             self.sync_keyboard_protocol();
+        }
+        if index == self.active && osc_output.pointer_changed {
+            self.sync_pointer_protocol();
         }
         if let Some(seconds) = self.config.command_notification_seconds() {
             let threshold = Duration::from_secs(seconds);
