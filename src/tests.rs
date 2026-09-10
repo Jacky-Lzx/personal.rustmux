@@ -17,8 +17,8 @@ use crate::input::{
 use crate::layout::{
     Direction, FloatingLayout, PaneNode, PaneRect, SplitAxis, content_size_for,
     content_winsize_for, floating_layout_for, move_item, pane_ids, pane_rects, pane_resize_handle,
-    remove_pane, resize_pane, resize_pane_to, split_pane, swap_panes, tiled_content_rect_for,
-    validate_terminal_size, window_winsize_for,
+    rect_in_direction, remove_pane, resize_pane, resize_pane_to, split_pane, swap_panes,
+    tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
 use crate::render::{
     CellStyle, FrameSnapshot, HelpView, Renderer, SessionManagerView, compact_status_hints,
@@ -909,6 +909,34 @@ fn pane_layout_splits_the_active_leaf_and_collapses_after_removal() {
     );
     let root = remove_pane(root, 2).unwrap();
     assert_eq!(pane_ids(&root), vec![1, 3]);
+}
+
+#[test]
+fn directional_focus_only_selects_panes_on_the_requested_axis() {
+    let left = PaneRect {
+        column: 0,
+        row: 0,
+        width: 40,
+        height: 20,
+    };
+    let upper_right = PaneRect {
+        column: 40,
+        row: 0,
+        width: 40,
+        height: 10,
+    };
+    let lower_right = PaneRect {
+        column: 40,
+        row: 10,
+        width: 40,
+        height: 10,
+    };
+
+    assert!(rect_in_direction(left, upper_right, Direction::Right));
+    assert!(!rect_in_direction(left, lower_right, Direction::Down));
+    assert!(!rect_in_direction(left, upper_right, Direction::Up));
+    assert!(rect_in_direction(upper_right, lower_right, Direction::Down));
+    assert!(rect_in_direction(lower_right, left, Direction::Left));
 }
 
 #[test]

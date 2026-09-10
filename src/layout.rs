@@ -403,20 +403,28 @@ pub(super) fn pane_pty_size(rect: PaneRect, framed: bool) -> (u16, u16) {
 }
 
 pub(super) fn rect_in_direction(from: PaneRect, to: PaneRect, direction: Direction) -> bool {
-    let from_center = (
-        i32::from(from.column) * 2 + i32::from(from.width),
-        i32::from(from.row) * 2 + i32::from(from.height),
-    );
-    let to_center = (
-        i32::from(to.column) * 2 + i32::from(to.width),
-        i32::from(to.row) * 2 + i32::from(to.height),
-    );
+    let horizontal_overlap = ranges_overlap(from.column, from.width, to.column, to.width);
+    let vertical_overlap = ranges_overlap(from.row, from.height, to.row, to.height);
+    let from_right = from.column.saturating_add(from.width);
+    let from_bottom = from.row.saturating_add(from.height);
+    let to_right = to.column.saturating_add(to.width);
+    let to_bottom = to.row.saturating_add(to.height);
     match direction {
-        Direction::Left => to_center.0 < from_center.0,
-        Direction::Right => to_center.0 > from_center.0,
-        Direction::Up => to_center.1 < from_center.1,
-        Direction::Down => to_center.1 > from_center.1,
+        Direction::Left => to_right <= from.column && vertical_overlap,
+        Direction::Right => to.column >= from_right && vertical_overlap,
+        Direction::Up => to_bottom <= from.row && horizontal_overlap,
+        Direction::Down => to.row >= from_bottom && horizontal_overlap,
     }
+}
+
+fn ranges_overlap(
+    first_start: u16,
+    first_length: u16,
+    second_start: u16,
+    second_length: u16,
+) -> bool {
+    first_start < second_start.saturating_add(second_length)
+        && second_start < first_start.saturating_add(first_length)
 }
 
 pub(super) fn directional_distance(
