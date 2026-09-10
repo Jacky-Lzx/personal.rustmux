@@ -380,6 +380,7 @@ fn start_server(socket: &Path, size: crossterm::terminal::WindowSize) -> Result<
         .arg(size.rows.to_string())
         .arg(size.width.to_string())
         .arg(size.height.to_string())
+        .env(super::RUSTMUX_ENV, socket)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

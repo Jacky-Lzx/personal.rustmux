@@ -23,6 +23,8 @@ The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` alia
 
 Press <kbd>Ctrl-b</kbd>, <kbd>d</kbd> inside Rustmux to detach. The server and its programs keep running.
 
+Rustmux sessions cannot be nested. Starting or attaching to Rustmux from a shell that is already inside Rustmux prints a warning and leaves the current session unchanged. Session management commands such as `list-sessions` and `kill-session` remain available inside a session.
+
 ## Session Manager
 
 Press `s` in normal mode to open the centered Session Manager.

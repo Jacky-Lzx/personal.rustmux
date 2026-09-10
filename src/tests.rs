@@ -192,6 +192,27 @@ fn terminal_guard_isolates_rustmux_from_shell_scrollback() {
 }
 
 #[test]
+fn nested_session_detection_only_applies_to_session_entry_commands() {
+    for arguments in [
+        &["rustmux"][..],
+        &["rustmux", "--session", "work"],
+        &["rustmux", "new-session", "work"],
+        &["rustmux", "attach", "work"],
+    ] {
+        assert!(starts_session(&Cli::try_parse_from(arguments).unwrap()));
+    }
+
+    for arguments in [
+        &["rustmux", "list-sessions"][..],
+        &["rustmux", "kill-session", "work"],
+        &["rustmux", "default-config"],
+        &["rustmux", "check-config"],
+    ] {
+        assert!(!starts_session(&Cli::try_parse_from(arguments).unwrap()));
+    }
+}
+
+#[test]
 fn floating_layout_is_centered_and_has_a_smaller_pty() {
     let layout = floating_layout_for((80, 24), false);
     let winsize = window_winsize_for((80, 24), (800, 480), true, false);

@@ -11,6 +11,7 @@ mod terminal;
 #[doc(hidden)]
 pub mod benchmarking;
 
+use std::env;
 use std::error::Error;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -45,6 +46,8 @@ const MAX_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
 const CLIPBOARD_STATUS: &str = "copied to system clipboard";
 const CLIPBOARD_STATUS_DURATION: Duration = Duration::from_secs(2);
 const NOTIFICATION_DURATION: Duration = Duration::from_secs(3);
+const RUSTMUX_ENV: &str = "RUSTMUX";
+const NESTED_SESSION_WARNING: &str = "nested Rustmux sessions are not supported";
 const TERMINAL_ENTER_SEQUENCE: &[u8] = b"\x1b[?1049h\x1b[>0u\x1b[?1004h\x1b[?1003h\x1b[?1006h";
 const TERMINAL_EXIT_SEQUENCE: &[u8] = b"\x1b[?2026l\x1b[0 q\x1b[0m\x1b]112\x1b\\\x1b]22;\x1b\\\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?5522l\x1b[<u\x1b>\x1b[?1049l";
 
@@ -77,6 +80,10 @@ pub fn run() -> Result<()> {
         let (socket, values) = values.split_first().ok_or("missing server socket")?;
         return run_server(PathBuf::from(socket), values);
     }
+    if starts_session(&cli) && env::var_os(RUSTMUX_ENV).is_some() {
+        eprintln!("warning: {NESTED_SESSION_WARNING}");
+        return Ok(());
+    }
     if let Some(session) = cli.session {
         return attach_or_create(&session, true);
     }
@@ -100,6 +107,14 @@ pub fn run() -> Result<()> {
         Some(Command::Setup(arguments)) if arguments.check => check_config(),
         Some(Command::Setup(_)) => unreachable!("clap requires one setup operation"),
     }
+}
+
+fn starts_session(cli: &Cli) -> bool {
+    cli.session.is_some()
+        || matches!(
+            &cli.command,
+            None | Some(Command::NewSession(_)) | Some(Command::Attach(_))
+        )
 }
 
 fn kill_all_sessions(skip_confirmation: bool) -> Result<()> {
