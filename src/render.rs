@@ -14,7 +14,10 @@ type Rgb = (u8, u8, u8);
 
 const MOCHA_CRUST: Rgb = (17, 17, 27);
 const MOCHA_BASE: Rgb = (30, 30, 46);
+const MOCHA_SURFACE_0: Rgb = (49, 50, 68);
+const MOCHA_SURFACE_1: Rgb = (69, 71, 90);
 const MOCHA_OVERLAY_0: Rgb = (108, 112, 134);
+const MOCHA_SUBTEXT_0: Rgb = (166, 173, 200);
 const MOCHA_TEXT: Rgb = (205, 214, 244);
 const MOCHA_GREEN: Rgb = (166, 227, 161);
 const MOCHA_PEACH: Rgb = (250, 179, 135);
@@ -22,6 +25,8 @@ const MOCHA_YELLOW: Rgb = (249, 226, 175);
 const MOCHA_BLUE: Rgb = (137, 180, 250);
 const MOCHA_LAVENDER: Rgb = (180, 190, 254);
 const MOCHA_PINK: Rgb = (245, 194, 231);
+const MOCHA_MAUVE: Rgb = (203, 166, 247);
+const MOCHA_TEAL: Rgb = (148, 226, 213);
 const POWERLINE_RIGHT: &str = "";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1457,18 +1462,9 @@ fn fit_status_hints(
 fn status_segments(snapshot: &FrameSnapshot, width: usize) -> Vec<(String, Rgb)> {
     if snapshot.session_manager.is_some() {
         return vec![
-            ("Enter".to_owned(), MOCHA_PINK),
-            ("ATTACH / CREATE".to_owned(), MOCHA_LAVENDER),
+            ("SESSION MANAGER".to_owned(), MOCHA_GREEN),
             ("Esc".to_owned(), MOCHA_PINK),
-            ("CANCEL".to_owned(), MOCHA_BLUE),
-            ("Ctrl-r".to_owned(), MOCHA_PINK),
-            ("RENAME".to_owned(), MOCHA_LAVENDER),
-            ("Del".to_owned(), MOCHA_PINK),
-            ("DELETE".to_owned(), MOCHA_BLUE),
-            ("Ctrl-x".to_owned(), MOCHA_PINK),
-            ("DISCONNECT".to_owned(), MOCHA_LAVENDER),
-            ("Ctrl-a".to_owned(), MOCHA_PINK),
-            ("SAVE".to_owned(), MOCHA_BLUE),
+            ("CLOSE".to_owned(), MOCHA_LAVENDER),
         ];
     }
     if let Some(name) = &snapshot.rename_prompt {
@@ -1521,13 +1517,31 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
 
     let inner_width = usize::from(columns.saturating_sub(2));
     let title = "─ Session Manager ";
+    let session_count = format!(
+        " {} SESSION{} ",
+        manager.sessions.len(),
+        if manager.sessions.len() == 1 { "" } else { "S" }
+    );
     let (title, title_width) = truncate_to_display_width(title, inner_width);
+    let (session_count, session_count_width) =
+        truncate_to_display_width(&session_count, inner_width.saturating_sub(title_width));
+    let show_session_count = title_width + session_count_width <= inner_width;
     let _ = write!(output, "\x1b[{origin_row};{origin_column}H");
     write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
     output.extend_from_slice("┌".as_bytes());
     output.extend_from_slice(title.as_bytes());
-    for _ in title_width..inner_width {
+    let rule_width = if show_session_count {
+        inner_width.saturating_sub(session_count_width)
+    } else {
+        inner_width
+    };
+    for _ in title_width..rule_width {
         output.extend_from_slice("─".as_bytes());
+    }
+    if show_session_count {
+        write_rgb_style(output, MOCHA_LAVENDER, Some(MOCHA_BASE), true);
+        output.extend_from_slice(session_count.as_bytes());
+        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
     }
     output.extend_from_slice("┐".as_bytes());
 
@@ -1551,17 +1565,128 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         "─".repeat(inner_width)
     );
 
-    let query = if let Some(name) = &manager.rename_input {
-        format!("Rename: {name}_")
+    let (query_label, query_value) = if let Some(name) = &manager.rename_input {
+        ("Rename: ", name.as_str())
     } else {
-        format!("Session: {}_", manager.query)
+        ("Session: ", manager.query.as_str())
     };
-    let (query, _) = truncate_to_display_width(&query, inner_width.saturating_sub(2));
     let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
     write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
-    output.extend_from_slice(query.as_bytes());
+    output.extend_from_slice(query_label.as_bytes());
+    let query_width = UnicodeWidthStr::width(query_label);
+    let (query_value, _) = truncate_to_display_width(
+        query_value,
+        inner_width.saturating_sub(query_width.saturating_add(3)),
+    );
+    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), true);
+    output.extend_from_slice(query_value.as_bytes());
+    write_rgb_style(output, MOCHA_PINK, Some(MOCHA_BASE), true);
+    output.extend_from_slice(b"_");
 
-    let available_rows = usize::from(rows.saturating_sub(4));
+    if rows < 8 {
+        let available_rows = usize::from(rows.saturating_sub(3));
+        let first_visible = manager
+            .selected
+            .saturating_sub(available_rows.saturating_sub(1));
+        for (visible_index, (index, session)) in manager
+            .sessions
+            .iter()
+            .enumerate()
+            .skip(first_visible)
+            .take(available_rows)
+            .enumerate()
+        {
+            let label = format!(
+                "{} {}  {}t · {}p",
+                if index == manager.selected {
+                    "›"
+                } else {
+                    " "
+                },
+                session.name,
+                session.tabs,
+                session.panes
+            );
+            let (label, _) = truncate_to_display_width(&label, inner_width.saturating_sub(2));
+            let _ = write!(
+                output,
+                "\x1b[{};{}H",
+                origin_row + 2 + visible_index as u16,
+                origin_column + 2
+            );
+            write_rgb_style(
+                output,
+                if index == manager.selected {
+                    MOCHA_GREEN
+                } else {
+                    MOCHA_TEXT
+                },
+                Some(if index == manager.selected {
+                    MOCHA_SURFACE_0
+                } else {
+                    MOCHA_BASE
+                }),
+                index == manager.selected,
+            );
+            output.extend_from_slice(label.as_bytes());
+        }
+        return;
+    }
+
+    let _ = write!(output, "\x1b[{};{}H", origin_row + 2, origin_column);
+    write_rgb_style(output, MOCHA_SURFACE_1, Some(MOCHA_BASE), false);
+    output.extend_from_slice("├".as_bytes());
+    output.extend_from_slice("─".repeat(inner_width).as_bytes());
+    output.extend_from_slice("┤".as_bytes());
+
+    let body_width = inner_width.saturating_sub(2);
+    let marker_width = 2;
+    let created_width = if body_width >= 65 { 15 } else { 0 };
+    let layout_width = if body_width >= 44 { 17 } else { 12 };
+    let status_width = if body_width >= 30 { 11 } else { 0 };
+    let name_width =
+        body_width.saturating_sub(marker_width + layout_width + status_width + created_width);
+
+    let _ = write!(output, "\x1b[{};{}H", origin_row + 3, origin_column + 2);
+    write_session_manager_field(output, "", marker_width, MOCHA_SUBTEXT_0, MOCHA_BASE, false);
+    write_session_manager_field(
+        output,
+        "SESSION",
+        name_width,
+        MOCHA_SUBTEXT_0,
+        MOCHA_BASE,
+        true,
+    );
+    write_session_manager_field(
+        output,
+        "LAYOUT",
+        layout_width,
+        MOCHA_SUBTEXT_0,
+        MOCHA_BASE,
+        true,
+    );
+    if status_width > 0 {
+        write_session_manager_field(
+            output,
+            "STATUS",
+            status_width,
+            MOCHA_SUBTEXT_0,
+            MOCHA_BASE,
+            true,
+        );
+    }
+    if created_width > 0 {
+        write_session_manager_field(
+            output,
+            "CREATED",
+            created_width,
+            MOCHA_SUBTEXT_0,
+            MOCHA_BASE,
+            true,
+        );
+    }
+
+    let available_rows = usize::from(rows.saturating_sub(7));
     let first_visible = manager
         .selected
         .saturating_sub(available_rows.saturating_sub(1));
@@ -1573,48 +1698,154 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         .take(available_rows)
         .enumerate()
     {
-        let marker = if session.name == manager.current {
-            "*"
+        let selected = index == manager.selected;
+        let current = session.name == manager.current;
+        let background = if selected {
+            MOCHA_SURFACE_0
         } else {
-            " "
+            MOCHA_BASE
         };
-        let state = if session.connected {
-            if session.saved {
-                "attached, saved"
-            } else {
-                "attached"
-            }
+        let (state, state_color) = if current {
+            ("[CURRENT]", MOCHA_GREEN)
+        } else if session.connected {
+            ("[ATTACH]", MOCHA_PEACH)
         } else if session.saved {
-            "saved"
+            ("[SAVED]", MOCHA_MAUVE)
         } else {
-            "detached"
+            ("[DETACHED]", MOCHA_OVERLAY_0)
         };
-        let created = session_created(session.created_at);
-        let label = format!(
-            "{} {marker} {}  {} tabs, {} panes  {state}  {created}",
-            if index == manager.selected { ">" } else { " " },
-            session.name,
-            session.tabs,
-            session.panes,
-        );
-        let (label, _) = truncate_to_display_width(&label, inner_width.saturating_sub(2));
+        let layout = if layout_width >= 17 {
+            format!("{} tabs · {} panes", session.tabs, session.panes)
+        } else {
+            format!("{}t · {}p", session.tabs, session.panes)
+        };
         let _ = write!(
             output,
             "\x1b[{};{}H",
-            origin_row + 3 + visible_index as u16,
+            origin_row + 4 + visible_index as u16,
             origin_column + 2
         );
-        write_rgb_style(
+        write_session_manager_field(
             output,
-            if index == manager.selected {
+            if selected { "› " } else { "  " },
+            marker_width,
+            if selected {
                 MOCHA_GREEN
             } else {
-                MOCHA_TEXT
+                MOCHA_OVERLAY_0
             },
-            Some(MOCHA_BASE),
-            index == manager.selected,
+            background,
+            selected,
         );
-        output.extend_from_slice(label.as_bytes());
+        write_session_manager_field(
+            output,
+            &session.name,
+            name_width,
+            if current { MOCHA_GREEN } else { MOCHA_TEAL },
+            background,
+            true,
+        );
+        write_session_manager_field(output, &layout, layout_width, MOCHA_TEXT, background, false);
+        if status_width > 0 {
+            write_session_manager_field(output, state, status_width, state_color, background, true);
+        }
+        if created_width > 0 {
+            write_session_manager_field(
+                output,
+                &session_created(session.created_at),
+                created_width,
+                MOCHA_SUBTEXT_0,
+                background,
+                false,
+            );
+        }
+    }
+
+    if manager.sessions.is_empty() {
+        let message = if manager.query.is_empty() {
+            "No sessions available".to_owned()
+        } else {
+            format!("No matches · Enter to create ‘{}’", manager.query)
+        };
+        let (message, _) = truncate_to_display_width(&message, body_width);
+        let _ = write!(output, "\x1b[{};{}H", origin_row + 4, origin_column + 2);
+        write_rgb_style(output, MOCHA_PEACH, Some(MOCHA_BASE), false);
+        output.extend_from_slice(message.as_bytes());
+    }
+
+    draw_session_manager_help_line(
+        output,
+        origin_row + rows - 3,
+        origin_column + 2,
+        body_width,
+        "Help: ",
+        &[
+            ("<Enter>", "Open/Create"),
+            ("<Ctrl r>", "Rename"),
+            ("<Del>", "Delete"),
+        ],
+    );
+    draw_session_manager_help_line(
+        output,
+        origin_row + rows - 2,
+        origin_column + 2,
+        body_width,
+        "      ",
+        &[
+            ("<Ctrl a>", "Save"),
+            ("<Ctrl x>", "Disconnect"),
+            ("<Esc>", "Close"),
+        ],
+    );
+}
+
+fn write_session_manager_field(
+    output: &mut Vec<u8>,
+    text: &str,
+    width: usize,
+    foreground: Rgb,
+    background: Rgb,
+    bold: bool,
+) {
+    if width == 0 {
+        return;
+    }
+    let (text, text_width) = truncate_to_display_width(text, width);
+    write_rgb_style(output, foreground, Some(background), bold);
+    output.extend_from_slice(text.as_bytes());
+    output.extend_from_slice(" ".repeat(width.saturating_sub(text_width)).as_bytes());
+}
+
+fn draw_session_manager_help_line(
+    output: &mut Vec<u8>,
+    row: u16,
+    column: u16,
+    width: usize,
+    prefix: &str,
+    hints: &[(&str, &str)],
+) {
+    let _ = write!(output, "\x1b[{row};{column}H");
+    let (prefix, prefix_width) = truncate_to_display_width(prefix, width);
+    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+    output.extend_from_slice(prefix.as_bytes());
+    let mut used = prefix_width;
+    for (index, (key, description)) in hints.iter().enumerate() {
+        let separator = if index == 0 { "" } else { "  " };
+        let required = UnicodeWidthStr::width(separator)
+            + UnicodeWidthStr::width(*key)
+            + 1
+            + UnicodeWidthStr::width(*description);
+        if used + required > width {
+            continue;
+        }
+        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        output.extend_from_slice(separator.as_bytes());
+        write_rgb_style(output, MOCHA_PINK, Some(MOCHA_BASE), true);
+        output.extend_from_slice(key.as_bytes());
+        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        output.extend_from_slice(b" ");
+        output.extend_from_slice(description.as_bytes());
+        used += required;
     }
 }
 

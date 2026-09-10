@@ -1688,9 +1688,16 @@ fn session_manager_renders_search_results_and_actions() {
     let frame = String::from_utf8(frame).unwrap();
 
     assert!(frame.contains("Session Manager"));
-    assert!(frame.contains("Session: wo_"));
-    assert!(frame.contains(">   work  2 tabs, 3 panes  saved"));
-    assert!(frame.contains("ATTACH / CREATE"));
+    assert!(frame.contains("1 SESSION"));
+    assert!(frame.contains("Session: "));
+    assert!(frame.contains("wo"));
+    assert!(frame.contains("SESSION"));
+    assert!(frame.contains("LAYOUT"));
+    assert!(frame.contains("work"));
+    assert!(frame.contains("2t · 3p"));
+    assert!(frame.contains("[SAVED]"));
+    assert!(frame.contains("<Enter>"));
+    assert!(frame.contains("Open/Create"));
     assert!(frame.contains("\x1b[?25l"));
 }
 
@@ -1716,7 +1723,8 @@ fn session_manager_renders_rename_input() {
     let frame = renderer.render(&windows, 0, (60, 12), "normal", None, &[]);
     let frame = String::from_utf8_lossy(&frame);
 
-    assert!(frame.contains("Rename: renamed_"));
+    assert!(frame.contains("Rename: "));
+    assert!(frame.contains("renamed"));
 }
 
 #[test]
