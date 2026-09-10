@@ -22,6 +22,7 @@ mkdir -p demos/assets target/demo-state
 export XDG_CONFIG_HOME="$project_root/demos/config"
 export XDG_STATE_HOME="$project_root/target/demo-state"
 export RUSTMUX_SHELL="fish"
+export fish_autosuggestion_enabled="0"
 
 demo_sessions=(
   rustmux-readme-layout
