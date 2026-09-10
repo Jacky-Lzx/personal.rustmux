@@ -663,10 +663,28 @@ fn hex_decode(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum KittyDndEvent {
+    Terminal(Vec<u8>),
+    Command(Vec<u8>),
+}
+
 #[derive(Default)]
 pub(super) struct KittyDndOutput {
-    pub(super) terminal: Vec<u8>,
-    pub(super) commands: Vec<Vec<u8>>,
+    pub(super) events: Vec<KittyDndEvent>,
+}
+
+impl KittyDndOutput {
+    fn push_terminal(&mut self, bytes: Vec<u8>) {
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(KittyDndEvent::Terminal(previous)) = self.events.last_mut() {
+            previous.extend(bytes);
+        } else {
+            self.events.push(KittyDndEvent::Terminal(bytes));
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -684,21 +702,23 @@ impl KittyDndParser {
             let Some(start) = find_subslice(&self.pending, KITTY_DND_PREFIX) else {
                 let retained = partial_prefix_length(&self.pending, KITTY_DND_PREFIX);
                 let visible = self.pending.len().saturating_sub(retained);
-                output.terminal.extend(self.pending.drain(..visible));
+                output.push_terminal(self.pending.drain(..visible).collect());
                 break;
             };
-            output.terminal.extend(self.pending.drain(..start));
+            output.push_terminal(self.pending.drain(..start).collect());
             let Some(end) =
                 find_subslice(&self.pending[KITTY_DND_PREFIX.len()..], STRING_TERMINATOR)
             else {
                 if self.pending.len() > MAX_KITTY_DND_SEQUENCE_BYTES {
-                    output.terminal.push(self.pending.remove(0));
+                    output.push_terminal(vec![self.pending.remove(0)]);
                     continue;
                 }
                 break;
             };
             let length = KITTY_DND_PREFIX.len() + end + STRING_TERMINATOR.len();
-            output.commands.push(self.pending.drain(..length).collect());
+            output.events.push(KittyDndEvent::Command(
+                self.pending.drain(..length).collect(),
+            ));
         }
 
         if self.pending.is_empty() || self.pending.starts_with(KITTY_DND_PREFIX) {
@@ -746,6 +766,14 @@ pub(super) fn kitty_dnd_id(command: &[u8]) -> Option<u32> {
         let (key, value) = field.split_once('=')?;
         (key == "i").then(|| value.parse().ok()).flatten()
     })
+}
+
+pub(super) fn kitty_dnd_drag_start_position(command: &[u8]) -> Option<(i32, i32)> {
+    let (metadata, _) = kitty_dnd_parts(command)?;
+    (metadata_value(metadata, "t") == Some("o")).then_some(())?;
+    let x = metadata_value(metadata, "x")?.parse().ok()?;
+    let y = metadata_value(metadata, "y")?.parse().ok()?;
+    (x >= 0 && y >= 0).then_some((x, y))
 }
 
 pub(super) fn kitty_dnd_registration(command: &[u8]) -> Option<KittyDndRegistration> {

@@ -28,12 +28,13 @@ use crate::render::{
 use crate::session::ServerOutputDecoder;
 use crate::session::SessionInfo;
 use crate::terminal::{
-    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
-    KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture, TerminalMetadata,
-    TerminalOscTracker, base64_encode, format_duration, kitty_dnd_for_child, kitty_dnd_id,
-    kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
-    kitty_graphics_uses_shared_memory, kitty_ipc_for_child, kitty_ipc_with_pane,
-    kitty_notification, osc7_path, terminal_parser_size, terminal_responses,
+    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndEvent, KittyDndParser,
+    KittyDndRegistration, KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture,
+    TerminalMetadata, TerminalOscTracker, base64_encode, format_duration,
+    kitty_dnd_drag_start_position, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
+    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
+    kitty_ipc_for_child, kitty_ipc_with_pane, kitty_notification, osc7_path, terminal_parser_size,
+    terminal_responses,
 };
 
 fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
@@ -1242,22 +1243,43 @@ fn kitty_dnd_parser_extracts_fragmented_osc_72_sequences() {
     let mut parser = KittyDndParser::default();
 
     let first = parser.process(b"before\x1b]7");
-    assert_eq!(first.terminal, b"before");
-    assert!(first.commands.is_empty());
+    assert_eq!(first.events, [KittyDndEvent::Terminal(b"before".to_vec())]);
     assert!(parser.flush_deadline().is_some());
 
     let second = parser.process(b"2;t=a;text/uri-list\x1b");
-    assert!(second.terminal.is_empty());
-    assert!(second.commands.is_empty());
+    assert!(second.events.is_empty());
     assert!(parser.flush_deadline().is_none());
 
     let third = parser.process(b"\\after");
-    assert_eq!(third.commands, [b"\x1b]72;t=a;text/uri-list\x1b\\"]);
-    assert_eq!(third.terminal, b"after");
+    assert_eq!(
+        third.events,
+        [
+            KittyDndEvent::Command(b"\x1b]72;t=a;text/uri-list\x1b\\".to_vec()),
+            KittyDndEvent::Terminal(b"after".to_vec()),
+        ]
+    );
 
     let ordinary = parser.process(b"\x1b]2;title\x1b\\");
-    assert_eq!(ordinary.terminal, b"\x1b]2;title\x1b\\");
-    assert!(ordinary.commands.is_empty());
+    assert_eq!(
+        ordinary.events,
+        [KittyDndEvent::Terminal(b"\x1b]2;title\x1b\\".to_vec())]
+    );
+}
+
+#[test]
+fn kitty_dnd_parser_preserves_mouse_press_before_drag_offer() {
+    let mut parser = KittyDndParser::default();
+    let mouse = b"\x1b[<0;31;9M";
+    let offer = b"\x1b]72;t=o:i=1:x=30:y=8:X=300:Y=160\x1b\\";
+    let output = parser.process(&[mouse.as_slice(), offer.as_slice()].concat());
+
+    assert_eq!(
+        output.events,
+        [
+            KittyDndEvent::Terminal(mouse.to_vec()),
+            KittyDndEvent::Command(offer.to_vec()),
+        ]
+    );
 }
 
 #[test]
@@ -1265,8 +1287,7 @@ fn kitty_dnd_parser_releases_an_ambiguous_escape() {
     let mut parser = KittyDndParser::default();
 
     let output = parser.process(b"\x1b");
-    assert!(output.terminal.is_empty());
-    assert!(output.commands.is_empty());
+    assert!(output.events.is_empty());
     assert!(parser.flush_deadline().is_some());
     assert_eq!(parser.flush(), b"\x1b");
     assert!(parser.flush_deadline().is_none());
@@ -1287,6 +1308,18 @@ fn kitty_dnd_commands_are_tagged_for_multiplexer_routing() {
     assert_eq!(
         kitty_dnd_registration(b"\x1b]72;t=A:i=42\x1b\\"),
         Some(KittyDndRegistration::Drop(false))
+    );
+}
+
+#[test]
+fn kitty_dnd_drag_start_uses_position_instead_of_a_stale_pane_id() {
+    let stale = b"\x1b]72;t=o:i=1:x=56:y=8:X=560:Y=160\x1b\\";
+
+    assert_eq!(kitty_dnd_drag_start_position(stale), Some((56, 8)));
+    assert_eq!(kitty_dnd_id(stale), Some(1));
+    assert_eq!(
+        kitty_dnd_drag_start_position(b"\x1b]72;t=o:o=3:i=2;text/uri-list\x1b\\"),
+        None
     );
 }
 

@@ -11,10 +11,10 @@ use crate::input::{InputDecoder, MousePosition, decode_key, decode_sgr_mouse, sg
 use crate::layout::{PaneRect, content_size_for};
 use crate::render::Renderer;
 use crate::terminal::{
-    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndParser, KittyGraphicsParser,
-    KittyIpcParser, SemanticOutputCapture, TerminalMetadata, TerminalOscTracker,
-    kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id,
-    kitty_graphics_query_response, kitty_graphics_uses_shared_memory, osc7_path,
+    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndEvent, KittyDndParser,
+    KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture, TerminalMetadata,
+    TerminalOscTracker, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
+    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory, osc7_path,
     terminal_parser_size, terminal_responses,
 };
 
@@ -60,8 +60,10 @@ pub fn kitty_dnd(data: &[u8]) {
     let mut parser = KittyDndParser::default();
     for chunk in chunks(data) {
         let output = parser.process(chunk);
-        for command in output.commands {
-            exercise_dnd_command(&command);
+        for event in output.events {
+            if let KittyDndEvent::Command(command) = event {
+                exercise_dnd_command(&command);
+            }
         }
     }
     exercise_dnd_command(data);

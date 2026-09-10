@@ -9,9 +9,9 @@ use crate::app::Window;
 use crate::layout::{PaneRect, content_size_for};
 use crate::render::Renderer;
 use crate::terminal::{
-    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndParser, KittyGraphicsParser,
-    KittyIpcParser, SemanticOutputCapture, TerminalMetadata, TerminalOscTracker, base64_encode,
-    terminal_parser_size,
+    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndEvent, KittyDndParser,
+    KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture, TerminalMetadata,
+    TerminalOscTracker, base64_encode, terminal_parser_size,
 };
 
 const OUTER_SIZE: (u16, u16) = (82, 28);
@@ -138,7 +138,16 @@ impl ImagePreviewRunner {
             let parsed = graphics_parser.process(chunk);
             graphics.extend(parsed.commands);
             let dnd = self.window.kitty_dnd.process(&parsed.terminal);
-            let ipc = self.window.kitty_ipc.process(&dnd.terminal);
+            let terminal = dnd
+                .events
+                .into_iter()
+                .filter_map(|event| match event {
+                    KittyDndEvent::Terminal(bytes) => Some(bytes),
+                    KittyDndEvent::Command(_) => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            let ipc = self.window.kitty_ipc.process(&terminal);
             self.window.input_modes.process(&ipc.terminal);
             self.window
                 .terminal_osc

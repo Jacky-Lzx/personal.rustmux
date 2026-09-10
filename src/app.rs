@@ -38,13 +38,13 @@ use crate::session::{
     save_session_snapshot, validate_session_name,
 };
 use crate::terminal::{
-    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
-    KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture, TerminalMetadata,
-    TerminalOscTracker, base64_encode, format_duration, kitty_dnd_for_child, kitty_dnd_id,
-    kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
-    kitty_graphics_uses_shared_memory, kitty_ipc_for_child, kitty_ipc_is_clipboard,
-    kitty_ipc_with_pane, kitty_notification, outer_terminal_identity, terminal_parser_size,
-    terminal_responses,
+    CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndEvent, KittyDndParser,
+    KittyDndRegistration, KittyGraphicsParser, KittyIpcParser, SemanticOutputCapture,
+    TerminalMetadata, TerminalOscTracker, base64_encode, format_duration,
+    kitty_dnd_drag_start_position, kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration,
+    kitty_dnd_with_id, kitty_graphics_query_response, kitty_graphics_uses_shared_memory,
+    kitty_ipc_for_child, kitty_ipc_is_clipboard, kitty_ipc_with_pane, kitty_notification,
+    outer_terminal_identity, terminal_parser_size, terminal_responses,
 };
 use crate::{
     CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
@@ -642,12 +642,10 @@ impl App {
             let mut expired_input = Vec::new();
             let expired_ipc = self.ipc_input.flush_if_expired();
             if !expired_ipc.is_empty() {
-                let dnd = self.dnd_input.process(&expired_ipc);
-                for command in dnd.commands {
-                    self.route_kitty_dnd_input(&command)?;
+                if !self.handle_dnd_input(&expired_ipc)? {
+                    self.detach_client();
                 }
-                let mut terminal = dnd.terminal;
-                terminal.extend(self.dnd_input.flush());
+                let terminal = self.dnd_input.flush();
                 expired_input.extend(self.input_decoder.push(&terminal));
                 // IPC already waited for the shared escape-sequence timeout;
                 // release ambiguity in the downstream parsers immediately.
@@ -966,12 +964,23 @@ impl App {
         for command in ipc.commands {
             self.route_kitty_ipc_input(&command)?;
         }
-        let dnd = self.dnd_input.process(&ipc.terminal);
-        for command in dnd.commands {
-            self.route_kitty_dnd_input(&command)?;
+        self.handle_dnd_input(&ipc.terminal)
+    }
+
+    fn handle_dnd_input(&mut self, bytes: &[u8]) -> Result<bool> {
+        let output = self.dnd_input.process(bytes);
+        for event in output.events {
+            match event {
+                KittyDndEvent::Terminal(bytes) => {
+                    let decoded = self.input_decoder.push(&bytes);
+                    if !decoded.is_empty() && !self.handle_decoded_input(&decoded)? {
+                        return Ok(false);
+                    }
+                }
+                KittyDndEvent::Command(command) => self.route_kitty_dnd_input(&command)?,
+            }
         }
-        let decoded = self.input_decoder.push(&dnd.terminal);
-        self.handle_decoded_input(&decoded)
+        Ok(true)
     }
 
     fn route_kitty_ipc_input(&mut self, command: &[u8]) -> Result<()> {
@@ -994,18 +1003,26 @@ impl App {
         if self.windows.is_empty() {
             return Ok(());
         }
-        let index = match kitty_dnd_id(command) {
-            Some(id) => {
-                let Some(index) = self
-                    .windows
-                    .iter()
-                    .position(|window| window.id == id as usize)
-                else {
+        let index = match kitty_dnd_drag_start_position(command) {
+            Some(position) => {
+                let Some(index) = self.dnd_drag_target(position) else {
                     return Ok(());
                 };
                 index
             }
-            None => self.active,
+            None => match kitty_dnd_id(command) {
+                Some(id) => {
+                    let Some(index) = self
+                        .windows
+                        .iter()
+                        .position(|window| window.id == id as usize)
+                    else {
+                        return Ok(());
+                    };
+                    index
+                }
+                None => self.active,
+            },
         };
         let (origin, size) = self.dnd_geometry(index);
         let cell_pixels = (
@@ -1016,6 +1033,30 @@ impl App {
             write_fd(&self.windows[index].master, &command)?;
         }
         Ok(())
+    }
+
+    fn dnd_drag_target(&self, position: (i32, i32)) -> Option<usize> {
+        let active = self.windows.get(self.active)?;
+        let contains = |index: usize| {
+            let (origin, size) = self.dnd_geometry(index);
+            position.0 >= origin.0
+                && position.1 >= origin.1
+                && position.0 < origin.0 + i32::from(size.0)
+                && position.1 < origin.1 + i32::from(size.1)
+        };
+        if (active.floating || active.zoomed)
+            && active.dnd_drag_registration.is_some()
+            && contains(self.active)
+        {
+            return Some(self.active);
+        }
+        self.windows.iter().enumerate().find_map(|(index, window)| {
+            (!window.floating
+                && window.tab_id == active.tab_id
+                && window.dnd_drag_registration.is_some()
+                && contains(index))
+            .then_some(index)
+        })
     }
 
     fn dnd_geometry(&self, index: usize) -> ((i32, i32), (u16, u16)) {
@@ -2332,10 +2373,16 @@ impl App {
         let bell_was_pending = self.windows[index].bell_pending;
         let parsed = self.windows[index].kitty_graphics.process(output);
         let dnd = self.windows[index].kitty_dnd.process(&parsed.terminal);
-        for command in dnd.commands {
-            self.handle_window_dnd_command(index, &command);
+        let mut terminal = Vec::new();
+        for event in dnd.events {
+            match event {
+                KittyDndEvent::Terminal(bytes) => terminal.extend(bytes),
+                KittyDndEvent::Command(command) => {
+                    self.handle_window_dnd_command(index, &command);
+                }
+            }
         }
-        let ipc = self.windows[index].kitty_ipc.process(&dnd.terminal);
+        let ipc = self.windows[index].kitty_ipc.process(&terminal);
         for command in ipc.commands {
             if let Some(command) = kitty_ipc_with_pane(&command, self.windows[index].id) {
                 self.write_client_protocol(&command);
