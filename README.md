@@ -58,6 +58,8 @@ Pane mode 下可以使用：
 
 在 Kitty 0.47.0 或更高版本中，rustmux 会转发 OSC 72 drag-and-drop protocol。Yazi 可以从当前 pane 向 Finder 等 GUI 应用拖出文件，也可以接收拖入的文件；协议响应会根据 pane ID 路由，并自动换算 pane 内的单元格和像素坐标。
 
+rustmux 会为每个 pane、主屏幕和备用屏幕分别维护 Kitty keyboard protocol mode stack。应用请求的 progressive-enhancement flags 会在 pane 获得焦点时同步到外层终端，因此 CSI-u 修饰键、重复/释放事件和 associated text 可以原样到达对应程序；切换 pane 时也会为启用 `?1004` 的程序发送 focus-out/focus-in。
+
 上一条命令输出会优先使用 OSC 133 shell integration 提供的精确命令边界；fish 等现代 shell 可直接使用。没有 OSC 133 时，rustmux 会根据回车、命令回显和下一段提示符进行兼容性提取。OSC 52 剪贴板需要外层终端允许应用写入剪贴板。
 
 ## 按键与 mode 配置

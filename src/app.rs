@@ -36,11 +36,11 @@ use crate::session::{
     save_session_snapshot, validate_session_name,
 };
 use crate::terminal::{
-    CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
-    SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration, kitty_dnd_for_child,
-    kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
-    kitty_graphics_uses_shared_memory, kitty_notification, outer_terminal_identity,
-    terminal_parser_size, terminal_responses,
+    CursorStyleTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
+    KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration,
+    kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id,
+    kitty_graphics_query_response, kitty_graphics_uses_shared_memory, kitty_notification,
+    outer_terminal_identity, terminal_parser_size, terminal_responses,
 };
 use crate::{
     CLIENT_DISCONNECT, CLIENT_INPUT, CLIENT_QUERY_STATUS, CLIENT_RENAME_SESSION, CLIENT_RESIZE,
@@ -61,6 +61,7 @@ pub(super) struct Window {
     pub(super) child: Pid,
     pub(super) terminal: vt100::Parser<TerminalMetadata>,
     pub(super) cursor_style: CursorStyleTracker,
+    pub(super) input_modes: InputModeTracker,
     pub(super) kitty_graphics: KittyGraphicsParser,
     pub(super) kitty_dnd: KittyDndParser,
     pub(super) dnd_drag_registration: Option<Vec<u8>>,
@@ -245,6 +246,7 @@ pub(super) struct App {
     mouse_drag: Option<MouseDrag>,
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
+    outer_keyboard_flags: Option<u8>,
     client_input: Vec<u8>,
 }
 
@@ -292,6 +294,7 @@ impl App {
             mouse_drag: None,
             client: None,
             outer_dnd_window: None,
+            outer_keyboard_flags: None,
             client_input: Vec::new(),
         };
         if let Some(snapshot) = load_session_snapshot(session_name)? {
@@ -466,10 +469,11 @@ impl App {
     fn toggle_floating_terminal(&mut self) -> Result<()> {
         if self.windows[self.active].floating {
             let return_to = self.windows[self.active].return_to_window;
-            self.active = return_to
+            let target = return_to
                 .and_then(|id| self.windows.iter().position(|window| window.id == id))
                 .or_else(|| self.windows.iter().position(|window| !window.floating))
                 .unwrap_or(self.active);
+            self.set_active(target);
             self.selection = None;
             return self.redraw();
         }
@@ -478,7 +482,7 @@ impl App {
         if let Some(index) = self.windows.iter().position(|window| window.floating) {
             self.windows[index].return_to_window = Some(return_to);
             self.windows[index].tab_id = self.windows[self.active].tab_id;
-            self.active = index;
+            self.set_active(index);
             self.selection = None;
             return self.redraw();
         }
@@ -549,6 +553,9 @@ impl App {
                 }
                 let id = self.next_id;
                 self.next_id += 1;
+                if !self.windows.is_empty() {
+                    self.send_focus_event(self.active, false);
+                }
                 self.windows.push(Window {
                     id,
                     tab_id: options.tab_id,
@@ -566,6 +573,7 @@ impl App {
                         TerminalMetadata::default(),
                     ),
                     cursor_style: CursorStyleTracker::default(),
+                    input_modes: InputModeTracker::default(),
                     kitty_graphics: KittyGraphicsParser::default(),
                     kitty_dnd: KittyDndParser::default(),
                     dnd_drag_registration: None,
@@ -579,6 +587,8 @@ impl App {
                     return_to_window: options.return_to_window,
                 });
                 self.active = self.windows.len() - 1;
+                self.sync_keyboard_protocol();
+                self.send_focus_event(self.active, true);
                 self.renderer.invalidate();
                 Ok(id)
             }
@@ -766,11 +776,14 @@ impl App {
         stream.set_nonblocking(false)?;
         self.client = Some(stream);
         self.outer_dnd_window = None;
+        self.outer_keyboard_flags = None;
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
         self.dnd_input = KittyDndParser::default();
         self.reset_mode();
         self.renderer.invalidate();
+        self.sync_keyboard_protocol();
+        self.send_focus_event(self.active, true);
         self.redraw()
     }
 
@@ -823,11 +836,15 @@ impl App {
     }
 
     fn detach_client(&mut self) {
+        if !self.windows.is_empty() {
+            self.send_focus_event(self.active, false);
+        }
         self.clear_outer_dnd_registration();
         self.client = None;
         self.client_input.clear();
         self.input_decoder = InputDecoder::default();
         self.dnd_input = KittyDndParser::default();
+        self.outer_keyboard_flags = None;
         self.reset_mode();
         self.redraw_deadline = None;
         self.clipboard_status_until = None;
@@ -999,6 +1016,43 @@ impl App {
         }
     }
 
+    fn sync_keyboard_protocol(&mut self) {
+        if self.windows.is_empty() || self.client.is_none() {
+            return;
+        }
+        let flags = self.windows[self.active].input_modes.keyboard_flags();
+        if self.outer_keyboard_flags == Some(flags) {
+            return;
+        }
+        self.write_client_protocol(format!("\x1b[={flags}u").as_bytes());
+        self.outer_keyboard_flags = self.client.is_some().then_some(flags);
+    }
+
+    fn send_focus_event(&self, index: usize, focused: bool) {
+        if self.client.is_some()
+            && self
+                .windows
+                .get(index)
+                .is_some_and(|window| window.input_modes.focus_reporting())
+        {
+            let _ = write_fd(
+                &self.windows[index].master,
+                if focused { b"\x1b[I" } else { b"\x1b[O" },
+            );
+        }
+    }
+
+    fn set_active(&mut self, index: usize) {
+        if index == self.active || index >= self.windows.len() {
+            return;
+        }
+        let previous = self.active;
+        self.send_focus_event(previous, false);
+        self.active = index;
+        self.sync_keyboard_protocol();
+        self.send_focus_event(index, true);
+    }
+
     fn clear_outer_dnd_registration(&mut self) {
         let Some(id) = self.outer_dnd_window.take() else {
             return;
@@ -1147,7 +1201,7 @@ impl App {
                             self.write_active(&passthrough)?;
                             passthrough.clear();
                         }
-                        self.active = target;
+                        self.set_active(target);
                         self.selection = None;
                         self.renderer.invalidate();
                         self.redraw()?;
@@ -1175,6 +1229,10 @@ impl App {
             }
 
             let (key, consumed) = decode_key(&bytes[index..]);
+            if key.event_type == 3 && self.mode != "locked" {
+                index += consumed;
+                continue;
+            }
             if let Some(actions) = self
                 .config
                 .actions(&self.mode, &key.name)
@@ -2156,6 +2214,8 @@ impl App {
             self.handle_window_dnd_command(index, &command);
         }
         let terminal_changed = !dnd.terminal.is_empty();
+        let previous_keyboard_flags = self.windows[index].input_modes.keyboard_flags();
+        let mode_responses = self.windows[index].input_modes.process(&dnd.terminal);
         self.windows[index].cursor_style.process(&dnd.terminal);
         let mut graphics_responses = Vec::new();
         let mut graphics_changed = false;
@@ -2202,8 +2262,14 @@ impl App {
             screen.cursor_position(),
             screen.bracketed_paste(),
         ));
+        graphics_responses.extend_from_slice(&mode_responses);
         if !graphics_responses.is_empty() {
             write_fd(&self.windows[index].master, &graphics_responses)?;
+        }
+        if index == self.active
+            && previous_keyboard_flags != self.windows[index].input_modes.keyboard_flags()
+        {
+            self.sync_keyboard_protocol();
         }
         if let Some(seconds) = self.config.command_notification_seconds() {
             let threshold = Duration::from_secs(seconds);
@@ -2328,11 +2394,12 @@ impl App {
             terminate_window(self.windows.remove(index));
             return Err("active pane is missing from its tab layout".into());
         }
-        self.active = self
+        let target = self
             .windows
             .iter()
             .position(|window| window.id == new_id)
             .unwrap();
+        self.set_active(target);
         self.selection = None;
         self.resize_windows()?;
         self.renderer.invalidate();
@@ -2356,11 +2423,12 @@ impl App {
                 .position(|id| *id == self.windows[self.active].id)
                 .unwrap_or(0);
             let target = ids[(current + 1) % ids.len()];
-            self.active = self
+            let target = self
                 .windows
                 .iter()
                 .position(|window| window.id == target)
                 .unwrap();
+            self.set_active(target);
             self.selection = None;
             self.renderer.invalidate();
             self.redraw()?;
@@ -2370,11 +2438,12 @@ impl App {
 
     fn focus_pane(&mut self, direction: Direction) -> Result<()> {
         if let Some(target) = self.pane_in_direction(direction) {
-            self.active = self
+            let target = self
                 .windows
                 .iter()
                 .position(|window| window.id == target)
                 .unwrap();
+            self.set_active(target);
             self.selection = None;
             self.renderer.invalidate();
             self.redraw()?;
@@ -2469,6 +2538,7 @@ impl App {
         if pane_count == 1 {
             return self.close_active();
         }
+        self.send_focus_event(self.active, false);
         let window = self.windows.remove(self.active);
         terminate_window(window);
         let tab = self.tabs.iter_mut().find(|tab| tab.id == tab_id).unwrap();
@@ -2479,6 +2549,8 @@ impl App {
             .iter()
             .position(|window| window.id == target)
             .unwrap();
+        self.sync_keyboard_protocol();
+        self.send_focus_event(self.active, true);
         self.selection = None;
         self.resize_windows()?;
         self.renderer.invalidate();
@@ -2539,11 +2611,12 @@ impl App {
                 .unwrap_or(0);
             let next = (current as isize + offset).rem_euclid(self.tabs.len() as isize) as usize;
             let target = pane_ids(&self.tabs[next].root)[0];
-            self.active = self
+            let target = self
                 .windows
                 .iter()
                 .position(|window| window.id == target)
                 .unwrap();
+            self.set_active(target);
             self.selection = None;
             self.renderer.invalidate();
             self.redraw()?;
@@ -2607,11 +2680,12 @@ impl App {
             self.renderer.set_history_search_prompt(None);
             self.mode = self.config.default_mode.clone();
         }
-        self.active = self
+        let target = self
             .windows
             .iter()
             .position(|window| window.id == target)
             .expect("tab layout references an existing pane");
+        self.set_active(target);
         self.selection = None;
         self.renderer.invalidate();
         self.redraw()
@@ -2622,16 +2696,20 @@ impl App {
             return Ok(());
         }
         if self.windows[self.active].floating {
+            self.send_focus_event(self.active, false);
             let window = self.windows.remove(self.active);
             let return_to = window.return_to_window;
             terminate_window(window);
             self.active = return_to
                 .and_then(|id| self.windows.iter().position(|window| window.id == id))
                 .unwrap_or(0);
+            self.sync_keyboard_protocol();
+            self.send_focus_event(self.active, true);
             self.renderer.invalidate();
             return self.redraw();
         }
         let tab_id = self.windows[self.active].tab_id;
+        self.send_focus_event(self.active, false);
         let tab_index = self
             .tabs
             .iter()
@@ -2662,6 +2740,8 @@ impl App {
             .iter()
             .position(|window| window.id == target)
             .unwrap();
+        self.sync_keyboard_protocol();
+        self.send_focus_event(self.active, true);
         self.selection = None;
         self.resize_windows()?;
         self.renderer.invalidate();
@@ -2843,6 +2923,8 @@ impl App {
                 .position(|window| window.id == target)
                 .unwrap();
             if removed_any {
+                self.sync_keyboard_protocol();
+                self.send_focus_event(self.active, true);
                 self.selection = None;
                 self.resize_windows()?;
                 self.renderer.invalidate();

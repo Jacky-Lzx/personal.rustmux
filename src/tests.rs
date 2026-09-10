@@ -27,11 +27,11 @@ use crate::render::{
 use crate::session::ServerOutputDecoder;
 use crate::session::SessionInfo;
 use crate::terminal::{
-    CursorStyleTracker, KittyDndParser, KittyDndRegistration, KittyGraphicsParser,
-    SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration, kitty_dnd_for_child,
-    kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id, kitty_graphics_query_response,
-    kitty_graphics_uses_shared_memory, kitty_notification, osc7_path, terminal_parser_size,
-    terminal_responses,
+    CursorStyleTracker, InputModeTracker, KittyDndParser, KittyDndRegistration,
+    KittyGraphicsParser, SemanticOutputCapture, TerminalMetadata, base64_encode, format_duration,
+    kitty_dnd_for_child, kitty_dnd_id, kitty_dnd_registration, kitty_dnd_with_id,
+    kitty_graphics_query_response, kitty_graphics_uses_shared_memory, kitty_notification,
+    osc7_path, terminal_parser_size, terminal_responses,
 };
 
 fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
@@ -62,6 +62,7 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
             TerminalMetadata::default(),
         ),
         cursor_style: CursorStyleTracker::default(),
+        input_modes: InputModeTracker::default(),
         kitty_graphics: KittyGraphicsParser::default(),
         kitty_dnd: KittyDndParser::default(),
         dnd_drag_registration: None,
@@ -173,6 +174,9 @@ fn key_decoder_names_control_navigation_and_modified_keys() {
     assert_eq!(decode_key(b"\x1b[5~").0.name, "pageup");
     assert_eq!(decode_key(b"\x1b[3~").0.name, "delete");
     assert_eq!(decode_key(b"\x1b[103;5u").0.name, "ctrl g");
+    assert_eq!(decode_key(b"\x1b[97:65;10:3;65u").0.name, "super A");
+    assert_eq!(decode_key(b"\x1b[97:65;10:3;65u").0.event_type, 3);
+    assert_eq!(decode_key(b"\x1b[1;2:2A").0.name, "up");
     assert_eq!(decode_key(b"\x1b[27;3;120~").0.name, "alt x");
     assert_eq!(decode_key(b"G").0.name, "G");
 }
@@ -183,6 +187,7 @@ fn window_name_editor_accepts_text_backspace_confirm_and_cancel() {
     let text = DecodedKey {
         name: "终".to_owned(),
         raw: "终".as_bytes().to_vec(),
+        event_type: 1,
     };
     assert_eq!(edit_window_name(&mut name, &text), RenameEdit::Continue);
     assert_eq!(name, "fish终");
@@ -1341,7 +1346,6 @@ fn terminal_queries_receive_local_responses() {
     );
 
     assert!(responses.windows(7).any(|part| part == b"\x1b[?1;2c"));
-    assert!(responses.windows(5).any(|part| part == b"\x1b[?0u"));
     assert!(responses.windows(4).any(|part| part == b"\x1b[0n"));
     assert!(responses.windows(7).any(|part| part == b"\x1b[8;12R"));
     let paste_mode = b"\x1b[?2004;2$y";
@@ -1392,6 +1396,25 @@ fn terminal_queries_receive_local_responses() {
             .windows(b"\x1b[6;33;17t".len())
             .any(|part| part == b"\x1b[6;33;17t")
     );
+}
+
+#[test]
+fn kitty_keyboard_modes_are_scoped_to_each_screen_and_answer_queries() {
+    let mut modes = InputModeTracker::default();
+    assert!(modes.process(b"\x1b[=3u\x1b[").is_empty());
+    assert_eq!(modes.process(b"?u"), b"\x1b[?3u");
+    assert_eq!(modes.keyboard_flags(), 3);
+
+    modes.process(b"\x1b[>7u");
+    assert_eq!(modes.keyboard_flags(), 7);
+    modes.process(b"\x1b[<u");
+    assert_eq!(modes.keyboard_flags(), 3);
+
+    modes.process(b"\x1b[?1049h\x1b[=31u\x1b[?1004h");
+    assert_eq!(modes.keyboard_flags(), 31);
+    assert!(modes.focus_reporting());
+    modes.process(b"\x1b[?1049l");
+    assert_eq!(modes.keyboard_flags(), 3);
 }
 
 #[test]

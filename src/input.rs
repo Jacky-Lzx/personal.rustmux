@@ -111,6 +111,7 @@ impl InputDecoder {
 pub(super) struct DecodedKey {
     pub(super) name: String,
     pub(super) raw: Vec<u8>,
+    pub(super) event_type: u8,
 }
 
 pub(super) fn decode_key(bytes: &[u8]) -> (DecodedKey, usize) {
@@ -118,6 +119,7 @@ pub(super) fn decode_key(bytes: &[u8]) -> (DecodedKey, usize) {
     let single = |name: &str| DecodedKey {
         name: name.to_owned(),
         raw: vec![byte],
+        event_type: 1,
     };
     match byte {
         b'\r' | b'\n' => (single("enter"), 1),
@@ -134,12 +136,27 @@ pub(super) fn decode_key(bytes: &[u8]) -> (DecodedKey, usize) {
             let consumed = final_offset + 3;
             let raw = bytes[..consumed].to_vec();
             let name = decode_csi_key_name(&raw).unwrap_or_else(|| "unbound-csi".to_owned());
-            (DecodedKey { name, raw }, consumed)
+            let event_type = kitty_event_type(&raw);
+            (
+                DecodedKey {
+                    name,
+                    raw,
+                    event_type,
+                },
+                consumed,
+            )
         }
         0x1b if bytes.get(1).is_some_and(u8::is_ascii_graphic) => {
             let raw = bytes[..2].to_vec();
             let name = format!("alt {}", char::from(bytes[1]));
-            (DecodedKey { name, raw }, 2)
+            (
+                DecodedKey {
+                    name,
+                    raw,
+                    event_type: 1,
+                },
+                2,
+            )
         }
         0x1b => (single("esc"), 1),
         0x20..=0x7e => (single(&char::from(byte).to_string()), 1),
@@ -151,7 +168,14 @@ pub(super) fn decode_key(bytes: &[u8]) -> (DecodedKey, usize) {
                 .unwrap_or(1);
             let raw = bytes[..width.min(bytes.len())].to_vec();
             let name = String::from_utf8_lossy(&raw).into_owned();
-            (DecodedKey { name, raw }, width.min(bytes.len()))
+            (
+                DecodedKey {
+                    name,
+                    raw,
+                    event_type: 1,
+                },
+                width.min(bytes.len()),
+            )
         }
     }
 }
@@ -160,10 +184,12 @@ fn decode_csi_key_name(sequence: &[u8]) -> Option<String> {
     let final_byte = *sequence.last()?;
     let parameters = std::str::from_utf8(&sequence[2..sequence.len() - 1]).ok()?;
     match (parameters, final_byte) {
-        ("", b'A') => Some("up".to_owned()),
-        ("", b'B') => Some("down".to_owned()),
-        ("", b'C') => Some("right".to_owned()),
-        ("", b'D') => Some("left".to_owned()),
+        (_, b'A') => Some("up".to_owned()),
+        (_, b'B') => Some("down".to_owned()),
+        (_, b'C') => Some("right".to_owned()),
+        (_, b'D') => Some("left".to_owned()),
+        (_, b'H') => Some("home".to_owned()),
+        (_, b'F') => Some("end".to_owned()),
         ("5", b'~') => Some("pageup".to_owned()),
         ("6", b'~') => Some("pagedown".to_owned()),
         ("3", b'~') => Some("delete".to_owned()),
@@ -182,14 +208,61 @@ fn decode_kitty_key(parameters: &str) -> Option<String> {
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(1)
         .saturating_sub(1);
-    let character = char::from_u32(codepoint)?;
-    if modifiers & 4 != 0 && character.is_ascii_alphabetic() {
-        Some(format!("ctrl {}", character.to_ascii_lowercase()))
-    } else if modifiers & 2 != 0 {
-        Some(format!("alt {character}"))
-    } else {
-        Some(character.to_string())
+    let shifted = parameters
+        .split(';')
+        .next()?
+        .split(':')
+        .nth(1)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u32>().ok())
+        .and_then(char::from_u32);
+    let base = match codepoint {
+        9 => "tab".to_owned(),
+        13 => "enter".to_owned(),
+        27 => "esc".to_owned(),
+        127 => "backspace".to_owned(),
+        _ => shifted
+            .filter(|_| modifiers & 1 != 0)
+            .or_else(|| char::from_u32(codepoint))?
+            .to_string(),
+    };
+    Some(modified_key_name(&base, modifiers))
+}
+
+fn modified_key_name(base: &str, modifiers: u8) -> String {
+    let mut names = Vec::new();
+    if modifiers & 4 != 0 {
+        names.push("ctrl");
     }
+    if modifiers & 2 != 0 {
+        names.push("alt");
+    }
+    if modifiers & 8 != 0 {
+        names.push("super");
+    }
+    if modifiers & 16 != 0 {
+        names.push("hyper");
+    }
+    if modifiers & 32 != 0 {
+        names.push("meta");
+    }
+    if modifiers & 1 != 0 && base.chars().count() != 1 {
+        names.push("shift");
+    }
+    names.push(base);
+    names.join(" ")
+}
+
+fn kitty_event_type(sequence: &[u8]) -> u8 {
+    if sequence.last() != Some(&b'u') {
+        return 1;
+    }
+    std::str::from_utf8(&sequence[2..sequence.len() - 1])
+        .ok()
+        .and_then(|parameters| parameters.split(';').nth(1))
+        .and_then(|field| field.split(':').nth(1))
+        .and_then(|event| event.parse().ok())
+        .unwrap_or(1)
 }
 
 fn decode_xterm_modified_key(parameters: &str) -> Option<String> {

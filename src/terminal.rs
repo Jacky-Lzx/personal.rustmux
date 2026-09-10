@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::env;
 use std::ffi::OsString;
 use std::io::Write;
@@ -14,6 +15,8 @@ const MAX_KITTY_COMMAND_BYTES: usize = 64 * 1024 * 1024;
 const MAX_KITTY_DND_SEQUENCE_BYTES: usize = 16 * 1024;
 const KITTY_DND_PREFIX: &[u8] = b"\x1b]72;";
 const STRING_TERMINATOR: &[u8] = b"\x1b\\";
+const KITTY_KEYBOARD_FLAGS: u8 = 0b1_1111;
+const MAX_MODE_STACK_DEPTH: usize = 32;
 
 pub(super) fn terminal_parser_size(columns: u16, rows: u16) -> (u16, u16) {
     // vt100's wrapping logic requires room for a double-width character and
@@ -716,6 +719,160 @@ impl CursorStyleTracker {
     }
 }
 
+#[derive(Default)]
+struct KeyboardMode {
+    flags: u8,
+    stack: VecDeque<u8>,
+}
+
+/// Virtualizes input-related terminal modes independently for every PTY.
+#[derive(Default)]
+pub(super) struct InputModeTracker {
+    state: InputModeSequenceState,
+    main: KeyboardMode,
+    alternate: KeyboardMode,
+    alternate_screen: bool,
+    focus_reporting: bool,
+}
+
+#[derive(Default)]
+enum InputModeSequenceState {
+    #[default]
+    Ground,
+    Escape,
+    Csi(Vec<u8>),
+}
+
+impl InputModeTracker {
+    pub(super) fn keyboard_flags(&self) -> u8 {
+        if self.alternate_screen {
+            self.alternate.flags
+        } else {
+            self.main.flags
+        }
+    }
+
+    pub(super) fn focus_reporting(&self) -> bool {
+        self.focus_reporting
+    }
+
+    pub(super) fn process(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut responses = Vec::new();
+        for &byte in bytes {
+            let state = std::mem::take(&mut self.state);
+            self.state = match state {
+                InputModeSequenceState::Ground => match byte {
+                    0x1b => InputModeSequenceState::Escape,
+                    0x9b => InputModeSequenceState::Csi(Vec::new()),
+                    _ => InputModeSequenceState::Ground,
+                },
+                InputModeSequenceState::Escape => match byte {
+                    b'[' => InputModeSequenceState::Csi(Vec::new()),
+                    0x1b => InputModeSequenceState::Escape,
+                    _ => InputModeSequenceState::Ground,
+                },
+                InputModeSequenceState::Csi(mut parameters) => {
+                    if byte == 0x1b {
+                        InputModeSequenceState::Escape
+                    } else if (0x40..=0x7e).contains(&byte) {
+                        self.apply_csi(&parameters, byte, &mut responses);
+                        InputModeSequenceState::Ground
+                    } else if parameters.len() < 128 {
+                        parameters.push(byte);
+                        InputModeSequenceState::Csi(parameters)
+                    } else {
+                        InputModeSequenceState::Ground
+                    }
+                }
+            };
+        }
+        responses
+    }
+
+    fn apply_csi(&mut self, parameters: &[u8], final_byte: u8, responses: &mut Vec<u8>) {
+        if final_byte == b'u' {
+            match parameters.first().copied() {
+                Some(b'?') if parameters == b"?" => {
+                    let _ = write!(responses, "\x1b[?{}u", self.keyboard_flags());
+                }
+                Some(b'=') => {
+                    let values = parse_csi_numbers(&parameters[1..]);
+                    let requested =
+                        values.first().copied().unwrap_or(0) as u8 & KITTY_KEYBOARD_FLAGS;
+                    let mode = values.get(1).copied().unwrap_or(1);
+                    let keyboard = self.keyboard_mode_mut();
+                    match mode {
+                        2 => keyboard.flags |= requested,
+                        3 => keyboard.flags &= !requested,
+                        _ => keyboard.flags = requested,
+                    }
+                }
+                Some(b'>') => {
+                    let requested = parse_csi_numbers(&parameters[1..])
+                        .first()
+                        .copied()
+                        .unwrap_or(0) as u8
+                        & KITTY_KEYBOARD_FLAGS;
+                    let keyboard = self.keyboard_mode_mut();
+                    if keyboard.stack.len() == MAX_MODE_STACK_DEPTH {
+                        keyboard.stack.pop_front();
+                    }
+                    keyboard.stack.push_back(keyboard.flags);
+                    keyboard.flags = requested;
+                }
+                Some(b'<') => {
+                    let count = parse_csi_numbers(&parameters[1..])
+                        .first()
+                        .copied()
+                        .unwrap_or(1)
+                        .max(1);
+                    let keyboard = self.keyboard_mode_mut();
+                    for _ in 0..count {
+                        keyboard.flags = keyboard.stack.pop_back().unwrap_or(0);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if matches!(final_byte, b'h' | b'l') && parameters.starts_with(b"?") {
+            let enabled = final_byte == b'h';
+            for mode in parse_csi_numbers(&parameters[1..]) {
+                match mode {
+                    47 | 1047 | 1049 => self.alternate_screen = enabled,
+                    1004 => self.focus_reporting = enabled,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn keyboard_mode_mut(&mut self) -> &mut KeyboardMode {
+        if self.alternate_screen {
+            &mut self.alternate
+        } else {
+            &mut self.main
+        }
+    }
+}
+
+fn parse_csi_numbers(parameters: &[u8]) -> Vec<u16> {
+    parameters
+        .split(|byte| *byte == b';')
+        .map(|digits| {
+            digits.iter().try_fold(0_u16, |value, digit| {
+                digit.is_ascii_digit().then(|| {
+                    value
+                        .saturating_mul(10)
+                        .saturating_add(u16::from(digit - b'0'))
+                })
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
+}
+
 pub(super) fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -797,8 +954,6 @@ pub(super) fn terminal_responses(
             responses.extend_from_slice(b"\x1bP1$r0m\x1b\\");
         } else if query.starts_with(b"\x1b[0c") || query.starts_with(b"\x1b[c") {
             responses.extend_from_slice(b"\x1b[?1;2c");
-        } else if query.starts_with(b"\x1b[?u") {
-            responses.extend_from_slice(b"\x1b[?0u");
         } else if query.starts_with(b"\x1b[5n") {
             responses.extend_from_slice(b"\x1b[0n");
         } else if query.starts_with(b"\x1b[6n") {
