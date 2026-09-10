@@ -1698,6 +1698,8 @@ fn session_manager_renders_search_results_and_actions() {
     assert!(frame.contains("[SAVED]"));
     assert!(frame.contains("<Enter>"));
     assert!(frame.contains("Open/Create"));
+    assert!(!frame.contains('├'));
+    assert!(!frame.contains('┤'));
     assert!(frame.contains("\x1b[?25l"));
 }
 

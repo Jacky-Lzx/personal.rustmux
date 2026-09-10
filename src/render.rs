@@ -1633,19 +1633,29 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         return;
     }
 
-    let _ = write!(output, "\x1b[{};{}H", origin_row + 2, origin_column);
-    write_rgb_style(output, MOCHA_SURFACE_1, Some(MOCHA_BASE), false);
-    output.extend_from_slice("├".as_bytes());
-    output.extend_from_slice("─".repeat(inner_width).as_bytes());
-    output.extend_from_slice("┤".as_bytes());
-
     let body_width = inner_width.saturating_sub(2);
+    let _ = write!(output, "\x1b[{};{}H", origin_row + 2, origin_column + 2);
+    write_rgb_style(output, MOCHA_SURFACE_1, Some(MOCHA_BASE), false);
+    output.extend_from_slice("─".repeat(body_width).as_bytes());
+
     let marker_width = 2;
     let created_width = if body_width >= 65 { 15 } else { 0 };
     let layout_width = if body_width >= 44 { 17 } else { 12 };
     let status_width = if body_width >= 30 { 11 } else { 0 };
-    let name_width =
+    let available_name_width =
         body_width.saturating_sub(marker_width + layout_width + status_width + created_width);
+    let preferred_name_width = manager
+        .sessions
+        .iter()
+        .map(|session| UnicodeWidthStr::width(session.name.as_str()))
+        .max()
+        .unwrap_or(0)
+        .max(UnicodeWidthStr::width("SESSION"))
+        .saturating_add(3)
+        .min(28);
+    let name_width = preferred_name_width.min(available_name_width);
+    let trailing_width = body_width
+        .saturating_sub(marker_width + name_width + layout_width + status_width + created_width);
 
     let _ = write!(output, "\x1b[{};{}H", origin_row + 3, origin_column + 2);
     write_session_manager_field(output, "", marker_width, MOCHA_SUBTEXT_0, MOCHA_BASE, false);
@@ -1685,6 +1695,14 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             true,
         );
     }
+    write_session_manager_field(
+        output,
+        "",
+        trailing_width,
+        MOCHA_SUBTEXT_0,
+        MOCHA_BASE,
+        false,
+    );
 
     let available_rows = usize::from(rows.saturating_sub(7));
     let first_visible = manager
@@ -1759,6 +1777,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
                 false,
             );
         }
+        write_session_manager_field(output, "", trailing_width, MOCHA_TEXT, background, false);
     }
 
     if manager.sessions.is_empty() {
