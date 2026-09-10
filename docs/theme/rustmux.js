@@ -11,6 +11,21 @@
       </span>`;
   }
 
+  function addLanguageSwitch() {
+    const actions = document.querySelector(".right-buttons");
+    if (!actions) return;
+    const path = window.location.pathname;
+    const chinese = path === "/zh" || path.startsWith("/zh/");
+    const targetPath = chinese ? path.replace(/^\/zh(?=\/|$)/, "") || "/" : `/zh${path}`;
+    const link = document.createElement("a");
+    link.className = "language-switch";
+    link.href = `${targetPath}${window.location.search}${window.location.hash}`;
+    link.hreflang = chinese ? "en" : "zh-CN";
+    link.textContent = chinese ? "EN" : "中文";
+    link.setAttribute("aria-label", chinese ? "Read in English" : "阅读中文版");
+    actions.prepend(link);
+  }
+
   function addCopyButtons() {
     for (const pre of document.querySelectorAll("main pre")) {
       const code = pre.querySelector("code");
@@ -76,6 +91,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     enhanceBrand();
+    addLanguageSwitch();
     addCopyButtons();
     addTableOfContents();
     bindSearchShortcut();

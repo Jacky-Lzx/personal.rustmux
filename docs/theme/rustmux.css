@@ -122,6 +122,25 @@ body::before {
   font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.language-switch {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  margin-right: 5px;
+  padding: 0 9px;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  border-radius: 5px;
+  font: 750 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-decoration: none;
+}
+
+.language-switch:hover {
+  color: #11111b;
+  border-color: #a6e3a1;
+  background: #a6e3a1;
+}
+
 .icon-button {
   color: #a6adc8;
 }
@@ -530,4 +549,3 @@ kbd {
     transition-duration: 0.01ms !important;
   }
 }
-

@@ -4,7 +4,13 @@
 
 支持 macOS 和 Linux 等 Unix 终端；Windows 暂不支持。
 
-完整使用说明、配置参考和终端协议兼容性说明见 [Rustmux Documentation](docs/index.md)。本地预览文档站：
+完整使用说明、配置参考和终端协议兼容性说明见 [Rustmux Documentation](docs/index.md)。文档默认使用英文，并在 `/zh/` 提供中文版。构建完整双语站点：
+
+```sh
+./scripts/build-docs.sh
+```
+
+实时预览英文文档：
 
 ```sh
 mdbook serve --open

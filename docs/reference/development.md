@@ -1,6 +1,6 @@
-# 开发与测试
+# Development and Testing
 
-## 日常检查
+## Routine checks
 
 ```sh
 cargo fmt --check
@@ -8,11 +8,11 @@ cargo test --locked
 cargo clippy --all-targets --locked -- -D warnings
 ```
 
-macOS 与 Linux CI 都会运行格式检查、完整测试和 Clippy。
+CI runs formatting, the complete test suite, and Clippy on macOS and Linux.
 
-## Fuzz test
+## Fuzz testing
 
-nightly Rust 会编译全部 libFuzzer target；Linux CI 还会执行短时 smoke test。
+Nightly Rust compiles every libFuzzer target. Linux CI also runs short smoke tests.
 
 ```sh
 cargo install cargo-fuzz --locked
@@ -24,15 +24,15 @@ cargo fuzz run osc-terminal
 cargo fuzz run terminal-render
 ```
 
-这些 target 覆盖输入与鼠标解码、Kitty graphics、Kitty DnD、OSC/终端响应和完整终端帧渲染。
+The targets cover keyboard and mouse decoding, Kitty graphics, Kitty drag-and-drop, OSC and terminal responses, and complete terminal-frame rendering.
 
-## 图片预览 benchmark
+## Image-preview benchmark
 
 ```sh
 cargo bench --features benchmarks --bench image_preview
 ```
 
-默认把 JPG、PNG、PDF 和 SVG 测试素材归一化为 1 MiB payload，运行 20 次并输出 median、mean 和 MiB/s。
+The default run normalizes JPG, PNG, PDF, and SVG fixtures to a 1 MiB payload, performs 20 iterations, and reports median, mean, and MiB/s.
 
 ```sh
 RUSTMUX_BENCH_PAYLOAD_MIB=4 \
@@ -40,16 +40,16 @@ RUSTMUX_BENCH_ITERATIONS=50 \
 cargo bench --features benchmarks --bench image_preview
 ```
 
-测试素材生成在 `target/image-preview-bench-fixtures/`，不会加入 Git。
+Fixtures are generated under `target/image-preview-bench-fixtures/` and are not committed.
 
-## 构建本手册
+## Build this manual
 
-文档使用 mdBook：
+The documentation uses mdBook:
 
 ```sh
+./scripts/build-docs.sh
 mdbook serve --open
-mdbook build
 ```
 
-构建结果写入 `dist/`。编辑 `docs/` 中的 Markdown 或 `docs/theme/` 中的样式后，开发服务器会自动刷新。
+The build script generates English at the site root and Chinese under `/zh/`. `mdbook serve` opens the English source with live reload.
 

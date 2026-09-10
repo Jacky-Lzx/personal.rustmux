@@ -1,49 +1,49 @@
-# Session 管理
+# Session Management
 
-## 命令行管理
+## Command-line management
 
 ```sh
-# 创建或连接具名 session
+# Create or attach to a named session
 rustmux new-session -s work
 
-# 重新连接
+# Reattach
 rustmux attach-session -t work
 
-# 列出 session
+# List sessions
 rustmux list-sessions
 
-# 结束 session 及其进程
+# Stop a session and its processes
 rustmux kill-session -t work
 ```
 
-在 Rustmux 内按 <kbd>Ctrl-b</kbd>、<kbd>d</kbd> detach。server 与其中的程序会继续运行。
+Press <kbd>Ctrl-b</kbd>, <kbd>d</kbd> inside Rustmux to detach. The server and its programs keep running.
 
 ## Session Manager
 
-在 `normal` mode 按 `s` 打开居中的 Session Manager。
+Press `s` in normal mode to open the centered Session Manager.
 
-- 输入文字：按名称过滤 session；
-- `↑` / `↓`：选择；
-- `Tab`：补全所选名称；
-- `Enter`：进入所选 session；若无匹配，以输入内容创建新 session；
-- `Ctrl-a`：保存当前 session 布局；
-- `Ctrl-r`：重命名；
-- `Ctrl-x`：断开所选 session 的其他客户端；
-- `Delete`：删除 session 或已保存快照；
-- `Esc`：关闭。
+- Type to filter sessions by name.
+- `↑` / `↓` selects a result.
+- `Tab` completes the selected name.
+- `Enter` enters the selected session; with no match, it creates a session from the query.
+- `Ctrl-a` saves the current layout.
+- `Ctrl-r` renames a session.
+- `Ctrl-x` disconnects other clients from the selected session.
+- `Delete` deletes a session or saved snapshot.
+- `Esc` closes the manager.
 
-列表会显示 window/pane 数、连接状态、保存状态和创建时间。
+The list includes window and pane counts, connection state, saved state, and creation time.
 
-## 保存与恢复
+## Save and restore
 
-快照默认保存在：
+Snapshots are stored under:
 
 ```text
 $XDG_STATE_HOME/rustmux/sessions
-~/.local/state/rustmux/sessions   # 未设置 XDG_STATE_HOME 时
+~/.local/state/rustmux/sessions   # when XDG_STATE_HOME is unset
 ```
 
-快照包含 window 名称、pane 分割布局与比例、活动 pane、各 pane 工作目录和 floating terminal 状态。进程和终端内容不会序列化。
+A snapshot contains window names, pane split trees and ratios, the active pane, working directories, and floating-terminal state. Processes and terminal contents are not serialized.
 
-server 停止后再次创建同名 session，Rustmux 会在保存的目录中启动新 shell 并重建布局。已保存但未运行的 session 也会出现在 Session Manager 中。
+After the server stops, creating the same session again starts fresh shells in the saved directories and rebuilds the layout. Saved sessions that are not running remain visible in the Session Manager.
 

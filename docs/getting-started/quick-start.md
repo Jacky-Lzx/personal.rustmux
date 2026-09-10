@@ -1,8 +1,8 @@
-# 安装与快速开始
+# Installation and Quick Start
 
-## 从源码运行
+## Run from source
 
-Rustmux 需要稳定版 Rust toolchain，以及 macOS 或 Linux 环境。
+Rustmux requires a stable Rust toolchain and macOS or Linux.
 
 ```sh
 git clone https://github.com/Jacky-Lzx/personal.rustmux.git
@@ -10,32 +10,32 @@ cd personal.rustmux
 cargo run --release
 ```
 
-不带参数运行时，Rustmux 会连接已有的 `default` session；如果不存在则自动创建。
+Running without arguments attaches to the existing `default` session, or creates it when it does not exist.
 
-## 安装二进制
+## Install the binary
 
 ```sh
 cargo install --path .
 rustmux
 ```
 
-新 window 默认启动 `fish`。可为单次启动覆盖 shell：
+New windows start `fish` by default. Override the shell for one launch with:
 
 ```sh
 RUSTMUX_SHELL=zsh rustmux
 ```
 
-## 第一个工作区
+## Build your first workspace
 
-进入 Rustmux 后，你通常处于 `locked` mode，输入会直接交给 shell。
+Rustmux normally starts in `locked` mode, where input goes directly to the shell.
 
-1. 按 <kbd>Ctrl-b</kbd> 进入 `normal` mode。
-2. 按 <kbd>c</kbd> 创建一个 window。
-3. 再按 <kbd>Ctrl-b</kbd>，然后按 <kbd>Ctrl-p</kbd> 进入 pane mode。
-4. 按 <kbd>r</kbd> 向右拆分 pane，或按 <kbd>d</kbd> 向下拆分。
-5. 按 <kbd>Ctrl-b</kbd>、<kbd>d</kbd> detach；再次运行 `rustmux` 即可连接回来。
+1. Press <kbd>Ctrl-b</kbd> to enter `normal` mode.
+2. Press <kbd>c</kbd> to create a window.
+3. Press <kbd>Ctrl-b</kbd>, then <kbd>Ctrl-p</kbd> to enter pane mode.
+4. Press <kbd>r</kbd> to split right, or <kbd>d</kbd> to split down.
+5. Press <kbd>Ctrl-b</kbd>, <kbd>d</kbd> to detach. Run `rustmux` again to reconnect.
 
-## 生成配置
+## Generate a configuration
 
 ```sh
 mkdir -p ~/.config/rustmux
@@ -43,11 +43,11 @@ rustmux default-config > ~/.config/rustmux/config.toml
 rustmux check-config
 ```
 
-配置文件保存后会在约 500ms 内热重载。无效配置不会替换上一份有效配置。
+Saved changes hot-reload in about 500ms. Invalid changes never replace the last valid configuration.
 
-## 下一步
+## Next steps
 
-- 阅读[快捷键与模式](../guide/keybindings.md)，理解输入如何在 Rustmux 与内部程序之间传递。
-- 在[配置文件](../configuration/index.md)中调整快捷键和状态栏显示方式。
-- 如果使用 Kitty 或 Yazi，查看[Yazi 与 Kitty](../guide/kitty-yazi.md)。
+- Read [Keybindings and Modes](../guide/keybindings.md) to understand how input moves between Rustmux and terminal applications.
+- Customize bindings and status-line visibility in [Configuration File](../configuration/index.md).
+- If you use Kitty or Yazi, continue with [Yazi and Kitty](../guide/kitty-yazi.md).
 

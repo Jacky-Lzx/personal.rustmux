@@ -1,31 +1,31 @@
-# 历史、搜索与复制
+# History, Search, and Copy
 
-## 浏览历史
+## Browse history
 
-按 <kbd>Ctrl-b</kbd>、<kbd>[</kbd> 进入 scroll mode。可以使用键盘或滚轮浏览；滚动到底部后仍会留在 scroll mode，直到按 `q` 或 Esc。
+Press <kbd>Ctrl-b</kbd>, <kbd>[</kbd> to enter scroll mode. Browse with the keyboard or mouse wheel. Reaching the bottom does not exit; press `q` or Esc to return to the live screen.
 
-每个新 pane 默认保留 1000 行，可通过 `scrollback_lines` 调整为 1 到 1,000,000。
+Each new pane keeps 1,000 lines by default. Set `scrollback_lines` from 1 to 1,000,000 to change the limit.
 
-## 搜索
+## Search
 
-在 scroll mode 按 `/` 输入搜索词，Enter 确认。使用 `n` 跳到下一处，`N` 回到上一处。
+Press `/` in scroll mode, enter a query, and press Enter. Use `n` for the next result and `N` for the previous result.
 
-## 复制文本
+## Copy text
 
-有两种选择方式：
+Rustmux supports two selection styles:
 
-1. 按 `v` 开始键盘选择，用方向键或 `h j k l` 扩展，再按 `y` 复制。
-2. 按住鼠标左键拖动；松开后自动通过 OSC 52 复制，并显示短暂提示。
+1. Press `v`, extend with arrow keys or `h j k l`, then press `y`.
+2. Hold the left mouse button and drag. Releasing copies through OSC 52 and shows a brief confirmation.
 
-鼠标复制只在 scroll mode 生效。locked mode 下鼠标输入会传给 Yazi、Neovim 等内部程序。
+Mouse selection is active only in scroll mode. In locked mode, mouse input goes to applications such as Yazi and Neovim.
 
-## 编辑历史与命令输出
+## Edit history and command output
 
-在 normal mode：
+In normal mode:
 
-- `h` 使用 `$VISUAL` 或 `$EDITOR` 打开完整历史；
-- `e` 打开上一条命令的输出；
-- `y` 通过 OSC 52 复制上一条命令输出。
+- `h` opens complete history with `$VISUAL` or `$EDITOR`;
+- `e` opens the previous command's output;
+- `y` copies the previous command's output through OSC 52.
 
-命令输出优先使用 OSC 133 shell integration 提供的精确边界；没有 OSC 133 时会使用命令回显和提示符进行兼容性提取。
+Rustmux prefers exact command boundaries from OSC 133 shell integration. Without OSC 133, it falls back to command echo and prompt detection.
 

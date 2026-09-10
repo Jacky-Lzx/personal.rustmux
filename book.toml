@@ -2,7 +2,7 @@
 title = "Rustmux Documentation"
 authors = ["Rustmux contributors"]
 description = "A small, modern terminal multiplexer written in Rust"
-language = "zh-CN"
+language = "en"
 src = "docs"
 
 [build]

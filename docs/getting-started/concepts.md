@@ -1,39 +1,39 @@
-# 核心概念
+# Core Concepts
 
 ## Session
 
-Session 是由后台 server 持有的长期工作区。关闭或 detach 客户端不会结束其中的 shell。一个 session 包含多个 window，并拥有独立名称。
+A session is a long-lived workspace owned by a background server. Closing or detaching a client does not stop its shells. Each named session contains one or more windows.
 
 ## Window
 
-Window 类似标签页。顶部状态栏显示当前 session 和全部 window；活动 window 使用绿色标签，后台 window 使用白色标签。若后台 window 中的 pane 发出 bell，window 标签右侧会显示 `[!]`。
+A window behaves like a tab. The top status line shows the active session and every window. The active window uses a green label; background windows use white labels. A background window displays `[!]` on the right when one of its panes has an unread bell.
 
-点击 window 名称可以直接切换。`normal` mode 下也可用 `n`、`p` 和数字键导航，用 `<`、`>` 重排。
+Click a window label to switch directly. In `normal` mode, use `n`, `p`, or number keys to navigate, and `<` or `>` to reorder windows.
 
 ## Pane
 
-Pane 是一个带独立 PTY、屏幕缓冲区和终端状态的区域。每个 pane 会分别保存：
+A pane is a region with its own PTY, screen buffer, and terminal state. Rustmux stores the following independently for every pane:
 
-- 主屏幕与备用屏幕内容；
-- Kitty keyboard protocol mode stack；
-- 默认前景、背景与应用请求的光标颜色；
-- 鼠标协议、鼠标形状与 focus tracking；
-- Kitty graphics、DnD 与 IPC 请求状态。
+- primary and alternate screen contents;
+- Kitty keyboard protocol mode stacks;
+- default foreground, background, and application-requested cursor colors;
+- mouse protocol, cursor shape, and focus tracking;
+- Kitty graphics, drag-and-drop, and IPC request state.
 
-聚焦 pane 的边框为绿色；未读 bell 的 pane 为橙色。点击 pane 或边框可聚焦，拖动共享边框可调整比例。
+The focused pane has a green border. A pane with an unread bell has an orange border. Click a pane or its border to focus it, and drag a shared border to resize adjacent panes.
 
 ## Mode
 
-Mode 是 Rustmux 的输入上下文：
+Modes provide distinct input contexts:
 
-- `locked`：几乎所有输入传给内部程序。
-- `normal`：window、session、历史和浮动终端操作。
-- `pane`：拆分、聚焦、缩放、移动和关闭 pane。
-- `scroll`：浏览、搜索和复制历史。
+- `locked`: almost all input reaches the application inside the pane.
+- `normal`: window, session, history, and floating-terminal actions.
+- `pane`: split, focus, resize, move, zoom, or close panes.
+- `scroll`: browse, search, select, and copy terminal history.
 
-底部状态栏只展示当前 mode 中标记为常用的快捷键。显示不下时会出现 `? MORE (+N)`；按 `?` 打开完整帮助浮窗。
+The bottom status line only shows frequently used bindings for the current mode. When space runs out, Rustmux displays `? MORE (+N)`; press `?` for the complete help overlay.
 
 ## Floating terminal
 
-Floating terminal 是一个居中的独立 PTY。按 `normal` mode 下的 `i` 显示或隐藏；打开后它获得焦点，底层 pane 自动转为未聚焦样式。
+The floating terminal is an independent PTY shown in a centered overlay. Press `i` in normal mode to show or hide it. When opened, it receives focus and the pane below switches to its unfocused border style.
 

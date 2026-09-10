@@ -1,29 +1,29 @@
-# Yazi 与 Kitty
+# Yazi and Kitty
 
-Kitty 是 Rustmux 功能最完整的外层终端。Rustmux 会在 pane 之间隔离协议状态，并在外层终端与当前 pane 之间转发请求和响应。
+Kitty is the most capable outer terminal for Rustmux. Protocol state is isolated per pane, while requests and responses are routed between the outer terminal and the pane that initiated them.
 
-## 图片预览
+## Image previews
 
-Rustmux 支持 Kitty graphics protocol 与 Unicode placeholder。Yazi 可在 pane 内显示图片预览，Rustmux 会流式处理 graphics 分块，并只重绘发生变化的终端单元格。
+Rustmux supports the Kitty graphics protocol and Unicode placeholders. Yazi can display image previews inside a pane; Rustmux processes graphics chunks incrementally and redraws only terminal cells that changed.
 
-PDF 与 SVG 的栅格化由 Yazi 调用的外部工具完成；Rustmux 负责后续 graphics 数据与终端帧合成。
+Yazi's external tools rasterize PDF and SVG files and prepare JPEG previews. Rustmux handles the resulting graphics data and terminal-frame composition.
 
-## 文件拖放
+## File drag-and-drop
 
-Kitty 0.47.0 或更新版本支持 OSC 72 drag-and-drop protocol。通过 Rustmux，Yazi 可以：
+Kitty 0.47.0 or newer supports the OSC 72 drag-and-drop protocol. Through Rustmux, Yazi can:
 
-- 从当前 pane 拖文件到 Finder 等 GUI 应用；
-- 接收从外部拖入的文件；
-- 按 pane ID 路由协议响应；
-- 把外层坐标换算成 pane 内的单元格与像素坐标。
+- drag files from a pane into Finder or another GUI application;
+- receive files dragged in from outside;
+- route protocol responses by pane ID;
+- translate outer-terminal coordinates into pane-local cell and pixel coordinates.
 
-## Clipboard 与文件传输
+## Clipboard and file transfer
 
-Rustmux 支持 Kitty OSC 5522 clipboard protocol 与 OSC 5113 file transfer，并为多个 pane 隔离请求 ID。外层终端返回结果时，会路由到发起请求的 pane。
+Rustmux supports Kitty OSC 5522 clipboard operations and OSC 5113 file transfer. Request IDs are isolated across panes, and outer-terminal responses are routed back to the pane that made the request.
 
-## Keyboard 与鼠标
+## Keyboard and mouse
 
-Rustmux 为每个 pane、主屏幕和备用屏幕维护 Kitty keyboard protocol mode stack。切换 pane 时同步 progressive-enhancement flags；修饰键、重复/释放事件和 associated text 可以到达内部程序。
+Rustmux maintains a Kitty keyboard protocol mode stack for every pane and for both primary and alternate screens. Progressive-enhancement flags are synchronized when focus changes, allowing modifier keys, repeat/release events, and associated text to reach the inner application.
 
-locked mode 下，内部程序启用的鼠标协议会正常收到事件。Rustmux 只保留 window 标签点击、pane 聚焦和共享边框拖动等自身交互。
+In locked mode, applications receive the mouse protocols they enable. Rustmux retains only its own interactions, including window-label clicks, pane focus, and shared-border dragging.
 

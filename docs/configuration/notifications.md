@@ -1,6 +1,6 @@
-# 通知
+# Notifications
 
-通过 OSC 133 检测到一条命令达到时长阈值并完成后，Rustmux 使用 Kitty OSC 99 发送桌面通知。
+When OSC 133 reports that a command ran past the configured threshold and completed, Rustmux sends a desktop notification with Kitty OSC 99.
 
 ```toml
 [notifications]
@@ -9,29 +9,29 @@ command_duration_seconds = 10
 exclude_applications = ["yazi", "nvim"]
 ```
 
-## 应用过滤
+## Application filters
 
-`exclude_applications` 按可执行文件名匹配，不区分大小写。Rustmux 会记录整条命令期间出现过的所有前台应用，因此即使 Yazi 外面包了一层负责切换目录的 fish 函数，也能识别并过滤。
+`exclude_applications` matches executable names case-insensitively. Rustmux records every foreground application observed during a command, so Yazi is still recognized when a Fish wrapper function launches it and changes directories afterward.
 
-设置为空数组可取消过滤：
+Use an empty list to disable filtering:
 
 ```toml
 exclude_applications = []
 ```
 
-## Bell 与未读状态
+## Bell and unread state
 
-长命令完成也会被视为一次 pane bell。若 pane 不在焦点：
+Long-command completion also counts as a pane bell. If the pane is not focused:
 
-- window 名称右侧出现 `[!]`；
-- pane 标题右侧出现 `[!]`；
-- pane 边框变为橙色。
+- `[!]` appears beside the window name;
+- `[!]` appears beside the pane title;
+- the pane border turns orange.
 
-聚焦对应 pane 后清除。
+Focusing that pane clears the indicators.
 
-## 前置条件
+## Requirements
 
-- shell 需要输出 OSC 133 命令边界；默认 fish 可直接使用；
-- session 必须连接着 Kitty 客户端；detach 时没有外层终端可接收通知；
-- macOS 的横幅显示方式由系统通知设置控制，通知中心记录与 Dock badge 不代表一定出现横幅。
+- The shell must provide OSC 133 command boundaries; the default Fish setup does.
+- A Kitty client must be attached to the session. There is no outer terminal to receive notifications while detached.
+- On macOS, notification banner behavior is controlled by system settings. An entry in Notification Center or a Dock badge does not guarantee a banner.
 
