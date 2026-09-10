@@ -17,6 +17,7 @@ const MOCHA_BASE: Rgb = (30, 30, 46);
 const MOCHA_OVERLAY_0: Rgb = (108, 112, 134);
 const MOCHA_TEXT: Rgb = (205, 214, 244);
 const MOCHA_GREEN: Rgb = (166, 227, 161);
+const MOCHA_PEACH: Rgb = (250, 179, 135);
 const MOCHA_YELLOW: Rgb = (249, 226, 175);
 const MOCHA_BLUE: Rgb = (137, 180, 250);
 const MOCHA_LAVENDER: Rgb = (180, 190, 254);
@@ -606,13 +607,16 @@ fn overlay_pane_cells(
 ) {
     let (columns, rows) = canvas_size;
     let rect = window.pane_rect;
+    let border_style = if active {
+        CellStyle::active_border()
+    } else if window.bell_pending {
+        CellStyle::bell_border()
+    } else {
+        CellStyle::border()
+    };
     let border_cell = |contents: char| CellSnapshot {
         contents: contents.to_string(),
-        style: if active {
-            CellStyle::active_border()
-        } else {
-            CellStyle::border()
-        },
+        style: border_style,
         wide_continuation: false,
     };
     let replace = |cells: &mut [CellSnapshot], row: u16, column: u16, cell: CellSnapshot| {
@@ -642,11 +646,7 @@ fn overlay_pane_cells(
     let title_cells = styled_text_cells(
         &title,
         usize::from(rect.width.saturating_sub(2)),
-        if active {
-            CellStyle::active_border()
-        } else {
-            CellStyle::border()
-        },
+        border_style,
     );
     for (offset, cell) in title_cells.into_iter().enumerate() {
         replace(cells, 0, offset as u16 + 1, cell);
@@ -901,6 +901,14 @@ impl CellStyle {
     fn active_border() -> Self {
         Self {
             foreground: vt100::Color::Rgb(MOCHA_GREEN.0, MOCHA_GREEN.1, MOCHA_GREEN.2),
+            bold: true,
+            ..Self::plain()
+        }
+    }
+
+    fn bell_border() -> Self {
+        Self {
+            foreground: vt100::Color::Rgb(MOCHA_PEACH.0, MOCHA_PEACH.1, MOCHA_PEACH.2),
             bold: true,
             ..Self::plain()
         }
