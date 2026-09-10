@@ -1549,7 +1549,7 @@ fn osc_52_payload_uses_standard_base64() {
 }
 
 #[test]
-fn kitty_notification_uses_osc_99_with_base64_title_and_body() {
+fn kitty_notification_uses_osc_99_with_base64_content_and_bell() {
     let notification = kitty_notification("rustmux-1-2", "done", "finished in 10.0s");
     let notification = String::from_utf8(notification).unwrap();
 
@@ -1557,7 +1557,7 @@ fn kitty_notification_uses_osc_99_with_base64_title_and_body() {
     assert!(notification.contains("i=rustmux-1-2:d=0:f=cnVzdG11eA==:o=always;"));
     assert!(notification.contains("d=0:e=1:p=title;ZG9uZQ=="));
     assert!(notification.contains("d=0:e=1:p=body;ZmluaXNoZWQgaW4gMTAuMHM="));
-    assert!(notification.ends_with("\x1b]99;i=rustmux-1-2;\x1b\\"));
+    assert!(notification.ends_with("\x1b]99;i=rustmux-1-2;\x1b\\\x07"));
 }
 
 #[test]
@@ -1587,6 +1587,7 @@ fn long_semantic_command_notification_reaches_the_outer_terminal() {
     visible.extend(second);
 
     assert_eq!(visible, notification);
+    assert_eq!(visible.last(), Some(&0x07));
     assert_eq!(
         visible
             .windows(5)

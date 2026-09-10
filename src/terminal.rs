@@ -719,7 +719,7 @@ pub(super) fn kitty_notification(identifier: &str, title: &str, body: &str) -> V
         "\x1b]99;i={identifier}:d=0:f={application}:o=always;\x1b\\\
          \x1b]99;i={identifier}:d=0:e=1:p=title;{title}\x1b\\\
          \x1b]99;i={identifier}:d=0:e=1:p=body;{body}\x1b\\\
-         \x1b]99;i={identifier};\x1b\\"
+         \x1b]99;i={identifier};\x1b\\\x07"
     )
     .into_bytes()
 }
