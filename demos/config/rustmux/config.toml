@@ -1,0 +1,9 @@
+default_mode = "locked"
+clear_defaults = false
+compact = false
+scrollback_lines = 500
+
+[notifications]
+enabled = false
+command_duration_seconds = 10
+exclude_applications = ["yazi", "nvim"]

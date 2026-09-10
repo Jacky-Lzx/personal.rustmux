@@ -18,6 +18,28 @@ mdbook serve --open
 
 界面使用 Catppuccin Mocha 配色。最上方先显示当前 session 名称，再以 Zellij 风格的 powerline 箭头标签列出所有窗口并高亮当前窗口；底部使用同样的箭头分段显示 mode 与快捷键。两条状态行都使用暗色背景。当前程序通过 OSC 设置的终端标题会显示在上边框中。
 
+## 功能演示
+
+### Window、Pane 与重排
+
+创建并重命名 window，拆分 pane、切换焦点，以及切换 pane 全屏状态：
+
+![Rustmux window and pane workflow](demos/assets/windows-and-panes.gif)
+
+### Session Manager
+
+搜索已有 session；没有匹配项时以输入内容创建并切换到新 session：
+
+![Rustmux session manager](demos/assets/session-manager.gif)
+
+### 快捷键帮助与历史搜索
+
+从帮助浮窗直接执行快捷键，并在 scroll mode 中浏览、搜索命令历史：
+
+![Rustmux help overlay and history search](demos/assets/history-and-help.gif)
+
+这些动图由仓库中的 VHS tape 自动生成。录制或更新方式见 [demos/README.md](demos/README.md)。Kitty graphics、文件拖放和鼠标拖动等需要真实 Kitty 窗口的功能不使用 VHS 模拟。
+
 ## 快捷键
 
 默认按键采用类似 Zellij 的 mode：平时处于 `locked`，`Ctrl-b` 进入 `normal`，执行大多数动作后返回 `locked`。`normal` 和 `scroll` 等非 locked mode 会显示在活动窗口标签中。
