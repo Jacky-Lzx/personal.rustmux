@@ -63,6 +63,8 @@ backspace = ["backspace"]
 
 ## Save and restore
 
+Changed layouts are saved automatically every 30 seconds and when detaching or stopping a running server. Set `autosave_interval_seconds = 0` to keep manual saving only. Manual saving remains available through `Ctrl-a` in the Session Manager. Closing every pane retains the last saved snapshot; deleting a session removes its snapshot without recreating it during shutdown.
+
 Snapshots are stored under:
 
 ```text

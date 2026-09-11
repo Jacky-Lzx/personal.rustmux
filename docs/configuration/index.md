@@ -17,6 +17,7 @@ default_mode = "locked"
 clear_defaults = false
 compact = false
 scrollback_lines = 1000
+autosave_interval_seconds = 30
 # shell = "/bin/zsh"
 ```
 
@@ -25,6 +26,7 @@ scrollback_lines = 1000
 | `default_mode` | Mode used at startup |
 | `clear_defaults` | Remove built-in bindings before applying custom bindings |
 | `compact` | Hide the bottom status line and show the mode at the top right |
+| `autosave_interval_seconds` | Save changed layouts periodically and on detach/server shutdown; `0` disables automatic saving |
 | `scrollback_lines` | History capacity for new panes, from 1 to 1,000,000 |
 
 ## Configure keybindings

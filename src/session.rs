@@ -633,9 +633,10 @@ pub(super) fn kill_session(name: &str) -> Result<()> {
 
 pub(super) fn delete_session(name: &str) -> Result<()> {
     if session_socket(name)?.exists() {
-        kill_session(name)?;
+        send_control_session(name, &[crate::CLIENT_DELETE_SESSION])
+    } else {
+        delete_session_snapshot(name)
     }
-    delete_session_snapshot(name)
 }
 
 #[cfg(test)]

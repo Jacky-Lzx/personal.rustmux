@@ -39,6 +39,7 @@ const ENCODED_PREFIXES: [&[u8]; 2] = [b"\x1b[98;5u", b"\x1b[27;5;98~"];
 const CLIENT_INPUT: u8 = b'I';
 const CLIENT_RESIZE: u8 = b'R';
 const CLIENT_SHUTDOWN: u8 = b'Q';
+const CLIENT_DELETE_SESSION: u8 = b'X';
 const CLIENT_QUERY_STATUS: u8 = b'S';
 const CLIENT_DISCONNECT: u8 = b'D';
 const CLIENT_RENAME_SESSION: u8 = b'N';

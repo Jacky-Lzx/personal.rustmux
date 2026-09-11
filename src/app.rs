@@ -350,6 +350,8 @@ pub(super) struct App {
     session_manager: Option<SessionManagerState>,
     help_mode: Option<String>,
     mouse_drag: Option<MouseDrag>,
+    last_autosave_check: Instant,
+    last_saved_snapshot: Option<SessionSnapshot>,
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
     outer_keyboard_flags: Option<u8>,
@@ -402,6 +404,8 @@ impl App {
             session_manager: None,
             help_mode: None,
             mouse_drag: None,
+            last_autosave_check: Instant::now(),
+            last_saved_snapshot: None,
             client: None,
             outer_dnd_window: None,
             outer_keyboard_flags: None,
@@ -540,9 +544,34 @@ impl App {
     }
 
     fn save_current_session(&mut self) -> Result<()> {
-        save_session_snapshot(&self.session_name, &self.session_snapshot()?)?;
+        let snapshot = self.session_snapshot()?;
+        save_session_snapshot(&self.session_name, &snapshot)?;
+        self.last_saved_snapshot = Some(snapshot);
         self.refresh_session_manager()?;
         self.notify("session layout saved")
+    }
+
+    fn autosave_session(&mut self, force: bool) {
+        let seconds = self.config.autosave_interval_seconds;
+        if seconds == 0
+            || self.windows.is_empty()
+            || self.tabs.is_empty()
+            || (!force && self.last_autosave_check.elapsed() < Duration::from_secs(seconds))
+        {
+            return;
+        }
+        self.last_autosave_check = Instant::now();
+        let result = (|| -> Result<()> {
+            let snapshot = self.session_snapshot()?;
+            if self.last_saved_snapshot.as_ref() != Some(&snapshot) {
+                save_session_snapshot(&self.session_name, &snapshot)?;
+                self.last_saved_snapshot = Some(snapshot);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = self.notify(&format!("session autosave failed: {error}"));
+        }
     }
 
     fn create_window(&mut self) -> Result<()> {
@@ -781,6 +810,7 @@ impl App {
 
         while !self.windows.is_empty() {
             self.reload_config_if_changed()?;
+            self.autosave_session(false);
             self.track_foreground_applications();
             self.flush_scheduled_redraw()?;
             let mut expired_input = Vec::new();
@@ -1012,6 +1042,11 @@ impl App {
                 }
                 Ok(true)
             }
+            crate::CLIENT_DELETE_SESSION => {
+                delete_session_snapshot(&self.session_name)?;
+                self.config.autosave_interval_seconds = 0;
+                Ok(false)
+            }
             CLIENT_SHUTDOWN => Ok(false),
             kind => {
                 stream.set_read_timeout(None)?;
@@ -1023,6 +1058,7 @@ impl App {
     }
 
     fn detach_client(&mut self) {
+        self.autosave_session(true);
         if !self.windows.is_empty() {
             self.send_focus_event(self.active, false);
         }
@@ -3387,6 +3423,7 @@ impl App {
     }
 
     pub(super) fn shutdown(&mut self) {
+        self.autosave_session(true);
         self.clear_outer_dnd_registration();
         for window in self.windows.drain(..) {
             terminate_window(window);

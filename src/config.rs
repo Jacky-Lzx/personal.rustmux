@@ -60,6 +60,7 @@ default_mode = "locked"
 clear_defaults = false
 compact = false
 scrollback_lines = 1000
+autosave_interval_seconds = 30 # 0 disables automatic saving.
 # shell = "/bin/zsh" # Defaults to $SHELL, then /bin/sh.
 
 [notifications]
@@ -227,6 +228,7 @@ pub enum Action {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub(super) shell: Option<String>,
+    pub(super) autosave_interval_seconds: u64,
     pub default_mode: String,
     compact: bool,
     scrollback_lines: usize,
@@ -258,6 +260,7 @@ enum BindingDisplay {
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
     shell: Option<String>,
+    autosave_interval_seconds: Option<u64>,
     default_mode: Option<String>,
     #[serde(default)]
     clear_defaults: bool,
@@ -337,6 +340,9 @@ impl Config {
     }
 
     fn apply_user(&mut self, user: ConfigFile) -> Result<(), String> {
+        if let Some(seconds) = user.autosave_interval_seconds {
+            self.autosave_interval_seconds = seconds;
+        }
         if let Some(shell) = user.shell {
             self.shell = Some(validate_shell(shell)?);
         }
@@ -378,6 +384,7 @@ impl Config {
         let notifications = file.notifications.unwrap_or_default();
         let mut config = Self {
             shell: file.shell.map(validate_shell).transpose()?,
+            autosave_interval_seconds: file.autosave_interval_seconds.unwrap_or(30),
             default_mode,
             compact: file.compact.unwrap_or(false),
             scrollback_lines: validate_scrollback_lines(
