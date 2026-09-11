@@ -1721,6 +1721,8 @@ fn session_manager_renders_search_results_and_actions() {
     let windows = vec![window];
     let mut renderer = Renderer::default();
     renderer.set_session_manager(Some(SessionManagerView {
+        searching: true,
+        keys: Config::test_defaults().session_manager_keys(),
         query: "wo".to_owned(),
         sessions: vec![SessionInfo {
             name: "work".to_owned(),
@@ -1740,7 +1742,7 @@ fn session_manager_renders_search_results_and_actions() {
 
     assert!(frame.contains("Session Manager"));
     assert!(frame.contains("1 SESSION"));
-    assert!(frame.contains("Session: "));
+    assert!(frame.contains("Search: "));
     assert!(frame.contains("wo"));
     assert!(frame.contains("SESSION"));
     assert!(frame.contains("LAYOUT"));
@@ -1755,10 +1757,42 @@ fn session_manager_renders_search_results_and_actions() {
 }
 
 #[test]
+fn session_manager_hides_search_input_until_searching() {
+    let windows = vec![test_window(1, "fish", 20, 98)];
+    let mut renderer = Renderer::default();
+    let mut keys = Config::test_defaults().session_manager_keys();
+    keys.insert("search".to_owned(), vec!["ctrl f".to_owned()]);
+    renderer.set_session_manager(Some(SessionManagerView {
+        searching: false,
+        keys,
+        query: String::new(),
+        sessions: vec![SessionInfo {
+            name: "first".to_owned(),
+            tabs: 1,
+            panes: 1,
+            connected: false,
+            created_at: 1,
+            saved: false,
+        }],
+        selected: 0,
+        current: "other".to_owned(),
+        rename_input: None,
+    }));
+    let frame = renderer.render(&windows, 0, (100, 24), "normal", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+    assert!(!frame.contains("Search: "));
+    assert!(!frame.contains("Session: "));
+    assert!(frame.contains("<Ctrl f>"));
+    assert!(frame.contains("first"));
+}
+
+#[test]
 fn session_manager_renders_rename_input() {
     let windows = vec![test_window(1, "fish", 8, 58)];
     let mut renderer = Renderer::default();
     renderer.set_session_manager(Some(SessionManagerView {
+        searching: true,
+        keys: Config::test_defaults().session_manager_keys(),
         query: String::new(),
         sessions: vec![SessionInfo {
             name: "work".to_owned(),

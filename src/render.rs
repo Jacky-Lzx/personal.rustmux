@@ -32,6 +32,8 @@ const POWERLINE_RIGHT: &str = "";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SessionManagerView {
+    pub(super) searching: bool,
+    pub(super) keys: std::collections::HashMap<String, Vec<String>>,
     pub(super) query: String,
     pub(super) sessions: Vec<SessionInfo>,
     pub(super) selected: usize,
@@ -1562,23 +1564,59 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         "─".repeat(inner_width)
     );
 
-    let (query_label, query_value) = if let Some(name) = &manager.rename_input {
-        ("Rename: ", name.as_str())
-    } else {
-        ("Session: ", manager.query.as_str())
+    let key_label = |action: &str| {
+        manager
+            .keys
+            .get(action)
+            .map(|keys| {
+                keys.iter()
+                    .take(1)
+                    .map(|key| {
+                        let mut chars = key.chars();
+                        let label = if key.chars().count() > 1 {
+                            format!("{}{}", chars.next().unwrap().to_uppercase(), chars.as_str())
+                        } else {
+                            key.clone()
+                        };
+                        format!("<{label}>")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default()
     };
-    let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
-    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
-    output.extend_from_slice(query_label.as_bytes());
-    let query_width = UnicodeWidthStr::width(query_label);
-    let (query_value, _) = truncate_to_display_width(
-        query_value,
-        inner_width.saturating_sub(query_width.saturating_add(3)),
-    );
-    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), true);
-    output.extend_from_slice(query_value.as_bytes());
-    write_rgb_style(output, MOCHA_PINK, Some(MOCHA_BASE), true);
-    output.extend_from_slice(b"_");
+    if manager.searching || manager.rename_input.is_some() {
+        let (query_label, query_value) = if let Some(name) = &manager.rename_input {
+            ("Rename: ", name.as_str())
+        } else {
+            ("Search: ", manager.query.as_str())
+        };
+        let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
+        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+        output.extend_from_slice(query_label.as_bytes());
+        let query_width = UnicodeWidthStr::width(query_label);
+        let (query_value, _) = truncate_to_display_width(
+            query_value,
+            inner_width.saturating_sub(query_width.saturating_add(3)),
+        );
+        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), true);
+        output.extend_from_slice(query_value.as_bytes());
+        write_rgb_style(output, MOCHA_PINK, Some(MOCHA_BASE), true);
+        output.extend_from_slice(b"_");
+    } else {
+        draw_session_manager_help_line(
+            output,
+            origin_row + 1,
+            origin_column + 2,
+            inner_width.saturating_sub(2),
+            "",
+            &[
+                (key_label("down").as_str(), "Down"),
+                (key_label("up").as_str(), "Up"),
+                (key_label("search").as_str(), "Search"),
+            ],
+        );
+    }
 
     if rows < 8 {
         let available_rows = usize::from(rows.saturating_sub(3));
@@ -1789,30 +1827,55 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         output.extend_from_slice(message.as_bytes());
     }
 
-    draw_session_manager_help_line(
-        output,
-        origin_row + rows - 3,
-        origin_column + 2,
-        body_width,
-        "Help: ",
-        &[
-            ("<Enter>", "Open/Create"),
-            ("<Ctrl r>", "Rename"),
-            ("<Del>", "Delete"),
-        ],
-    );
-    draw_session_manager_help_line(
-        output,
-        origin_row + rows - 2,
-        origin_column + 2,
-        body_width,
-        "      ",
-        &[
-            ("<Ctrl a>", "Save"),
-            ("<Ctrl x>", "Disconnect"),
-            ("<Esc>", "Close"),
-        ],
-    );
+    let editing = manager.rename_input.is_some();
+    let first_actions = if editing {
+        vec![
+            ("open", "Rename"),
+            ("cancel", "Cancel"),
+            ("backspace", "Erase"),
+        ]
+    } else {
+        vec![
+            ("open", "Open/Create"),
+            ("rename", "Rename"),
+            ("delete", "Delete"),
+        ]
+    };
+    let second_actions = if editing {
+        vec![]
+    } else if manager.searching {
+        vec![
+            ("complete", "Complete"),
+            ("cancel", "Back"),
+            ("save", "Save"),
+            ("disconnect", "Disconnect"),
+        ]
+    } else {
+        vec![
+            ("save", "Save"),
+            ("disconnect", "Disconnect"),
+            ("cancel", "Close"),
+        ]
+    };
+    for (row, actions) in [first_actions, second_actions].iter().enumerate() {
+        let labels: Vec<_> = actions
+            .iter()
+            .map(|(action, description)| (key_label(action), *description))
+            .filter(|(key, _)| !key.is_empty())
+            .collect();
+        let hints: Vec<_> = labels
+            .iter()
+            .map(|(key, description)| (key.as_str(), *description))
+            .collect();
+        draw_session_manager_help_line(
+            output,
+            origin_row + rows - 3 + row as u16,
+            origin_column + 2,
+            body_width,
+            if row == 0 { "Help: " } else { "      " },
+            &hints,
+        );
+    }
 }
 
 fn write_session_manager_field(

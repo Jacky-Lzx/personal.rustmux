@@ -66,6 +66,20 @@ enabled = true
 command_duration_seconds = 10
 exclude_applications = ["yazi", "nvim"]
 
+# Each action replaces its default keys; [] disables it.
+[session_manager]
+up = ["k", "up"]
+down = ["j", "down"]
+search = ["/"]
+complete = ["tab"]
+open = ["enter"]
+rename = ["Ctrl r"]
+save = ["Ctrl a"]
+delete = ["delete"]
+disconnect = ["Ctrl x"]
+cancel = ["esc"]
+backspace = ["backspace"]
+
 # A binding can also use { actions = [...], display = "always" }.
 # display: "always" = status + help, "help" = help only, "hidden" = not listed.
 [keybinds.locked]
@@ -218,6 +232,7 @@ pub struct Config {
     command_duration_seconds: u64,
     notification_excluded_applications: Vec<String>,
     bindings: HashMap<String, HashMap<String, Binding>>,
+    session_manager: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -246,6 +261,8 @@ struct ConfigFile {
     compact: Option<bool>,
     scrollback_lines: Option<usize>,
     notifications: Option<NotificationsFile>,
+    #[serde(default)]
+    session_manager: HashMap<String, Vec<String>>,
     #[serde(default)]
     keybinds: HashMap<String, HashMap<String, BindingSpec>>,
 }
@@ -285,6 +302,11 @@ struct BindingFile {
 }
 
 impl Config {
+    #[cfg(test)]
+    pub(super) fn test_defaults() -> Self {
+        Self::from_file(toml::from_str(DEFAULT_CONFIG_TOML).unwrap(), None).unwrap()
+    }
+
     pub fn load() -> Result<Self, String> {
         Self::load_from_path(&config_path())
     }
@@ -335,6 +357,7 @@ impl Config {
                 self.notification_excluded_applications = normalize_applications(applications)?;
             }
         }
+        self.merge_session_manager(user.session_manager)?;
         self.merge_bindings(user.keybinds)?;
         self.validate()
     }
@@ -359,10 +382,67 @@ impl Config {
                 notifications.exclude_applications.unwrap_or_default(),
             )?,
             bindings: HashMap::new(),
+            session_manager: HashMap::new(),
         };
+        config.merge_session_manager(file.session_manager)?;
         config.merge_bindings(file.keybinds)?;
         config.validate()?;
         Ok(config)
+    }
+
+    fn merge_session_manager(
+        &mut self,
+        bindings: HashMap<String, Vec<String>>,
+    ) -> Result<(), String> {
+        for (action, keys) in bindings {
+            if !matches!(
+                action.as_str(),
+                "up" | "down"
+                    | "search"
+                    | "complete"
+                    | "open"
+                    | "rename"
+                    | "save"
+                    | "delete"
+                    | "disconnect"
+                    | "cancel"
+                    | "backspace"
+            ) {
+                return Err(format!("unknown session manager action '{action}'"));
+            }
+            let keys = keys
+                .iter()
+                .map(|key| canonical_key_name(key))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.session_manager.insert(action, keys);
+        }
+        let mut seen = HashMap::new();
+        for (action, keys) in &self.session_manager {
+            for key in keys {
+                if let Some(previous) = seen.insert(key, action)
+                    && previous != action
+                {
+                    return Err(format!(
+                        "session manager key '{key}' is bound to both '{previous}' and '{action}'"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn session_manager_action(&self, key: &str, editing: bool) -> Option<&str> {
+        self.session_manager.iter().find_map(|(action, keys)| {
+            // Printable navigation/action keys remain text while editing a name.
+            let accepts_text = matches!(action.as_str(), "cancel" | "open" | "backspace");
+            (keys.iter().any(|candidate| candidate == key)
+                && (!editing || key.chars().count() != 1 || accepts_text))
+                .then_some(action.as_str())
+        })
+    }
+
+    pub(super) fn session_manager_keys(&self) -> HashMap<String, Vec<String>> {
+        self.session_manager.clone()
     }
 
     fn merge_bindings(
@@ -894,11 +974,12 @@ pub fn canonical_key_name(key: &str) -> Result<String, String> {
     }
     let canonical = match trimmed.to_ascii_lowercase().as_str() {
         "escape" => "esc".to_owned(),
+        "del" => "delete".to_owned(),
         "return" => "enter".to_owned(),
         "pgup" | "page-up" => "pageup".to_owned(),
         "pgdn" | "page-down" => "pagedown".to_owned(),
         "up" | "down" | "left" | "right" | "enter" | "tab" | "backspace" | "esc" | "pageup"
-        | "pagedown" => trimmed.to_ascii_lowercase(),
+        | "pagedown" | "delete" => trimmed.to_ascii_lowercase(),
         _ if trimmed.chars().count() == 1 => trimmed.to_owned(),
         _ => return Err(format!("unsupported key '{trimmed}'")),
     };
@@ -926,6 +1007,7 @@ fn parse_send_key(key: &str) -> Result<Vec<u8>, String> {
         "left" => Ok(b"\x1b[D".to_vec()),
         "pageup" => Ok(b"\x1b[5~".to_vec()),
         "pagedown" => Ok(b"\x1b[6~".to_vec()),
+        "delete" => Ok(b"\x1b[3~".to_vec()),
         _ => Ok(canonical.into_bytes()),
     }
 }
@@ -943,6 +1025,57 @@ pub fn config_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_manager_bindings_distinguish_navigation_from_text() {
+        let config = Config::test_defaults();
+        assert_eq!(config.session_manager_action("j", false), Some("down"));
+        assert_eq!(config.session_manager_action("k", false), Some("up"));
+        assert_eq!(config.session_manager_action("/", false), Some("search"));
+        assert_eq!(config.session_manager_action("j", true), None);
+        assert_eq!(config.session_manager_action("k", true), None);
+        assert_eq!(config.session_manager_action("down", true), Some("down"));
+        assert_eq!(config.session_manager_action("esc", true), Some("cancel"));
+        assert_eq!(canonical_key_name("Del").unwrap(), "delete");
+        assert_eq!(parse_send_key("delete").unwrap(), b"\x1b[3~");
+    }
+
+    #[test]
+    fn session_manager_bindings_can_be_replaced_disabled_and_validated() {
+        let mut config = Config::test_defaults();
+        config
+            .apply_user(
+                toml::from_str(
+                    r#"
+[session_manager]
+down = ["n"]
+up = ["p"]
+search = ["Ctrl f"]
+delete = []
+"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(config.session_manager_action("j", false), None);
+        assert_eq!(config.session_manager_action("n", false), Some("down"));
+        assert_eq!(config.session_manager_action("n", true), None);
+        assert_eq!(
+            config.session_manager_action("ctrl f", false),
+            Some("search")
+        );
+        assert_eq!(config.session_manager_action("delete", false), None);
+        assert!(
+            config
+                .apply_user(toml::from_str("[session_manager]\nunknown = []").unwrap())
+                .is_err()
+        );
+        assert!(
+            config
+                .apply_user(toml::from_str("[session_manager]\nup = [\"n\"]").unwrap())
+                .is_err()
+        );
+    }
 
     #[test]
     fn default_config_has_zellij_style_modes() {

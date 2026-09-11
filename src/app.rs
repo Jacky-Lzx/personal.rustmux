@@ -296,6 +296,7 @@ struct RenameState {
 }
 
 struct SessionManagerState {
+    searching: bool,
     query: String,
     sessions: Vec<SessionInfo>,
     selected: usize,
@@ -864,6 +865,7 @@ impl App {
             self.mode = config.default_mode.clone();
         }
         self.config = config;
+        self.sync_session_manager();
         if let Some(help_mode) = self.help_mode.clone() {
             if self.config.has_mode(&help_mode) {
                 self.renderer.set_help(Some(HelpView {
@@ -1665,14 +1667,11 @@ impl App {
 
     fn open_session_manager(&mut self) -> Result<()> {
         let sessions = available_session_info(Some(self.local_session_info()))?;
-        let selected = sessions
-            .iter()
-            .position(|session| session.name == self.session_name)
-            .unwrap_or(0);
         self.session_manager = Some(SessionManagerState {
+            searching: false,
             query: String::new(),
             sessions,
-            selected,
+            selected: 0,
             rename_input: None,
         });
         self.sync_session_manager();
@@ -1687,9 +1686,37 @@ impl App {
         {
             return self.handle_session_rename_key(key);
         }
-        match key.name.as_str() {
-            "esc" => {
-                self.close_session_manager();
+        let searching = self
+            .session_manager
+            .as_ref()
+            .is_some_and(|state| state.searching);
+        let action = self
+            .config
+            .session_manager_action(&key.name, searching)
+            .unwrap_or("")
+            .to_owned();
+        match action.as_str() {
+            "cancel" => {
+                if searching {
+                    let state = self
+                        .session_manager
+                        .as_mut()
+                        .expect("session manager is open");
+                    state.searching = false;
+                    state.query.clear();
+                    state.selected = 0;
+                    self.sync_session_manager();
+                } else {
+                    self.close_session_manager();
+                }
+                self.redraw()?;
+            }
+            "search" => {
+                self.session_manager
+                    .as_mut()
+                    .expect("session manager is open")
+                    .searching = true;
+                self.sync_session_manager();
                 self.redraw()?;
             }
             "up" | "down" => {
@@ -1699,7 +1726,7 @@ impl App {
                     .expect("session manager is open");
                 let count = matching_session_info(&state.sessions, &state.query).len();
                 if count > 0 {
-                    state.selected = if key.name == "up" {
+                    state.selected = if action == "up" {
                         state.selected.checked_sub(1).unwrap_or(count - 1)
                     } else {
                         (state.selected + 1) % count
@@ -1708,7 +1735,7 @@ impl App {
                 self.sync_session_manager();
                 self.redraw()?;
             }
-            "tab" => {
+            "complete" if searching => {
                 let state = self
                     .session_manager
                     .as_mut()
@@ -1721,7 +1748,7 @@ impl App {
                 self.sync_session_manager();
                 self.redraw()?;
             }
-            "enter" => {
+            "open" => {
                 let state = self
                     .session_manager
                     .as_ref()
@@ -1743,7 +1770,7 @@ impl App {
                 self.request_session_switch(&target)?;
                 return Ok(false);
             }
-            "ctrl r" => {
+            "rename" => {
                 let Some(target) = self.selected_session_name() else {
                     return Ok(true);
                 };
@@ -1754,7 +1781,7 @@ impl App {
                 self.sync_session_manager();
                 self.redraw()?;
             }
-            "ctrl a" => self.save_current_session()?,
+            "save" => self.save_current_session()?,
             "delete" => {
                 let Some(target) = self.selected_session_name() else {
                     return Ok(true);
@@ -1775,7 +1802,7 @@ impl App {
                 self.refresh_session_manager()?;
                 self.redraw()?;
             }
-            "ctrl x" => {
+            "disconnect" => {
                 let Some(target) = self.selected_session_name() else {
                     return Ok(true);
                 };
@@ -1785,7 +1812,7 @@ impl App {
                     self.redraw()?;
                 }
             }
-            "backspace" => {
+            "backspace" if searching => {
                 let state = self
                     .session_manager
                     .as_mut()
@@ -1796,7 +1823,8 @@ impl App {
                 self.redraw()?;
             }
             _ => {
-                if let Some(text) = key.text()
+                if searching
+                    && let Some(text) = key.text()
                     && text
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
@@ -1822,6 +1850,8 @@ impl App {
             let sessions = matching_session_info(&state.sessions, &state.query);
             state.selected = state.selected.min(sessions.len().saturating_sub(1));
             SessionManagerView {
+                searching: state.searching,
+                keys: self.config.session_manager_keys(),
                 query: state.query.clone(),
                 sessions,
                 selected: state.selected,
@@ -1868,14 +1898,18 @@ impl App {
     }
 
     fn handle_session_rename_key(&mut self, key: &DecodedKey) -> Result<bool> {
-        match key.name.as_str() {
-            "esc" => {
+        match self
+            .config
+            .session_manager_action(&key.name, true)
+            .unwrap_or("")
+        {
+            "cancel" => {
                 self.session_manager
                     .as_mut()
                     .expect("session manager is open")
                     .rename_input = None;
             }
-            "enter" => {
+            "open" => {
                 let old_name = self.selected_session_name().unwrap_or_default();
                 let new_name = self
                     .session_manager
@@ -1891,7 +1925,11 @@ impl App {
                     }
                 }
                 if let Some(state) = self.session_manager.as_mut() {
-                    state.query.clone_from(&new_name);
+                    if state.searching {
+                        state.query.clone_from(&new_name);
+                    } else {
+                        state.query.clear();
+                    }
                     state.rename_input = None;
                 }
                 self.refresh_session_manager()?;

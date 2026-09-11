@@ -29,17 +29,37 @@ Rustmux sessions cannot be nested. Starting or attaching to Rustmux from a shell
 
 Press `s` in normal mode to open the centered Session Manager.
 
-- Type to filter sessions by name.
-- `↑` / `↓` selects a result.
+- The first session is selected when the manager opens; the search field stays hidden.
+- `j` / `k` (or `↓` / `↑`) selects a session.
+- `/` enters search mode. Type to filter sessions by name; `j` and `k` enter text in this mode. Use the arrow keys to select a search result.
 - `Tab` completes the selected name.
 - `Enter` enters the selected session; with no match, it creates a session from the query.
 - `Ctrl-a` saves the current layout.
 - `Ctrl-r` renames a session.
 - `Ctrl-x` disconnects other clients from the selected session.
 - `Delete` deletes a session or saved snapshot.
-- `Esc` closes the manager.
+- `Esc` leaves search mode and restores the full list; press it again to close the manager. While renaming, it cancels the rename.
 
 The list includes window and pane counts, connection state, saved state, and creation time.
+
+All manager shortcuts can be customized in `config.toml`. Each action's array replaces its default keys; use `[]` to disable an action. Omitted actions keep their defaults, independently of the top-level `clear_defaults` setting. Keys must not be assigned to multiple manager actions. The displayed hints follow the configured keys.
+
+```toml
+[session_manager]
+up = ["k", "up"]
+down = ["j", "down"]
+search = ["/"]
+complete = ["tab"]
+open = ["enter"]
+rename = ["Ctrl r"]
+save = ["Ctrl a"]
+delete = ["delete"]
+disconnect = ["Ctrl x"]
+cancel = ["esc"]
+backspace = ["backspace"]
+```
+
+`open`, `cancel`, and `backspace` also control rename input. While editing a search or name, printable keys assigned to other actions are treated as text. Use modified keys (such as `Ctrl n`) or arrows if you want those shortcuts available while typing.
 
 ## Save and restore
 
