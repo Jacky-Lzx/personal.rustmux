@@ -16,6 +16,7 @@ rustmux check-config
 default_mode = "locked"
 clear_defaults = false
 compact = false
+mouse_hover_cursor = false
 scrollback_lines = 1000
 autosave_interval_seconds = 30
 # shell = "/bin/zsh"
@@ -26,6 +27,7 @@ autosave_interval_seconds = 30
 | `default_mode` | Mode used at startup |
 | `clear_defaults` | Remove built-in bindings before applying custom bindings |
 | `compact` | Hide the bottom status line and show the mode at the top right |
+| `mouse_hover_cursor` | Change the pointer over tabs, bottom shortcuts, resize handles, and while dragging; defaults to `false`. Mouse actions still work, and inner applications retain control of their own pointer shape. Hot reload is supported. |
 | `autosave_interval_seconds` | Save changed layouts periodically and on detach/server shutdown; `0` disables automatic saving |
 | `scrollback_lines` | History capacity for new panes, from 1 to 1,000,000 |
 

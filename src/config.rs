@@ -59,6 +59,7 @@ pub const DEFAULT_CONFIG_TOML: &str = r##"
 default_mode = "locked"
 clear_defaults = false
 compact = false
+mouse_hover_cursor = false # Change the pointer over clickable controls and resize handles.
 scrollback_lines = 1000
 autosave_interval_seconds = 30 # 0 disables automatic saving.
 # shell = "/bin/zsh" # Defaults to $SHELL, then /bin/sh.
@@ -240,6 +241,7 @@ pub struct Config {
     pub(super) autosave_interval_seconds: u64,
     pub default_mode: String,
     compact: bool,
+    mouse_hover_cursor: bool,
     scrollback_lines: usize,
     notifications_enabled: bool,
     command_duration_seconds: u64,
@@ -275,6 +277,7 @@ struct ConfigFile {
     #[serde(default)]
     clear_defaults: bool,
     compact: Option<bool>,
+    mouse_hover_cursor: Option<bool>,
     scrollback_lines: Option<usize>,
     notifications: Option<NotificationsFile>,
     #[serde(default)]
@@ -368,6 +371,9 @@ impl Config {
         if let Some(compact) = user.compact {
             self.compact = compact;
         }
+        if let Some(enabled) = user.mouse_hover_cursor {
+            self.mouse_hover_cursor = enabled;
+        }
         if let Some(lines) = user.scrollback_lines {
             self.scrollback_lines = validate_scrollback_lines(lines)?;
         }
@@ -401,6 +407,7 @@ impl Config {
             autosave_interval_seconds: file.autosave_interval_seconds.unwrap_or(30),
             default_mode,
             compact: file.compact.unwrap_or(false),
+            mouse_hover_cursor: file.mouse_hover_cursor.unwrap_or(false),
             scrollback_lines: validate_scrollback_lines(
                 file.scrollback_lines.unwrap_or(SCROLLBACK_LINES),
             )?,
@@ -592,6 +599,10 @@ impl Config {
 
     pub fn compact(&self) -> bool {
         self.compact
+    }
+
+    pub fn mouse_hover_cursor(&self) -> bool {
+        self.mouse_hover_cursor
     }
 
     pub fn scrollback_lines(&self) -> usize {
@@ -1431,12 +1442,13 @@ exclude_applications = ["  "]
         let mut reloader = ConfigReloader::new(path.clone());
         let start = Instant::now();
 
-        fs::write(&path, "compact = true\n").unwrap();
+        fs::write(&path, "compact = true\nmouse_hover_cursor = true\n").unwrap();
         let config = reloader
             .poll(start + Duration::from_secs(1))
             .unwrap()
             .unwrap();
         assert!(config.compact());
+        assert!(config.mouse_hover_cursor());
 
         fs::write(&path, "compact = [invalid\n").unwrap();
         assert!(
@@ -1453,6 +1465,7 @@ exclude_applications = ["  "]
             .unwrap()
             .unwrap();
         assert!(!config.compact());
+        assert!(!config.mouse_hover_cursor());
         fs::remove_dir(&directory).unwrap();
     }
     #[test]

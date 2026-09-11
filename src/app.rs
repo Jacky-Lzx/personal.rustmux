@@ -984,6 +984,9 @@ impl App {
             self.mode = config.default_mode.clone();
         }
         self.config = config;
+        if !self.config.mouse_hover_cursor() {
+            self.sync_pointer_protocol();
+        }
         self.sync_session_manager();
         if let Some(help_mode) = self.help_mode.clone() {
             if self.config.has_mode(&help_mode) {
@@ -1779,6 +1782,10 @@ impl App {
     }
 
     fn update_pointer_for_position(&mut self, position: MousePosition) {
+        if !self.config.mouse_hover_cursor() {
+            self.sync_pointer_protocol();
+            return;
+        }
         let shape = if self.mouse_drag.is_some() {
             "grabbing"
         } else if self
