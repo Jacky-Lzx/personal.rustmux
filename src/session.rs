@@ -45,6 +45,8 @@ pub(super) struct SnapshotTab {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct SnapshotPane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) scrollback: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) command: Option<String>,
     pub(super) id: usize,
     pub(super) cwd: Option<PathBuf>,
@@ -52,6 +54,8 @@ pub(super) struct SnapshotPane {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct SnapshotFloating {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) scrollback: Option<Vec<String>>,
     pub(super) cwd: Option<PathBuf>,
     pub(super) visible: bool,
     pub(super) return_to: Option<usize>,
@@ -778,11 +782,13 @@ mod snapshot_tests {
                 },
                 panes: vec![
                     SnapshotPane {
+                        scrollback: Some(vec!["previous output".to_owned(), "中文".to_owned()]),
                         command: None,
                         id: 10,
                         cwd: Some(PathBuf::from("/tmp/project")),
                     },
                     SnapshotPane {
+                        scrollback: None,
                         id: 11,
                         cwd: None,
                         command: None,
@@ -790,6 +796,7 @@ mod snapshot_tests {
                 ],
             }],
             Some(SnapshotFloating {
+                scrollback: Some(vec!["floating output".to_owned()]),
                 cwd: Some(PathBuf::from("/tmp")),
                 visible: true,
                 return_to: Some(11),
@@ -802,6 +809,17 @@ mod snapshot_tests {
 
         assert_eq!(decoded, snapshot);
         decoded.validate().unwrap();
+
+        // Layout-only snapshots written before scrollback persistence still load.
+        let mut legacy = snapshot;
+        for pane in &mut legacy.tabs[0].panes {
+            pane.scrollback = None;
+        }
+        legacy.floating.as_mut().unwrap().scrollback = None;
+        let encoded = toml::to_string_pretty(&legacy).unwrap();
+        assert!(!encoded.contains("scrollback"));
+        let decoded: SessionSnapshot = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded, legacy);
     }
 
     #[test]
@@ -812,6 +830,7 @@ mod snapshot_tests {
                 name: "broken".to_owned(),
                 root: PaneNode::Leaf(1),
                 panes: vec![SnapshotPane {
+                    scrollback: None,
                     id: 2,
                     cwd: None,
                     command: None,

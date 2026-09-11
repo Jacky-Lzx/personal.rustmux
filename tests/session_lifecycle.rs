@@ -167,7 +167,7 @@ fn saves_directory_and_split_on_detach_and_restores_after_restart() {
     eventually(|| server.root.join("workspace/ready").exists());
     input(&mut client, b"\x02\x10r");
     eventually(|| server.status().is_some_and(|s| s.starts_with("1\t2\t")));
-    input(&mut client, b"\x02d");
+    input(&mut client, b"\x02\x0fd");
     eventually(|| server.snapshot().exists());
     let snapshot: toml::Value =
         toml::from_str(&fs::read_to_string(server.snapshot()).unwrap()).unwrap();
@@ -200,7 +200,7 @@ fn saves_directory_and_split_on_detach_and_restores_after_restart() {
 fn periodic_saving_can_be_disabled_and_reenabled_by_reload() {
     let mut server = Server::new("autosave_interval_seconds = 0\n");
     let mut client = server.attach();
-    input(&mut client, b"\x02d");
+    input(&mut client, b"\x02\x0fd");
     eventually(|| server.status().is_some_and(|s| s.starts_with("1\t1\t0\t")));
     server.stop(false);
     assert!(!server.snapshot().exists());
@@ -537,7 +537,7 @@ fn second_attach_warns_without_disconnecting_resizing_or_resetting_first_client(
     );
     assert_eq!(warning.matches("warning:").count(), 1);
     assert!(server.status().unwrap().starts_with("2\t2\t1\t"));
-    input(&mut first, b"\x02d");
+    input(&mut first, b"\x02\x0fd");
     eventually(|| server.status().is_some_and(|s| s.starts_with("2\t2\t0\t")));
     let mut reattached = server.attach();
     input(&mut reattached, b"touch reattached\n");
@@ -586,7 +586,7 @@ fn status_clicks_execute_bindings_once_and_work_with_overlays() {
     // Clicking a bottom hint while Help is open executes it and closes Help.
     click(&mut client, "NEW WINDOW");
     eventually(|| server.status().is_some_and(|s| s.starts_with("3\t3\t1\t")));
-    input(&mut client, b"\x02s");
+    input(&mut client, b"\x02\x17");
     eventually(|| bottom().contains("SESSION MANAGER"));
     click(&mut client, "CLOSE");
     eventually(|| bottom().contains("LOCKED"));
@@ -597,4 +597,91 @@ fn status_clicks_execute_bindings_once_and_work_with_overlays() {
     assert!(server.status().unwrap().starts_with("3\t3\t1\t"));
     client.shutdown(std::net::Shutdown::Both).unwrap();
     reader_thread.join().unwrap();
+}
+
+#[test]
+fn saved_scrollback_survives_restart_and_can_be_disabled_by_reload() {
+    let mut server = Server::new("save_scrollback = true\nscrollback_lines = 50\n");
+    let run = |server: &Server, args: &[&str]| {
+        let output = server.cli(args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    run(
+        &server,
+        &[
+            "send-keys",
+            "-s",
+            "work",
+            "-p",
+            "1",
+            "--literal",
+            "--enter",
+            "printf 'persisted-%s\\n' history",
+        ],
+    );
+    eventually(|| {
+        run(
+            &server,
+            &["capture-pane", "-s", "work", "-p", "1", "--history"],
+        )
+        .contains("persisted-history")
+    });
+    run(&server, &["save-session", "-s", "work"]);
+    let saved = fs::read_to_string(server.snapshot()).unwrap();
+    assert!(saved.contains("persisted-history"));
+    server.stop(false);
+    server.start();
+    let history = run(
+        &server,
+        &["capture-pane", "-s", "work", "-p", "1", "--history"],
+    );
+    assert!(history.contains("persisted-history"));
+    assert!(
+        !run(&server, &["capture-pane", "-s", "work", "-p", "1"]).contains("persisted-history")
+    );
+    fs::write(
+        server.root.join("config/rustmux/config.toml"),
+        "save_scrollback = false\n",
+    )
+    .unwrap();
+    eventually(|| {
+        run(&server, &["save-session", "-s", "work"]);
+        !fs::read_to_string(server.snapshot())
+            .unwrap()
+            .contains("scrollback")
+    });
+    server.stop(false);
+    server.start();
+    assert!(
+        !run(
+            &server,
+            &["capture-pane", "-s", "work", "-p", "1", "--history"]
+        )
+        .contains("persisted-history")
+    );
+}
+
+#[test]
+fn autosave_records_new_output_and_restores_floating_history() {
+    let mut server = Server::new("save_scrollback = true\nautosave_interval_seconds = 1\n");
+    let mut client = server.attach();
+    input(&mut client, b"\x02i");
+    input(&mut client, b"printf 'floating-%s\\n' history\n");
+    eventually(|| {
+        fs::read_to_string(server.snapshot()).is_ok_and(|s| s.contains("floating-history"))
+    });
+    input(&mut client, b"printf 'later-%s\\n' output\n");
+    eventually(|| fs::read_to_string(server.snapshot()).is_ok_and(|s| s.contains("later-output")));
+    server.stop(false);
+    server.start();
+    let output = server.cli(&["capture-pane", "-s", "work", "--history"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("floating-history"), "{text}");
+    assert!(text.contains("later-output"), "{text}");
 }

@@ -100,6 +100,7 @@ fn parse(source: &str, base: &Path) -> Result<SessionSnapshot> {
                 );
             }
             panes.push(SnapshotPane {
+                scrollback: None,
                 id: next_id,
                 cwd: Some(cwd),
                 command: pane.command,

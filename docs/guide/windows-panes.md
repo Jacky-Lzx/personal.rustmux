@@ -13,7 +13,7 @@ Press <kbd>Ctrl-b</kbd>, <kbd>Ctrl-p</kbd> to enter pane mode:
 ```text
 r / n   split to the right
 d       split below
-z       zoom or restore the current pane
+f       zoom or restore the current pane
 x       close the current pane
 ```
 
@@ -21,7 +21,9 @@ New panes inherit the working directory reported by the active pane through OSC 
 
 ## Focus and resize
 
-Use `h j k l` or the arrow keys to move focus. Uppercase `H J K L` moves the current pane boundary. Add `Alt` to the lowercase directional keys to swap the pane with its nearest neighbor while preserving split ratios.
+In pane mode, use `h j k l` or the arrow keys repeatedly to move focus. From normal mode, press `r` to enter resize mode or `Ctrl-m` to enter move mode, then use the same directional keys to resize or swap panes. Press Esc to return to locked mode.
+
+In pane mode, `b` moves the pane into a new window; `[` and `]` move it into the previous or next existing window, wrapping at the ends. These actions preserve the running process and return to locked mode.
 
 Mouse controls are also available:
 

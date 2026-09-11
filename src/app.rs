@@ -443,6 +443,7 @@ impl App {
             .to_owned();
         let shell = CString::new(shell_name)?;
         let mut pane_ids_by_saved_id = HashMap::new();
+        let mut saved_histories = Vec::new();
         for saved_tab in snapshot.tabs {
             let tab_id = self.next_id;
             for pane in &saved_tab.panes {
@@ -471,6 +472,11 @@ impl App {
                     .expect("spawned pane")
                     .startup_command = pane.command.clone();
                 pane_ids_by_saved_id.insert(pane.id, pane_id);
+                if self.config.save_scrollback
+                    && let Some(lines) = &pane.scrollback
+                {
+                    saved_histories.push((pane_id, lines.clone()));
+                }
             }
             self.tabs.push(Tab {
                 id: tab_id,
@@ -488,6 +494,7 @@ impl App {
             .ok_or("restored active pane is missing")?;
 
         if let Some(floating) = snapshot.floating {
+            let scrollback = floating.scrollback;
             let return_to = floating
                 .return_to
                 .and_then(|id| pane_ids_by_saved_id.get(&id).copied())
@@ -498,7 +505,7 @@ impl App {
                 .find(|window| window.id == return_to)
                 .map(|window| window.tab_id)
                 .unwrap_or(self.tabs[0].id);
-            self.spawn_window(
+            let floating_id = self.spawn_window(
                 shell_label,
                 shell.clone(),
                 vec![shell],
@@ -510,6 +517,11 @@ impl App {
                     current_directory: floating.cwd,
                 },
             )?;
+            if self.config.save_scrollback
+                && let Some(lines) = scrollback
+            {
+                saved_histories.push((floating_id, lines));
+            }
             if !floating.visible {
                 self.active = self
                     .windows
@@ -519,6 +531,14 @@ impl App {
             }
         }
         self.resize_windows()?;
+        for (id, lines) in saved_histories {
+            let window = self
+                .windows
+                .iter_mut()
+                .find(|window| window.id == id)
+                .unwrap();
+            restore_scrollback(&mut window.terminal, &lines, self.config.scrollback_lines());
+        }
         Ok(())
     }
 
@@ -544,6 +564,12 @@ impl App {
                     .into_iter()
                     .filter_map(|id| self.windows.iter().find(|window| window.id == id))
                     .map(|window| SnapshotPane {
+                        scrollback: self.config.save_scrollback.then(|| {
+                            snapshot_scrollback(
+                                window.terminal.screen(),
+                                self.config.scrollback_lines(),
+                            )
+                        }),
                         command: window.startup_command.clone(),
                         id: window.id,
                         cwd: self.window_directory(window),
@@ -577,6 +603,9 @@ impl App {
             .iter()
             .find(|window| window.floating)
             .map(|window| SnapshotFloating {
+                scrollback: self.config.save_scrollback.then(|| {
+                    snapshot_scrollback(window.terminal.screen(), self.config.scrollback_lines())
+                }),
                 cwd: self.window_directory(window),
                 visible: self.windows[self.active].id == window.id,
                 return_to: window
@@ -3917,7 +3946,10 @@ pub(super) fn window_history(window: &mut Window) -> String {
 }
 
 pub(super) fn history_lines(window: &mut Window) -> Vec<String> {
-    let screen = window.terminal.screen_mut();
+    screen_history_lines(window.terminal.screen_mut())
+}
+
+fn screen_history_lines(screen: &mut vt100::Screen) -> Vec<String> {
     let original_offset = screen.scrollback();
     let (_, columns) = screen.size();
     screen.set_scrollback(usize::MAX);
@@ -3933,6 +3965,41 @@ pub(super) fn history_lines(window: &mut Window) -> Vec<String> {
     screen.set_scrollback(original_offset);
 
     lines
+}
+
+pub(super) fn snapshot_scrollback(screen: &vt100::Screen, limit: usize) -> Vec<String> {
+    // Inspect a copy so saving does not alter scroll position or the live TUI.
+    let mut parser = vt100::Parser::new(1, 1, 0);
+    *parser.screen_mut() = screen.clone();
+    // Select the primary buffer without resetting it or replaying application output.
+    parser.process(b"\x1b[?47l");
+    let mut lines = screen_history_lines(parser.screen_mut());
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines.drain(..lines.len().saturating_sub(limit));
+    lines
+}
+
+pub(super) fn restore_scrollback(
+    terminal: &mut vt100::Parser<TerminalMetadata>,
+    lines: &[String],
+    limit: usize,
+) {
+    if lines.is_empty() {
+        return;
+    }
+    for line in &lines[lines.len().saturating_sub(limit)..] {
+        // Snapshot text is data, including when a user edits the TOML file.
+        let text: String = line.chars().filter(|ch| !ch.is_control()).collect();
+        terminal.process(text.as_bytes());
+        terminal.process(b"\r\n");
+    }
+    // Move restored text entirely into scrollback, leaving a fresh live screen.
+    for _ in 1..terminal.screen().size().0 {
+        terminal.process(b"\r\n");
+    }
+    terminal.process(b"\x1b[H");
 }
 
 pub(super) fn matching_history_lines(lines: &[String], query: &str) -> Vec<usize> {

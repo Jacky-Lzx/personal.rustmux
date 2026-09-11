@@ -37,9 +37,9 @@ Enter
 Sleep 1s
 
 Ctrl+B
-Type "["
+Enter
 Sleep 600ms
-PageUp
+Ctrl+U
 Sleep 900ms
 Type "/"
 Type@100ms "history line 08"
@@ -52,5 +52,6 @@ Sleep 1s
 
 Hide
 Ctrl+B
+Ctrl+O
 Type "d"
 Sleep 500ms

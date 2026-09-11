@@ -33,7 +33,7 @@ Rustmux normally starts in `locked` mode, where input goes directly to the shell
 2. Press <kbd>c</kbd> to create a window.
 3. Press <kbd>Ctrl-b</kbd>, then <kbd>Ctrl-p</kbd> to enter pane mode.
 4. Press <kbd>r</kbd> to split right, or <kbd>d</kbd> to split down.
-5. Press <kbd>Ctrl-b</kbd>, <kbd>d</kbd> to detach. Run `rustmux` again to reconnect.
+5. Press <kbd>Ctrl-b</kbd>, <kbd>Ctrl-o</kbd>, <kbd>d</kbd> to detach. Run `rustmux` again to reconnect.
 
 ## Generate a configuration
 

@@ -27,8 +27,9 @@ Wait+Screen /Rustmux/
 Sleep 900ms
 
 Ctrl+B
-Type "s"
+Ctrl+W
 Sleep 900ms
+Type "/"
 Type@90ms "rustmux-readme-work"
 Sleep 800ms
 Enter
@@ -36,15 +37,18 @@ Wait+Screen /rustmux-readme-work/
 Sleep 1s
 
 Ctrl+B
-Type "s"
+Ctrl+W
 Sleep 900ms
+Type "/"
 Type@90ms "main"
 Sleep 2s
 
+Escape
 Escape
 Sleep 700ms
 
 Hide
 Ctrl+B
+Ctrl+O
 Type "d"
 Sleep 500ms

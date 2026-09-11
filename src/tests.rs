@@ -2250,3 +2250,49 @@ fn status_overflow_clicks_open_help_and_hidden_hints_are_not_targets() {
     renderer.render(&windows, 0, (60, 24), "normal", None, &[]);
     assert!(renderer.status_click_at((column, 24)).is_none());
 }
+
+#[test]
+fn saved_scrollback_uses_primary_screen_without_disturbing_alternate_screen() {
+    let mut terminal = vt100::Parser::new_with_callbacks(3, 40, 10, TerminalMetadata::default());
+    terminal.process(b"old\r\nkeep one\r\nkeep two\r\nkeep three");
+    terminal.process(b"\x1b[?1049h\x1b[2J\x1b[Htemporary TUI");
+    let before = terminal.screen().state_formatted();
+    let lines = crate::app::snapshot_scrollback(terminal.screen(), 3);
+    assert_eq!(lines, ["keep one", "keep two", "keep three"]);
+    assert_eq!(terminal.screen().state_formatted(), before);
+    assert!(terminal.screen().alternate_screen());
+}
+
+#[test]
+fn restored_scrollback_is_bounded_and_leaves_a_clean_live_screen() {
+    let mut terminal = vt100::Parser::new_with_callbacks(3, 40, 3, TerminalMetadata::default());
+    let lines = vec![
+        "discard".to_owned(),
+        "中文 output".to_owned(),
+        "last line".to_owned(),
+    ];
+    crate::app::restore_scrollback(&mut terminal, &lines, 2);
+    assert_eq!(terminal.screen().contents(), "");
+    assert_eq!(terminal.screen().cursor_position(), (0, 0));
+    assert_eq!(
+        crate::app::snapshot_scrollback(terminal.screen(), 3),
+        ["中文 output", "last line"]
+    );
+    terminal.process(b"fresh shell");
+    assert_eq!(terminal.screen().contents(), "fresh shell");
+}
+
+#[test]
+fn restored_scrollback_does_not_interpret_embedded_terminal_controls() {
+    let mut terminal = vt100::Parser::new_with_callbacks(3, 80, 10, TerminalMetadata::default());
+    crate::app::restore_scrollback(
+        &mut terminal,
+        &["before\x1b[?1049h\x07after".to_owned()],
+        10,
+    );
+    assert!(!terminal.screen().alternate_screen());
+    assert_eq!(
+        crate::app::snapshot_scrollback(terminal.screen(), 10),
+        ["before[?1049hafter"]
+    );
+}

@@ -52,19 +52,22 @@ Sleep 900ms
 Ctrl+B
 Ctrl+P
 Type "h"
+Escape
 Type@45ms "echo 'left pane · cargo run --release'"
 Enter
 Sleep 1s
 
 Ctrl+B
 Ctrl+P
-Type "z"
+Type "f"
 Sleep 1s
-Type "z"
-Type "q"
+Ctrl+B
+Ctrl+P
+Type "f"
 Sleep 2s
 
 Hide
 Ctrl+B
+Ctrl+O
 Type "d"
 Sleep 500ms

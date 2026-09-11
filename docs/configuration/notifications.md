@@ -6,7 +6,7 @@ When OSC 133 reports that a command ran past the configured threshold and comple
 [notifications]
 enabled = true
 command_duration_seconds = 10
-exclude_applications = ["yazi", "nvim"]
+exclude_applications = ["yazi", "nvim", "lazygit"]
 ```
 
 ## Application filters

@@ -21,7 +21,7 @@ rustmux ka -y
 
 The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` aliases `list-sessions`, `k` aliases `kill-session`, and `ka` aliases `kill-all-sessions`. Without `-y` or `--yes`, `kill-all-sessions` asks for confirmation. It stops running sessions but preserves saved snapshots. `rustmux attach -c work` creates the session when it does not exist. The earlier `new-session -s work`, `attach-session -t work`, and `kill-session -t work` forms remain supported.
 
-Press <kbd>Ctrl-b</kbd>, <kbd>d</kbd> inside Rustmux to detach. The server and its programs keep running.
+Press <kbd>Ctrl-b</kbd>, <kbd>Ctrl-o</kbd>, <kbd>d</kbd> inside Rustmux to detach. The server and its programs keep running.
 
 A session accepts one interactive client at a time. If another client is already attached, a second attach exits with a warning and leaves the original client connected, with its mode and terminal size unchanged. Detach the original client before attaching elsewhere. Script control commands remain available while a client is attached.
 
@@ -29,7 +29,7 @@ Rustmux sessions cannot be nested. Starting or attaching to Rustmux from a shell
 
 ## Session Manager
 
-Press `s` in normal mode to open the centered Session Manager.
+Press `Ctrl-w` in normal mode, or `w` in session mode, to open the centered Session Manager.
 
 - The first session is selected when the manager opens; the search field stays hidden.
 - `j` / `k` (or `↓` / `↑`) selects a session.
@@ -65,7 +65,7 @@ backspace = ["backspace"]
 
 ## Save and restore
 
-Changed layouts are saved automatically every 30 seconds and when detaching or stopping a running server. Set `autosave_interval_seconds = 0` to keep manual saving only. Manual saving remains available through `Ctrl-a` in the Session Manager. Closing every pane retains the last saved snapshot; deleting a session removes its snapshot without recreating it during shutdown.
+Automatic saving is disabled by default (`autosave_interval_seconds = 0`). Set a positive interval, such as `30`, to save changed layouts periodically and when detaching or stopping a running server. Manual saving remains available through `Ctrl-a` in the Session Manager. Closing every pane retains the last saved snapshot; deleting a session removes its snapshot without recreating it during shutdown.
 
 Snapshots are stored under:
 
@@ -74,7 +74,21 @@ $XDG_STATE_HOME/rustmux/sessions
 ~/.local/state/rustmux/sessions   # when XDG_STATE_HOME is unset
 ```
 
-A snapshot contains window names, pane split trees and ratios, the active pane, working directories, and floating-terminal state. Explicit startup commands from project layouts are also saved. Processes and terminal contents are not serialized.
+A snapshot contains window names, pane split trees and ratios, the active pane, working directories, and floating-terminal state. Explicit startup commands from project layouts are also saved. Processes are not serialized. Terminal text is included only when `save_scrollback = true`.
+
+### Save scrollback
+
+```toml
+save_scrollback = true
+scrollback_lines = 5000
+autosave_interval_seconds = 30 # Optional; keep 0 for manual saving only.
+```
+
+With `save_scrollback` enabled, manual and automatic saves include the most recent plain-text rows from each pane's main terminal buffer, including visible text and floating-terminal history. Up to `scrollback_lines` rows are retained per pane. Full-screen applications' alternate buffers, colors, images, and terminal modes are not saved.
+
+On restoration, the saved text becomes scrollback above a fresh live screen. Enter scroll mode to browse, search, or copy it. Restoring at a narrower width may wrap lines and reduce how much history fits within the current limit. Applications start anew; saved output is not executed.
+
+This option supports hot reload and does not enable automatic saving by itself. Disabling it omits history from future snapshots and skips history when restoring an existing snapshot. Previously saved text remains on disk until that snapshot is overwritten or deleted. Older layout-only snapshots remain compatible.
 
 After the server stops, creating the same session again starts fresh shells (or reruns explicit project startup commands) in the saved directories and rebuilds the layout. Saved sessions that are not running remain visible in the Session Manager.
 

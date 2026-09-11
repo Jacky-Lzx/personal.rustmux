@@ -14,11 +14,12 @@ rustmux check-config
 
 ```toml
 default_mode = "locked"
-clear_defaults = false
+clear_defaults = true
 compact = false
 mouse_hover_cursor = false
-scrollback_lines = 1000
-autosave_interval_seconds = 30
+scrollback_lines = 5000
+autosave_interval_seconds = 0
+save_scrollback = false
 # shell = "/bin/zsh"
 ```
 
@@ -29,7 +30,10 @@ autosave_interval_seconds = 30
 | `compact` | Hide the bottom status line and show the mode at the top right |
 | `mouse_hover_cursor` | Change the pointer over tabs, bottom shortcuts, resize handles, and while dragging; defaults to `false`. Mouse actions still work, and inner applications retain control of their own pointer shape. Hot reload is supported. |
 | `autosave_interval_seconds` | Save changed layouts periodically and on detach/server shutdown; `0` disables automatic saving |
+| `save_scrollback` | Include plain-text pane history in session snapshots and restore it above a fresh live screen; defaults to `false`. Applies to manual and automatic saves, including floating terminals. Limited by `scrollback_lines`. |
 | `scrollback_lines` | History capacity for new panes, from 1 to 1,000,000 |
+
+The generated configuration contains the full default keymap and sets `clear_defaults = true`. For a small override file that inherits omitted bindings, omit `clear_defaults` or set it to `false`.
 
 ## Configure keybindings
 
@@ -65,7 +69,7 @@ The expanded form controls where a binding appears:
 ```toml
 [keybinds.normal]
 c = { display = "help" }
-d = { display = "hidden" }
+x = { display = "hidden" }
 z = { actions = ["new-window"], display = "always" }
 ```
 

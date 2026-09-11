@@ -32,7 +32,7 @@ use crossterm::{
 use session::{attach_or_create, available_sessions, kill_session, list_sessions, run_server};
 
 const PREFIX: u8 = 0x02;
-const SCROLLBACK_LINES: usize = 1_000;
+const SCROLLBACK_LINES: usize = 5_000;
 const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(20);
 const FRAME_INTERVAL: Duration = Duration::from_millis(6);
 const EARLY_DISCONNECT_RETRY: Duration = Duration::from_millis(100);
