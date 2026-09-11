@@ -11,7 +11,7 @@
     <p class="hero-summary">Yet another terminal multiplexer, a spiritual successor to <a href="https://zellij.dev/">Zellij</a>.</p>
     <div class="hero-actions">
       <a class="primary-button" href="getting-started/quick-start.html">Get started <span aria-hidden="true">→</span></a>
-      <a class="secondary-button" href="https://github.com/Jacky-Lzx/personal.rustmux">View on GitHub</a>
+      <a class="secondary-button" href="https://github.com/Jacky-Lzx/Rustmux">View on GitHub</a>
     </div>
     <div class="hero-meta" aria-label="Project highlights">
       <span>Kitty-native</span>

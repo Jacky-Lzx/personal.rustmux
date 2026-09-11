@@ -5,8 +5,8 @@
 Rustmux requires a stable Rust toolchain and macOS or Linux.
 
 ```sh
-git clone https://github.com/Jacky-Lzx/personal.rustmux.git
-cd personal.rustmux
+git clone https://github.com/Jacky-Lzx/Rustmux.git
+cd Rustmux
 cargo run --release
 ```
 
