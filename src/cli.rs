@@ -25,6 +25,8 @@ const CATPPUCCIN_MOCHA_HELP: Styles = Styles::styled()
     styles = CATPPUCCIN_MOCHA_HELP
 )]
 pub(super) struct Cli {
+    #[arg(long, hide = true, requires = "server")]
+    pub(super) startup_layout: Option<std::path::PathBuf>,
     /// Create or attach to a session with this name
     #[arg(short = 's', long, value_name = "SESSION")]
     pub(super) session: Option<String>,
@@ -78,6 +80,12 @@ pub(super) enum Command {
 
 #[derive(Debug, Args)]
 pub(super) struct NewSessionArgs {
+    /// Create the session without attaching a terminal
+    #[arg(short = 'd', long)]
+    pub(super) detached: bool,
+    /// Start a new session from a project layout file
+    #[arg(long)]
+    pub(super) layout: Option<std::path::PathBuf>,
     /// Session name
     #[arg(value_name = "SESSION", conflicts_with = "session")]
     name: Option<String>,

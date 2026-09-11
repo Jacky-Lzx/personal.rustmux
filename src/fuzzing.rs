@@ -137,6 +137,7 @@ pub fn render(data: &[u8]) {
         master,
         child: Pid::from_raw(1),
         spawn_directory: None,
+        startup_command: None,
         terminal,
         cursor_style: CursorStyleTracker::default(),
         input_modes: InputModeTracker::default(),

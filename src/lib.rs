@@ -4,6 +4,7 @@ mod config;
 mod control;
 mod input;
 mod layout;
+mod project;
 mod render;
 mod session;
 mod shell;
@@ -81,7 +82,7 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
     if let Some(values) = cli.server {
         let (socket, values) = values.split_first().ok_or("missing server socket")?;
-        return run_server(PathBuf::from(socket), values);
+        return run_server(PathBuf::from(socket), values, cli.startup_layout.as_deref());
     }
     if starts_session(&cli) && env::var_os(RUSTMUX_ENV).is_some() {
         eprintln!("warning: {NESTED_SESSION_WARNING}");
@@ -93,7 +94,11 @@ pub fn run() -> Result<()> {
 
     match cli.command {
         None => attach_or_create("default", true),
-        Some(Command::NewSession(arguments)) => attach_or_create(arguments.name(), true),
+        Some(Command::NewSession(arguments)) => session::new_session(
+            arguments.name(),
+            arguments.detached,
+            arguments.layout.as_deref(),
+        ),
         Some(Command::Attach(arguments)) => attach_or_create(arguments.name(), arguments.create),
         Some(Command::ListSessions) => list_sessions(),
         Some(Command::Control(command)) => control::run(command),
@@ -115,10 +120,11 @@ pub fn run() -> Result<()> {
 
 fn starts_session(cli: &Cli) -> bool {
     cli.session.is_some()
-        || matches!(
-            &cli.command,
-            None | Some(Command::NewSession(_)) | Some(Command::Attach(_))
-        )
+        || match &cli.command {
+            None | Some(Command::Attach(_)) => true,
+            Some(Command::NewSession(arguments)) => !arguments.detached,
+            _ => false,
+        }
 }
 
 fn kill_all_sessions(skip_confirmation: bool) -> Result<()> {

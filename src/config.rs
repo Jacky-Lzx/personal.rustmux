@@ -210,6 +210,9 @@ pub enum Action {
     MovePaneRight,
     MovePaneUp,
     MovePaneDown,
+    BreakPane,
+    MovePaneNextWindow,
+    MovePanePreviousWindow,
     ClosePane,
     ResizePaneLeft,
     ResizePaneRight,
@@ -655,6 +658,9 @@ impl Action {
             Self::MovePaneLeft => "move-pane-left".to_owned(),
             Self::MovePaneRight => "move-pane-right".to_owned(),
             Self::MovePaneUp => "move-pane-up".to_owned(),
+            Self::BreakPane => "break-pane".to_owned(),
+            Self::MovePaneNextWindow => "move-pane-next-window".to_owned(),
+            Self::MovePanePreviousWindow => "move-pane-previous-window".to_owned(),
             Self::MovePaneDown => "move-pane-down".to_owned(),
             Self::ClosePane => "close-pane".to_owned(),
             Self::ResizePaneLeft => "resize-left".to_owned(),
@@ -850,6 +856,18 @@ fn parse_action(
         "focus-next-pane" => {
             no_arguments()?;
             Action::FocusNextPane
+        }
+        "break-pane" => {
+            no_arguments()?;
+            Action::BreakPane
+        }
+        "move-pane-next-window" => {
+            no_arguments()?;
+            Action::MovePaneNextWindow
+        }
+        "move-pane-previous-window" => {
+            no_arguments()?;
+            Action::MovePanePreviousWindow
         }
         "move-pane-left" => {
             no_arguments()?;

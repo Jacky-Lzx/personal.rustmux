@@ -59,6 +59,7 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         master,
         child: Pid::from_raw(1),
         spawn_directory: None,
+        startup_command: None,
         terminal: vt100::Parser::new_with_callbacks(
             rows,
             columns,
@@ -2091,4 +2092,10 @@ fn directory_falls_back_to_process_without_shell_integration() {
         Some(directory)
     );
     assert_eq!(preferred_spawn_directory(None, None, None), None);
+}
+
+#[test]
+fn detached_creation_is_allowed_inside_an_existing_session() {
+    let cli = Cli::try_parse_from(["rustmux", "new-session", "other", "--detached"]).unwrap();
+    assert!(!starts_session(&cli));
 }

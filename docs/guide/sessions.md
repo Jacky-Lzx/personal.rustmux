@@ -72,8 +72,10 @@ $XDG_STATE_HOME/rustmux/sessions
 ~/.local/state/rustmux/sessions   # when XDG_STATE_HOME is unset
 ```
 
-A snapshot contains window names, pane split trees and ratios, the active pane, working directories, and floating-terminal state. Processes and terminal contents are not serialized.
+A snapshot contains window names, pane split trees and ratios, the active pane, working directories, and floating-terminal state. Explicit startup commands from project layouts are also saved. Processes and terminal contents are not serialized.
 
-After the server stops, creating the same session again starts fresh shells in the saved directories and rebuilds the layout. Saved sessions that are not running remain visible in the Session Manager.
+After the server stops, creating the same session again starts fresh shells (or reruns explicit project startup commands) in the saved directories and rebuilds the layout. Saved sessions that are not running remain visible in the Session Manager.
 
 Working directories prefer OSC 7 shell integration and fall back to the foreground process, shell process, and original pane directory. Yazi’s process directory takes precedence over a stale shell directory. Missing directories fall back to the server’s working directory when restoring.
+
+Temporary history editor windows are excluded from saved layouts.

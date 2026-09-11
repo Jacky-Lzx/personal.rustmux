@@ -64,6 +64,7 @@ pub(super) struct Window {
     pub(super) master: OwnedFd,
     pub(super) child: Pid,
     pub(super) spawn_directory: Option<PathBuf>,
+    pub(super) startup_command: Option<String>,
     pub(super) terminal: vt100::Parser<TerminalMetadata>,
     pub(super) cursor_style: CursorStyleTracker,
     pub(super) input_modes: InputModeTracker,
@@ -367,6 +368,7 @@ impl App {
         config: Config,
         session_name: &str,
         socket_path: PathBuf,
+        layout: Option<SessionSnapshot>,
     ) -> Result<Self> {
         let mode = config.default_mode.clone();
         let config_reloader = ConfigReloader::new(config_path());
@@ -413,8 +415,17 @@ impl App {
             outer_rich_paste: None,
             client_input: Vec::new(),
         };
-        if let Some(snapshot) = load_session_snapshot(session_name)? {
-            app.restore_session(snapshot)?;
+        let snapshot = match layout {
+            Some(snapshot) => Some(snapshot),
+            None => load_session_snapshot(session_name)?,
+        };
+        if let Some(snapshot) = snapshot {
+            if let Err(error) = app.restore_session(snapshot) {
+                for window in app.windows.drain(..) {
+                    terminate_window(window);
+                }
+                return Err(error);
+            }
         } else {
             app.create_window()?;
         }
@@ -433,10 +444,18 @@ impl App {
         for saved_tab in snapshot.tabs {
             let tab_id = self.next_id;
             for pane in &saved_tab.panes {
+                let arguments = match &pane.command {
+                    Some(command) => vec![
+                        shell.clone(),
+                        CString::new("-c")?,
+                        CString::new(command.as_str())?,
+                    ],
+                    None => vec![shell.clone()],
+                };
                 let pane_id = self.spawn_window(
                     saved_tab.name.clone(),
                     shell.clone(),
-                    vec![shell.clone()],
+                    arguments,
                     SpawnOptions {
                         temporary_file: None,
                         return_to_window: None,
@@ -445,6 +464,10 @@ impl App {
                         current_directory: pane.cwd.clone(),
                     },
                 )?;
+                self.windows
+                    .last_mut()
+                    .expect("spawned pane")
+                    .startup_command = pane.command.clone();
                 pane_ids_by_saved_id.insert(pane.id, pane_id);
             }
             self.tabs.push(Tab {
@@ -505,14 +528,21 @@ impl App {
         } else {
             self.windows[self.active].id
         };
-        let tabs = self
+        let tabs: Vec<_> = self
             .tabs
             .iter()
+            .filter(|tab| {
+                !self
+                    .windows
+                    .iter()
+                    .any(|window| window.tab_id == tab.id && window.temporary_file.is_some())
+            })
             .map(|tab| {
                 let panes = pane_ids(&tab.root)
                     .into_iter()
                     .filter_map(|id| self.windows.iter().find(|window| window.id == id))
                     .map(|window| SnapshotPane {
+                        command: window.startup_command.clone(),
                         id: window.id,
                         cwd: self.window_directory(window),
                     })
@@ -531,6 +561,15 @@ impl App {
                 }
             })
             .collect();
+        let saved_ids: Vec<_> = tabs
+            .iter()
+            .flat_map(|tab| tab.panes.iter().map(|pane| pane.id))
+            .collect();
+        let active_pane = if saved_ids.contains(&active_pane) {
+            active_pane
+        } else {
+            *saved_ids.first().ok_or("no persistent panes to save")?
+        };
         let floating = self
             .windows
             .iter()
@@ -538,7 +577,10 @@ impl App {
             .map(|window| SnapshotFloating {
                 cwd: self.window_directory(window),
                 visible: self.windows[self.active].id == window.id,
-                return_to: window.return_to_window,
+                return_to: window
+                    .return_to_window
+                    .filter(|id| saved_ids.contains(id))
+                    .or(Some(active_pane)),
             });
         Ok(SessionSnapshot::new(tabs, floating, active_pane))
     }
@@ -726,6 +768,7 @@ impl App {
                     master,
                     child,
                     spawn_directory,
+                    startup_command: None,
                     terminal: vt100::Parser::new_with_callbacks(
                         rows,
                         columns,
@@ -1198,7 +1241,7 @@ impl App {
                     self.windows[index].notification_applications.clear();
                     self.windows[index].command_output.command_submitted();
                 }
-                write_fd(&self.windows[index].master, &bytes)?;
+                write_control_input(&self.windows[index].master, &bytes)?;
                 Ok(String::new())
             }
             ControlCommand::CapturePane { target, history } => {
@@ -1210,11 +1253,143 @@ impl App {
                 };
                 Ok(format!("{text}\n"))
             }
+            ControlCommand::JoinPane {
+                target,
+                to_pane,
+                down,
+            } => {
+                let index = self.pane_index(target.pane)?;
+                let destination = self.pane_index(Some(to_pane))?;
+                self.relocate_pane(index, Some(destination), down, None)?;
+                Ok(format!("{}\n", self.windows[index].id))
+            }
+            ControlCommand::BreakPane { target, name } => {
+                let index = self.pane_index(target.pane)?;
+                self.relocate_pane(index, None, false, name)?;
+                Ok(format!("{}\n", self.windows[index].id))
+            }
             ControlCommand::SaveSession { .. } => {
                 self.save_current_session()?;
                 Ok(String::new())
             }
         }
+    }
+
+    fn move_pane_to_relative_window(&mut self, offset: isize) -> Result<()> {
+        if self.tabs.len() < 2 {
+            return self.notify("no other window to move the pane to");
+        }
+        let current = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == self.windows[self.active].tab_id)
+            .ok_or("current window missing")?;
+        let next = (current as isize + offset).rem_euclid(self.tabs.len() as isize) as usize;
+        let destination = self.pane_index(Some(pane_ids(&self.tabs[next].root)[0]))?;
+        if let Err(error) = self.relocate_pane(self.active, Some(destination), false, None) {
+            self.notify(&error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn relocate_pane(
+        &mut self,
+        index: usize,
+        destination: Option<usize>,
+        down: bool,
+        name: Option<String>,
+    ) -> Result<()> {
+        let source = &self.windows[index];
+        if source.floating || source.temporary_file.is_some() {
+            return Err("only regular tiled panes can be moved between windows".into());
+        }
+        let pane_id = source.id;
+        let old_tab = source.tab_id;
+        let old_root = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == old_tab)
+            .ok_or("source window missing")?
+            .root
+            .clone();
+        let remaining = remove_pane(old_root, pane_id);
+        let (new_tab, new_root, new_name) = if let Some(destination) = destination {
+            let target = &self.windows[destination];
+            if index == destination || target.floating || target.temporary_file.is_some() {
+                return Err("destination must be a different regular tiled pane".into());
+            }
+            if (down && target.pane_rect.height < 6) || (!down && target.pane_rect.width < 12) {
+                return Err("not enough space in the destination pane".into());
+            }
+            let mut root = if target.tab_id == old_tab {
+                remaining
+                    .clone()
+                    .ok_or("source window has no remaining panes")?
+            } else {
+                self.tabs
+                    .iter()
+                    .find(|tab| tab.id == target.tab_id)
+                    .ok_or("destination window missing")?
+                    .root
+                    .clone()
+            };
+            if !split_pane(
+                &mut root,
+                target.id,
+                pane_id,
+                if down {
+                    SplitAxis::Horizontal
+                } else {
+                    SplitAxis::Vertical
+                },
+            ) {
+                return Err("destination pane is missing from its layout".into());
+            }
+            (target.tab_id, root, target.name.clone())
+        } else {
+            (
+                self.next_id,
+                PaneNode::Leaf(pane_id),
+                name.unwrap_or_else(|| source.name.clone()),
+            )
+        };
+        // Commit the layout only after validating both source and destination.
+        if old_tab != new_tab {
+            if let Some(root) = remaining {
+                self.tabs
+                    .iter_mut()
+                    .find(|tab| tab.id == old_tab)
+                    .unwrap()
+                    .root = root;
+            } else {
+                self.tabs.retain(|tab| tab.id != old_tab);
+            }
+        }
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == new_tab) {
+            tab.root = new_root;
+        } else {
+            self.tabs.push(Tab {
+                id: new_tab,
+                root: new_root,
+            });
+            self.next_id += 1;
+        }
+        self.windows[index].tab_id = new_tab;
+        self.windows[index].name = new_name;
+        for window in &mut self.windows {
+            if window.floating && window.return_to_window == Some(pane_id) {
+                window.tab_id = new_tab;
+            }
+            if window.tab_id == old_tab || window.tab_id == new_tab {
+                window.zoomed = false;
+            }
+        }
+        self.reset_mode();
+        self.select_tab_id(new_tab)?;
+        self.set_active(index);
+        self.resize_windows()?;
+        self.renderer.invalidate();
+        self.redraw()
     }
 
     fn detach_client(&mut self) {
@@ -1886,6 +2061,13 @@ impl App {
                 Action::MovePaneLeft => self.move_active_pane(Direction::Left)?,
                 Action::MovePaneRight => self.move_active_pane(Direction::Right)?,
                 Action::MovePaneUp => self.move_active_pane(Direction::Up)?,
+                Action::BreakPane => {
+                    if let Err(error) = self.relocate_pane(self.active, None, false, None) {
+                        self.notify(&error.to_string())?;
+                    }
+                }
+                Action::MovePaneNextWindow => self.move_pane_to_relative_window(1)?,
+                Action::MovePanePreviousWindow => self.move_pane_to_relative_window(-1)?,
                 Action::MovePaneDown => self.move_active_pane(Direction::Down)?,
                 Action::ClosePane => self.close_pane()?,
                 Action::ResizePaneLeft => self.resize_active_pane(Direction::Left)?,
@@ -3870,6 +4052,26 @@ fn terminate_window(window: Window) {
                 let _ = fs::remove_file(path);
             }
         });
+}
+
+fn write_control_input(fd: &OwnedFd, mut bytes: &[u8]) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while !bytes.is_empty() {
+        if Instant::now() >= deadline {
+            return Err("pane input buffer is full; some input may have been sent".into());
+        }
+        match write(fd, bytes) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero).into()),
+            Ok(count) => bytes = &bytes[count..],
+            Err(Errno::EINTR) => {}
+            Err(Errno::EAGAIN) => {
+                let mut fds = [PollFd::new(fd.as_fd(), PollFlags::POLLOUT)];
+                poll(&mut fds, 10_u16)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 fn write_fd(fd: &OwnedFd, mut bytes: &[u8]) -> Result<()> {

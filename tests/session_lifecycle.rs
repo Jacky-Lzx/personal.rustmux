@@ -81,6 +81,17 @@ impl Server {
     }
 
     fn stop(&mut self, delete: bool) {
+        if self.child.is_none() {
+            if let Ok(mut client) = UnixStream::connect(&self.socket) {
+                let _ = client.write_all(if delete { b"X" } else { b"Q" });
+                let _ = client.shutdown(std::net::Shutdown::Write);
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while self.socket.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            return;
+        }
         if let Some(mut child) = self.child.take() {
             if let Ok(mut client) = UnixStream::connect(&self.socket) {
                 let _ = client.write_all(if delete { b"X" } else { b"Q" });
@@ -106,12 +117,16 @@ impl Server {
     }
 
     fn cli(&self, arguments: &[&str]) -> std::process::Output {
+        self.cli_shell(arguments, "/bin/sh")
+    }
+
+    fn cli_shell(&self, arguments: &[&str], shell: &str) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_rustmux"))
             .args(arguments)
             .env("TMPDIR", &self.root)
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_STATE_HOME", self.root.join("state"))
-            .env("RUSTMUX_SHELL", "/bin/sh")
+            .env("RUSTMUX_SHELL", shell)
             .output()
             .unwrap()
     }
@@ -244,4 +259,170 @@ fn control_commands_target_panes_without_an_attached_client() {
             .success()
     );
     assert!(server.status().unwrap().starts_with("2\t3\t0\t"));
+}
+
+#[test]
+fn detached_project_layout_runs_and_restores_startup_commands() {
+    let mut server = Server::new("autosave_interval_seconds = 30\n");
+    server.stop(false);
+    let layout = server.root.join("project.toml");
+    fs::write(
+        &layout,
+        r#"
+[[windows]]
+name = "project"
+[[windows.panes]]
+cwd = "workspace"
+command = "printf 'started\\n' >> startup-count; exec /bin/sh"
+[[windows.panes]]
+split = "down"
+cwd = "workspace"
+"#,
+    )
+    .unwrap();
+    let output = server.cli(&[
+        "new-session",
+        "work",
+        "--detached",
+        "--layout",
+        layout.to_str().unwrap(),
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(server.status().unwrap().starts_with("1\t2\t0\t"));
+    let count_file = server.root.join("workspace/startup-count");
+    eventually(|| count_file.exists());
+    assert!(
+        !server
+            .cli(&[
+                "new-session",
+                "work",
+                "--detached",
+                "--layout",
+                layout.to_str().unwrap()
+            ])
+            .status
+            .success()
+    );
+    assert!(server.cli(&["save-session", "-s", "work"]).status.success());
+    server.stop(false);
+    server.start();
+    eventually(|| fs::read_to_string(&count_file).unwrap().lines().count() == 2);
+    server.stop(true);
+    fs::write(&layout, "windows = []").unwrap();
+    assert!(
+        !server
+            .cli(&[
+                "new-session",
+                "work",
+                "--detached",
+                "--layout",
+                layout.to_str().unwrap()
+            ])
+            .status
+            .success()
+    );
+    assert!(!server.socket.exists());
+}
+
+#[test]
+fn startup_errors_reach_the_cli_and_leave_no_session_socket() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut server = Server::new("autosave_interval_seconds = 0\n");
+    server.stop(false);
+    let shell = server.root.join("bad-shell");
+    fs::write(&shell, "#!/does-not-exist/rustmux-shell\n").unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = server.cli_shell(
+        &["new-session", "work", "--detached"],
+        shell.to_str().unwrap(),
+    );
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("could not start") && error.contains("bad-shell"),
+        "{error}"
+    );
+    assert!(!server.socket.exists());
+}
+
+#[test]
+fn pane_moves_preserve_shell_state_and_saved_layout() {
+    let mut server = Server::new("autosave_interval_seconds = 0\n");
+    let run = |args: &[&str]| {
+        let output = server.cli(args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    run(&[
+        "send-keys",
+        "-s",
+        "work",
+        "-p",
+        "1",
+        "--literal",
+        "--enter",
+        "export RUSTMUX_MOVE_TEST=preserved; echo $$ > old-pid",
+    ]);
+    eventually(|| server.root.join("old-pid").exists());
+    let destination = run(&["new-window", "-s", "work", "--name", "target"]);
+    run(&[
+        "join-pane",
+        "-s",
+        "work",
+        "-p",
+        "1",
+        "--to-pane",
+        destination.trim(),
+    ]);
+    assert!(server.status().unwrap().starts_with("1\t2\t"));
+    run(&["break-pane", "-s", "work", "-p", "1", "--name", "moved"]);
+    assert!(server.status().unwrap().starts_with("2\t2\t"));
+    run(&[
+        "send-keys",
+        "-s",
+        "work",
+        "-p",
+        "1",
+        "--literal",
+        "--enter",
+        "echo $$ > new-pid; echo $RUSTMUX_MOVE_TEST > move-value",
+    ]);
+    eventually(|| server.root.join("move-value").exists());
+    assert_eq!(
+        fs::read_to_string(server.root.join("old-pid")).unwrap(),
+        fs::read_to_string(server.root.join("new-pid")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(server.root.join("move-value"))
+            .unwrap()
+            .trim(),
+        "preserved"
+    );
+    assert!(
+        !server
+            .cli(&["join-pane", "-s", "work", "-p", "1", "--to-pane", "1"])
+            .status
+            .success()
+    );
+    run(&["save-session", "-s", "work"]);
+    server.stop(false);
+    server.start();
+    let output = server.cli(&["list-panes", "-s", "work", "--toml"]);
+    let panes: toml::Value = toml::from_str(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+    assert_eq!(panes["panes"].as_array().unwrap().len(), 2);
+    assert!(
+        panes["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|pane| pane["name"].as_str() == Some("moved"))
+    );
 }

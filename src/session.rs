@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -44,6 +44,8 @@ pub(super) struct SnapshotTab {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct SnapshotPane {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) command: Option<String>,
     pub(super) id: usize,
     pub(super) cwd: Option<PathBuf>,
 }
@@ -366,7 +368,11 @@ fn run_client(mut stream: UnixStream) -> Result<ClientExit> {
     Ok(ClientExit::Disconnected)
 }
 
-fn start_server(socket: &Path, size: crossterm::terminal::WindowSize) -> Result<()> {
+fn start_server(
+    socket: &Path,
+    size: crossterm::terminal::WindowSize,
+    layout: Option<&Path>,
+) -> Result<()> {
     let config = Config::load()?;
     crate::shell::resolve_shell(config.shell.as_deref())?;
     ensure_session_dir()?;
@@ -384,8 +390,11 @@ fn start_server(socket: &Path, size: crossterm::terminal::WindowSize) -> Result<
         .arg(size.height.to_string())
         .env(super::RUSTMUX_ENV, socket)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(layout) = layout {
+        command.arg("--startup-layout").arg(layout);
+    }
     unsafe {
         command.pre_exec(|| {
             if nix::libc::setsid() == -1 {
@@ -394,7 +403,23 @@ fn start_server(socket: &Path, size: crossterm::terminal::WindowSize) -> Result<
             Ok(())
         });
     }
-    command.spawn()?;
+    let mut child = command.spawn()?;
+    let mut ready = String::new();
+    io::BufReader::new(
+        child
+            .stdout
+            .take()
+            .ok_or("missing server startup channel")?,
+    )
+    .read_line(&mut ready)?;
+    if ready.trim() != "READY" {
+        let output = child.wait_with_output()?;
+        return Err(format!(
+            "session failed to start: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -412,6 +437,55 @@ fn connect_with_retry(socket: &Path) -> Result<UnixStream> {
         .into())
 }
 
+pub(super) fn new_session(name: &str, detached: bool, layout: Option<&Path>) -> Result<()> {
+    if !detached && layout.is_none() {
+        return attach_or_create(name, true);
+    }
+    let socket = session_socket(name)?;
+    if let Ok(mut stream) = UnixStream::connect(&socket) {
+        stream.write_all(&[CLIENT_QUERY_STATUS])?;
+        if layout.is_some() {
+            return Err(format!(
+                "session '{name}' is already running; use a new name for the layout"
+            )
+            .into());
+        }
+        return if detached {
+            Ok(())
+        } else {
+            attach_or_create(name, false)
+        };
+    }
+    let layout = layout.map(fs::canonicalize).transpose()?;
+    if let Some(layout) = &layout {
+        crate::project::load(layout)?;
+    }
+    let size = if detached {
+        crossterm::terminal::WindowSize {
+            columns: 120,
+            rows: 40,
+            width: 0,
+            height: 0,
+        }
+    } else {
+        window_size()?
+    };
+    start_server(&socket, size, layout.as_deref())?;
+    let mut stream = connect_with_retry(&socket)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.write_all(&[CLIENT_QUERY_STATUS])?;
+    let mut status = String::new();
+    stream.read_to_string(&mut status)?;
+    if status.is_empty() {
+        return Err("session failed to start".into());
+    }
+    if detached {
+        Ok(())
+    } else {
+        attach_or_create(name, false)
+    }
+}
+
 pub(super) fn attach_or_create(name: &str, create: bool) -> Result<()> {
     Config::load().map_err(|error| format!("configuration error: {error}"))?;
     let mut current_name = name.to_owned();
@@ -425,7 +499,7 @@ pub(super) fn attach_or_create(name: &str, create: bool) -> Result<()> {
             }
             Err(_) => {
                 let size = window_size()?;
-                start_server(&socket, size)?;
+                start_server(&socket, size, None)?;
                 connect_with_retry(&socket)?
             }
         };
@@ -453,7 +527,7 @@ pub(super) fn attach_or_create(name: &str, create: bool) -> Result<()> {
     }
 }
 
-pub(super) fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
+pub(super) fn run_server(socket: PathBuf, values: &[String], layout: Option<&Path>) -> Result<()> {
     if values.len() != 4 {
         return Err("invalid server arguments".into());
     }
@@ -473,13 +547,17 @@ pub(super) fn run_server(socket: PathBuf, values: &[String]) -> Result<()> {
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     let _socket_guard = SocketGuard(socket.clone());
     let config = Config::load().map_err(|error| format!("configuration error: {error}"))?;
+    let layout = layout.map(crate::project::load).transpose()?;
     let mut app = App::new(
         (columns, rows),
         (width, height),
         config,
         &session_name,
         socket.clone(),
+        layout,
     )?;
+    println!("READY");
+    io::stdout().flush()?;
     let result = app.run_server(listener);
     app.shutdown();
     result
@@ -669,10 +747,15 @@ mod snapshot_tests {
                 },
                 panes: vec![
                     SnapshotPane {
+                        command: None,
                         id: 10,
                         cwd: Some(PathBuf::from("/tmp/project")),
                     },
-                    SnapshotPane { id: 11, cwd: None },
+                    SnapshotPane {
+                        id: 11,
+                        cwd: None,
+                        command: None,
+                    },
                 ],
             }],
             Some(SnapshotFloating {
@@ -697,7 +780,11 @@ mod snapshot_tests {
                 id: 1,
                 name: "broken".to_owned(),
                 root: PaneNode::Leaf(1),
-                panes: vec![SnapshotPane { id: 2, cwd: None }],
+                panes: vec![SnapshotPane {
+                    id: 2,
+                    cwd: None,
+                    command: None,
+                }],
             }],
             None,
             2,

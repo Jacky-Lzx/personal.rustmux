@@ -79,7 +79,7 @@ When overriding an existing binding, `display` can be provided alone. New bindin
 
 Windows and sessions: `new-window`, `rename-window`, `next-window`, `previous-window`, `move-window-left`, `move-window-right`, `go-to-window`, `switch-session`, `close-window`, `detach`.
 
-Panes: `new-pane-right`, `new-pane-down`, `focus-left/right/up/down`, `focus-next-pane`, `move-pane-left/right/up/down`, `resize-pane-left/right/up/down`, `toggle-pane-zoom`, `close-pane`, `toggle-floating-terminal`.
+Panes: `new-pane-right`, `new-pane-down`, `focus-left/right/up/down`, `focus-next-pane`, `move-pane-left/right/up/down`, `resize-pane-left/right/up/down`, `toggle-pane-zoom`, `break-pane`, `move-pane-next-window`, `move-pane-previous-window`, `close-pane`, `toggle-floating-terminal`.
 
 History: `scroll-up/down`, `page-up/down`, `scroll-top/bottom`, `search-history`, `next-search-match`, `previous-search-match`, `toggle-history-selection`, `selection-left/right`, `copy-selection`, `edit-history`, `edit-last-output`, `copy-last-output`.
 

@@ -77,6 +77,24 @@ pub(super) enum ControlCommand {
         #[arg(long)]
         history: bool,
     },
+    /// Move a pane beside another pane, preserving its process and ID
+    JoinPane {
+        #[command(flatten)]
+        #[serde(flatten)]
+        target: PaneTarget,
+        #[arg(long)]
+        to_pane: usize,
+        #[arg(long)]
+        down: bool,
+    },
+    /// Move a pane into its own window, preserving its process and ID
+    BreakPane {
+        #[command(flatten)]
+        #[serde(flatten)]
+        target: PaneTarget,
+        #[arg(short = 'n', long)]
+        name: Option<String>,
+    },
     /// Save the current layout immediately
     SaveSession {
         #[command(flatten)]
@@ -93,7 +111,9 @@ impl ControlCommand {
             | Self::SaveSession { target } => &target.session,
             Self::SplitPane { target, .. }
             | Self::SendKeys { target, .. }
-            | Self::CapturePane { target, .. } => &target.target.session,
+            | Self::CapturePane { target, .. }
+            | Self::JoinPane { target, .. }
+            | Self::BreakPane { target, .. } => &target.target.session,
         }
     }
 }
