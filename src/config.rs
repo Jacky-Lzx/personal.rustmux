@@ -1007,7 +1007,7 @@ pub fn canonical_key_name(key: &str) -> Result<String, String> {
     Ok(canonical)
 }
 
-fn parse_send_key(key: &str) -> Result<Vec<u8>, String> {
+pub(super) fn parse_send_key(key: &str) -> Result<Vec<u8>, String> {
     let canonical = canonical_key_name(key)?;
     if let Some(letter) = canonical.strip_prefix("ctrl ") {
         return Ok(vec![letter.as_bytes()[0] - b'a' + 1]);

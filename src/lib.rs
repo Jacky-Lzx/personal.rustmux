@@ -1,6 +1,7 @@
 mod app;
 mod cli;
 mod config;
+mod control;
 mod input;
 mod layout;
 mod render;
@@ -95,6 +96,7 @@ pub fn run() -> Result<()> {
         Some(Command::NewSession(arguments)) => attach_or_create(arguments.name(), true),
         Some(Command::Attach(arguments)) => attach_or_create(arguments.name(), arguments.create),
         Some(Command::ListSessions) => list_sessions(),
+        Some(Command::Control(command)) => control::run(command),
         Some(Command::KillSession(arguments)) => kill_session(arguments.name()),
         Some(Command::KillAllSessions(arguments)) => kill_all_sessions(arguments.yes),
         Some(Command::DefaultConfig) => {

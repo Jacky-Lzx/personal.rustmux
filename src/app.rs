@@ -1013,6 +1013,24 @@ impl App {
         let mut kind = [0_u8; 1];
         stream.read_exact(&mut kind)?;
         match kind[0] {
+            crate::control::REQUEST => {
+                stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+                let result = crate::control::read_frame(&mut stream)
+                    .and_then(|source| {
+                        Ok(toml::from_str::<crate::control::ControlCommand>(&source)?)
+                    })
+                    .and_then(|command| self.control_command(command));
+                let response = match result {
+                    Ok(output) => crate::control::Response { ok: true, output },
+                    Err(error) => crate::control::Response {
+                        ok: false,
+                        output: error.to_string(),
+                    },
+                };
+                crate::control::write_frame(&mut stream, &toml::to_string(&response)?)?;
+                Ok(true)
+            }
             CLIENT_QUERY_STATUS => {
                 let tabs = self.tabs.len();
                 let panes = self
@@ -1053,6 +1071,148 @@ impl App {
                 self.attach_client(stream)?;
                 self.client_input.push(kind);
                 Ok(true)
+            }
+        }
+    }
+
+    fn pane_index(&self, id: Option<usize>) -> Result<usize> {
+        match id {
+            Some(id) => self
+                .windows
+                .iter()
+                .position(|window| window.id == id)
+                .ok_or_else(|| format!("pane {id} does not exist").into()),
+            None if !self.windows.is_empty() => Ok(self.active),
+            None => Err("session has no panes".into()),
+        }
+    }
+
+    fn control_command(&mut self, command: crate::control::ControlCommand) -> Result<String> {
+        use crate::control::ControlCommand;
+        match command {
+            ControlCommand::ListPanes { toml: machine, .. } => {
+                #[derive(serde::Serialize)]
+                struct PaneInfo {
+                    id: usize,
+                    window: usize,
+                    active: bool,
+                    floating: bool,
+                    name: String,
+                    title: String,
+                    cwd: Option<PathBuf>,
+                }
+                #[derive(serde::Serialize)]
+                struct PaneList {
+                    panes: Vec<PaneInfo>,
+                }
+                let panes: Vec<_> = self
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, pane)| PaneInfo {
+                        id: pane.id,
+                        window: self
+                            .tabs
+                            .iter()
+                            .position(|tab| tab.id == pane.tab_id)
+                            .map_or(0, |i| i + 1),
+                        active: index == self.active,
+                        floating: pane.floating,
+                        name: pane.name.clone(),
+                        title: pane.terminal_title().to_owned(),
+                        cwd: self.window_directory(pane),
+                    })
+                    .collect();
+                if machine {
+                    return Ok(toml::to_string_pretty(&PaneList { panes })?);
+                }
+                let clean = |text: &str| text.replace(['\t', '\n', '\r'], " ");
+                Ok(panes
+                    .iter()
+                    .map(|pane| {
+                        format!(
+                            "{}\t{}\t{}\t{}\n",
+                            pane.id,
+                            pane.window,
+                            clean(&pane.title),
+                            clean(
+                                &pane
+                                    .cwd
+                                    .as_ref()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_default()
+                            )
+                        )
+                    })
+                    .collect())
+            }
+            ControlCommand::NewWindow { name, .. } => {
+                self.create_window()?;
+                if let Some(name) = name {
+                    let tab = self.windows[self.active].tab_id;
+                    rename_tab(&mut self.windows, tab, &name);
+                    self.redraw()?;
+                }
+                Ok(format!("{}\n", self.windows[self.active].id))
+            }
+            ControlCommand::SplitPane { target, down } => {
+                let index = self.pane_index(target.pane)?;
+                let pane = &self.windows[index];
+                if pane.floating {
+                    return Err("cannot split a floating pane".into());
+                }
+                if (down && pane.pane_rect.height < 6) || (!down && pane.pane_rect.width < 12) {
+                    return Err("not enough space to split this pane".into());
+                }
+                self.select_tab_id(pane.tab_id)?;
+                self.set_active(index);
+                self.new_pane(if down {
+                    SplitAxis::Horizontal
+                } else {
+                    SplitAxis::Vertical
+                })?;
+                Ok(format!("{}\n", self.windows[self.active].id))
+            }
+            ControlCommand::SendKeys {
+                target,
+                literal,
+                enter,
+                keys,
+            } => {
+                let index = self.pane_index(target.pane)?;
+                let mut bytes = if literal {
+                    keys.join(" ").into_bytes()
+                } else {
+                    keys.iter()
+                        .map(|key| crate::config::parse_send_key(key))
+                        .collect::<std::result::Result<Vec<_>, _>>()?
+                        .concat()
+                };
+                if enter {
+                    bytes.push(b'\r');
+                }
+                if bytes.len() > 4096 {
+                    return Err("send-keys input exceeds 4096 bytes".into());
+                }
+                if bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+                    self.windows[index].notification_applications.clear();
+                    self.windows[index].command_output.command_submitted();
+                }
+                write_fd(&self.windows[index].master, &bytes)?;
+                Ok(String::new())
+            }
+            ControlCommand::CapturePane { target, history } => {
+                let index = self.pane_index(target.pane)?;
+                let text = if history {
+                    window_history(&mut self.windows[index])
+                } else {
+                    self.windows[index].terminal.screen().contents()
+                };
+                Ok(format!("{text}\n"))
+            }
+            ControlCommand::SaveSession { .. } => {
+                self.save_current_session()?;
+                Ok(String::new())
             }
         }
     }

@@ -263,7 +263,7 @@ pub(super) fn validate_session_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn session_socket(name: &str) -> Result<PathBuf> {
+pub(super) fn session_socket(name: &str) -> Result<PathBuf> {
     validate_session_name(name)?;
     Ok(session_dir().join(format!("{name}.sock")))
 }

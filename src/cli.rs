@@ -43,6 +43,8 @@ pub(super) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
+    #[command(flatten)]
+    Control(crate::control::ControlCommand),
     /// Create or attach to a session
     #[command(visible_alias = "new")]
     NewSession(NewSessionArgs),

@@ -12,6 +12,7 @@
 - [Keybindings and Modes](./guide/keybindings.md)
 - [Windows and Panes](./guide/windows-panes.md)
 - [Session Management](./guide/sessions.md)
+- [Script Control](guide/automation.md)
 - [History, Search, and Copy](./guide/history.md)
 - [Yazi and Kitty](./guide/kitty-yazi.md)
 

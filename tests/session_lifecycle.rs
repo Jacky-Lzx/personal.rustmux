@@ -25,7 +25,9 @@ impl Server {
         fs::create_dir_all(root.join("config/rustmux")).unwrap();
         fs::create_dir_all(root.join("workspace")).unwrap();
         fs::write(root.join("config/rustmux/config.toml"), config).unwrap();
-        let socket = root.join("work.sock");
+        let socket = root
+            .join(format!("rustmux-{}", unsafe { nix::libc::getuid() }))
+            .join("work.sock");
         let mut server = Self {
             root,
             socket,
@@ -101,6 +103,17 @@ impl Server {
                 thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+
+    fn cli(&self, arguments: &[&str]) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_rustmux"))
+            .args(arguments)
+            .env("TMPDIR", &self.root)
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("XDG_STATE_HOME", self.root.join("state"))
+            .env("RUSTMUX_SHELL", "/bin/sh")
+            .output()
+            .unwrap()
     }
 
     fn snapshot(&self) -> PathBuf {
@@ -185,4 +198,50 @@ fn periodic_saving_can_be_disabled_and_reenabled_by_reload() {
     eventually(|| server.snapshot().exists());
     server.stop(true);
     assert!(!server.snapshot().exists());
+}
+
+#[test]
+fn control_commands_target_panes_without_an_attached_client() {
+    let server = Server::new("autosave_interval_seconds = 0\n");
+    let run = |args: &[&str]| {
+        let output = server.cli(args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let new_id = run(&["split-pane", "-s", "work", "-p", "1", "--down"]);
+    let new_id = new_id.trim();
+    assert_ne!(new_id, "1");
+    run(&[
+        "send-keys",
+        "-s",
+        "work",
+        "-p",
+        new_id,
+        "--literal",
+        "--enter",
+        "printf 'rpc-marker\\n'",
+    ]);
+    eventually(|| run(&["capture-pane", "-s", "work", "-p", new_id]).contains("rpc-marker"));
+    let list: toml::Value = toml::from_str(&run(&["list-panes", "-s", "work", "--toml"])).unwrap();
+    assert_eq!(list["panes"].as_array().unwrap().len(), 2);
+    run(&["new-window", "-s", "work", "--name", "logs"]);
+    run(&["save-session", "-s", "work"]);
+    assert!(server.snapshot().exists());
+    assert!(
+        !server
+            .cli(&["capture-pane", "-s", "work", "-p", "99999"])
+            .status
+            .success()
+    );
+    assert!(
+        !server
+            .cli(&["send-keys", "-s", "work", "-p", "1", "not-a-key"])
+            .status
+            .success()
+    );
+    assert!(server.status().unwrap().starts_with("2\t3\t0\t"));
 }
