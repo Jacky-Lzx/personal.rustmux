@@ -7,6 +7,7 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,7 +17,7 @@ use nix::poll::{PollFd, PollFlags, poll};
 use nix::pty::{ForkptyResult, Winsize, forkpty};
 use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::{Pid, execvp, pipe, read, tcgetpgrp, write};
+use nix::unistd::{Pid, pipe, read, tcgetpgrp, write};
 
 use crate::config::{Action, Config, ConfigReloader, config_path};
 use crate::input::{
@@ -29,12 +30,13 @@ use crate::layout::{
     pane_resize_handle, rect_in_direction, remove_pane, resize_pane, resize_pane_to, split_pane,
     swap_panes, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
+use crate::persistence::{SaveCompletion, SaveRequest, SnapshotWriter};
 use crate::render::{HelpView, Renderer, SessionManagerView, render_base_index};
 use crate::session::{
     SessionInfo, SessionSnapshot, SnapshotFloating, SnapshotPane, SnapshotTab,
     available_session_info, delete_session, delete_session_snapshot, disconnect_session,
     ensure_session_dir, load_session_snapshot, rename_session, rename_session_snapshot,
-    save_session_snapshot, validate_session_name,
+    validate_session_name,
 };
 use crate::terminal::{
     CursorStyleTracker, HyperlinkTracker, InputModeTracker, KittyDndEvent, KittyDndParser,
@@ -353,7 +355,8 @@ pub(super) struct App {
     mouse_drag: Option<MouseDrag>,
     status_mouse_down: bool,
     last_autosave_check: Instant,
-    last_saved_snapshot: Option<SessionSnapshot>,
+    last_saved_snapshot: Option<Arc<SessionSnapshot>>,
+    snapshot_writer: SnapshotWriter,
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
     outer_keyboard_flags: Option<u8>,
@@ -410,6 +413,7 @@ impl App {
             status_mouse_down: false,
             last_autosave_check: Instant::now(),
             last_saved_snapshot: None,
+            snapshot_writer: SnapshotWriter::default(),
             client: None,
             outer_dnd_window: None,
             outer_keyboard_flags: None,
@@ -616,12 +620,50 @@ impl App {
         Ok(SessionSnapshot::new(tabs, floating, active_pane))
     }
 
+    fn queue_session_save(&mut self, notify: bool, reply: Option<UnixStream>) -> Result<()> {
+        let snapshot = Arc::new(self.session_snapshot()?);
+        self.snapshot_writer.submit(SaveRequest {
+            name: self.session_name.clone(),
+            snapshot,
+            notify,
+            replies: reply.into_iter().collect(),
+        })?;
+        Ok(())
+    }
+
     fn save_current_session(&mut self) -> Result<()> {
-        let snapshot = self.session_snapshot()?;
-        save_session_snapshot(&self.session_name, &snapshot)?;
-        self.last_saved_snapshot = Some(snapshot);
-        self.refresh_session_manager()?;
-        self.notify("session layout saved")
+        self.queue_session_save(true, None)?;
+        self.notify("saving session…")
+    }
+
+    fn complete_save(&mut self, completion: SaveCompletion) {
+        match completion.result {
+            Ok(()) => {
+                self.last_saved_snapshot = Some(completion.snapshot);
+                if self.session_manager.is_some() {
+                    let _ = self.refresh_session_manager();
+                }
+                if completion.notify {
+                    let _ = self.notify("session saved");
+                }
+            }
+            Err(error) => {
+                eprintln!("session save failed: {error}");
+                let _ = self.notify(&format!("session save failed: {error}"));
+            }
+        }
+    }
+
+    fn poll_session_saves(&mut self) {
+        while let Some(completion) = self.snapshot_writer.poll() {
+            self.complete_save(completion);
+        }
+    }
+
+    fn flush_session_saves(&mut self) {
+        for completion in self.snapshot_writer.flush() {
+            self.complete_save(completion);
+        }
     }
 
     fn autosave_session(&mut self, force: bool) {
@@ -636,9 +678,17 @@ impl App {
         self.last_autosave_check = Instant::now();
         let result = (|| -> Result<()> {
             let snapshot = self.session_snapshot()?;
-            if self.last_saved_snapshot.as_ref() != Some(&snapshot) {
-                save_session_snapshot(&self.session_name, &snapshot)?;
-                self.last_saved_snapshot = Some(snapshot);
+            let latest = self
+                .snapshot_writer
+                .latest_snapshot()
+                .or(self.last_saved_snapshot.as_deref());
+            if latest != Some(&snapshot) {
+                self.snapshot_writer.submit(SaveRequest {
+                    name: self.session_name.clone(),
+                    snapshot: Arc::new(snapshot),
+                    notify: false,
+                    replies: Vec::new(),
+                })?;
             }
             Ok(())
         })();
@@ -751,6 +801,14 @@ impl App {
         for fd in [&exec_status_read, &exec_status_write] {
             fcntl(fd, FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC))?;
         }
+        // Prepare argv before fork: the save worker can be allocating memory.
+        // nix::execvp builds this pointer vector internally, which is unsafe in
+        // the child of a multithreaded process before exec.
+        let argv: Vec<_> = arguments
+            .iter()
+            .map(|argument| argument.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect();
 
         // SAFETY: the child immediately calls execvp and _exit, both of which are
         // async-signal-safe; all application bookkeeping remains in the parent.
@@ -839,7 +897,10 @@ impl App {
                     // SAFETY: exiting directly is required after fork if setup fails.
                     unsafe { nix::libc::_exit(127) };
                 }
-                let code = execvp(&program, &arguments).unwrap_err() as i32;
+                // SAFETY: program and argv are NUL-terminated, prepared before
+                // fork, and remain alive until exec replaces the child.
+                unsafe { nix::libc::execvp(program.as_ptr(), argv.as_ptr()) };
+                let code = Errno::last() as i32;
                 let _ = write(&exec_status_write, &code.to_ne_bytes());
                 // SAFETY: exiting directly is required after fork if exec fails.
                 unsafe { nix::libc::_exit(127) };
@@ -883,6 +944,7 @@ impl App {
         let mut output = [0_u8; 64 * 1024];
 
         while !self.windows.is_empty() {
+            self.poll_session_saves();
             self.reload_config_if_changed()?;
             self.autosave_session(false);
             self.track_foreground_applications();
@@ -1094,11 +1156,19 @@ impl App {
             crate::control::REQUEST => {
                 stream.set_read_timeout(Some(Duration::from_secs(2)))?;
                 stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-                let result = crate::control::read_frame(&mut stream)
-                    .and_then(|source| {
-                        Ok(toml::from_str::<crate::control::ControlCommand>(&source)?)
-                    })
-                    .and_then(|command| self.control_command(command));
+                let command = crate::control::read_frame(&mut stream).and_then(|source| {
+                    Ok(toml::from_str::<crate::control::ControlCommand>(&source)?)
+                });
+                let result = match command {
+                    Ok(crate::control::ControlCommand::SaveSession { .. }) => {
+                        match self.queue_session_save(true, Some(stream.try_clone()?)) {
+                            Ok(()) => return Ok(true),
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Ok(command) => self.control_command(command),
+                    Err(error) => Err(error),
+                };
                 let response = match result {
                     Ok(output) => crate::control::Response { ok: true, output },
                     Err(error) => crate::control::Response {
@@ -1139,6 +1209,7 @@ impl App {
                 Ok(true)
             }
             crate::CLIENT_DELETE_SESSION => {
+                self.flush_session_saves();
                 delete_session_snapshot(&self.session_name)?;
                 self.config.autosave_interval_seconds = 0;
                 Ok(false)
@@ -2341,6 +2412,7 @@ impl App {
                     return Ok(true);
                 };
                 if target == self.session_name {
+                    self.flush_session_saves();
                     delete_session_snapshot(&target)?;
                     for window in self.windows.drain(..) {
                         terminate_window(window);
@@ -2522,6 +2594,7 @@ impl App {
     }
 
     fn rename_current_session(&mut self, new_name: &str) -> Result<()> {
+        self.flush_session_saves();
         let old_name = self.session_name.clone();
         let new_path = self.socket_path.with_file_name(format!("{new_name}.sock"));
         if new_path.exists() {
@@ -3899,6 +3972,7 @@ impl App {
 
     pub(super) fn shutdown(&mut self) {
         self.autosave_session(true);
+        self.flush_session_saves();
         self.clear_outer_dnd_registration();
         for window in self.windows.drain(..) {
             terminate_window(window);

@@ -95,7 +95,7 @@ pub(super) enum ControlCommand {
         #[arg(short = 'n', long)]
         name: Option<String>,
     },
-    /// Save the current layout immediately
+    /// Save the current session and wait for the write to complete
     SaveSession {
         #[command(flatten)]
         #[serde(flatten)]
@@ -148,7 +148,13 @@ pub(super) fn write_frame(stream: &mut UnixStream, contents: &str) -> Result<()>
 pub(super) fn run(command: ControlCommand) -> Result<()> {
     let socket = crate::session::session_socket(command.session())?;
     let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    // A save may wait behind another disk write; its response means completion.
+    let timeout = if matches!(&command, ControlCommand::SaveSession { .. }) {
+        None
+    } else {
+        Some(Duration::from_secs(5))
+    };
+    stream.set_read_timeout(timeout)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     stream.write_all(&[REQUEST])?;
     write_frame(&mut stream, &toml::to_string(&command)?)?;

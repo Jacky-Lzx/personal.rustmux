@@ -685,3 +685,55 @@ fn autosave_records_new_output_and_restores_floating_history() {
     assert!(text.contains("floating-history"), "{text}");
     assert!(text.contains("later-output"), "{text}");
 }
+
+// Submit a save without waiting for its response, then use a status request as
+// an event-loop barrier. This exercises shutdown/rename with a queued save.
+fn queue_save(server: &Server) -> UnixStream {
+    let mut stream = UnixStream::connect(&server.socket).unwrap();
+    let request = b"action = 'save-session'\nsession = 'work'\n";
+    stream.write_all(b"C").unwrap();
+    stream
+        .write_all(&(request.len() as u32).to_be_bytes())
+        .unwrap();
+    stream.write_all(request).unwrap();
+    assert!(server.status().is_some());
+    stream
+}
+
+#[test]
+fn outstanding_manual_save_is_flushed_on_shutdown_and_cannot_recreate_deleted_snapshot() {
+    for delete in [false, true] {
+        let mut server = Server::new("save_scrollback = true\n");
+        let _save = queue_save(&server);
+        server.stop(delete);
+        assert_eq!(server.snapshot().exists(), !delete);
+        if !delete {
+            let snapshot: toml::Value =
+                toml::from_str(&fs::read_to_string(server.snapshot()).unwrap()).unwrap();
+            assert_eq!(snapshot["tabs"].as_array().unwrap().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn queued_save_is_finished_before_renaming_a_session() {
+    let mut server = Server::new("save_scrollback = true\n");
+    let _save = queue_save(&server);
+    let mut stream = UnixStream::connect(&server.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    stream.write_all(b"N\x07renamed").unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    assert_eq!(response, b"OK");
+    server.socket.set_file_name("renamed.sock");
+    server.stop(false);
+    assert!(!server.snapshot().exists());
+    assert!(
+        server
+            .root
+            .join("state/rustmux/sessions/renamed.toml")
+            .exists()
+    );
+}
