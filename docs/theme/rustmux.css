@@ -157,6 +157,11 @@ body::before {
   background: var(--panel);
 }
 
+/* Page headings live in the right-hand outline; keep chapter links on the left. */
+#mdbook-sidebar .on-this-page {
+  display: none;
+}
+
 .sidebar {
   top: 64px;
   padding: 28px 16px 44px;
