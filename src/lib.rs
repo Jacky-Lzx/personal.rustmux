@@ -46,6 +46,7 @@ const CLIENT_DELETE_SESSION: u8 = b'X';
 const CLIENT_QUERY_STATUS: u8 = b'S';
 const CLIENT_DISCONNECT: u8 = b'D';
 const CLIENT_RENAME_SESSION: u8 = b'N';
+const SERVER_SESSION_BUSY: &[u8] = b"\x1b]777;rustmux-session-busy\x07";
 const SERVER_SWITCH_SESSION_PREFIX: &[u8] = b"\x1b]777;rustmux-switch-session=";
 const MAX_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
 const CLIPBOARD_STATUS: &str = "copied to system clipboard";

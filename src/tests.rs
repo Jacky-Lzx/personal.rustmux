@@ -2145,3 +2145,15 @@ fn theme_changes_redraw_ui_and_preserve_application_colors_and_cursor() {
     let frame = renderer.render(&windows, 0, (80, 24), "locked", None, &[]);
     assert!(String::from_utf8_lossy(&frame).contains("48;2;30;30;46"));
 }
+
+#[test]
+fn session_busy_response_is_recognized_at_every_packet_boundary() {
+    for split in 0..=SERVER_SESSION_BUSY.len() {
+        let mut decoder = ServerOutputDecoder::default();
+        let (first, target) = decoder.push(&SERVER_SESSION_BUSY[..split]).unwrap();
+        assert!(first.is_empty() && target.is_none());
+        let (second, target) = decoder.push(&SERVER_SESSION_BUSY[split..]).unwrap();
+        assert!(second.is_empty() && target.is_none());
+        assert!(decoder.busy);
+    }
+}

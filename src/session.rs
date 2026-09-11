@@ -101,17 +101,25 @@ struct SocketGuard(PathBuf);
 #[derive(Debug, Eq, PartialEq)]
 enum ClientExit {
     Disconnected,
+    Busy,
     SwitchSession(String),
 }
 
 #[derive(Default)]
 pub(super) struct ServerOutputDecoder {
     pending: Vec<u8>,
+    pub(super) busy: bool,
 }
 
 impl ServerOutputDecoder {
     pub(super) fn push(&mut self, bytes: &[u8]) -> Result<(Vec<u8>, Option<String>)> {
         self.pending.extend_from_slice(bytes);
+        if let Some(start) = find_bytes(&self.pending, crate::SERVER_SESSION_BUSY) {
+            let visible = self.pending.drain(..start).collect();
+            self.pending.drain(..crate::SERVER_SESSION_BUSY.len());
+            self.busy = true;
+            return Ok((visible, None));
+        }
         if let Some(start) = find_bytes(&self.pending, SERVER_SWITCH_SESSION_PREFIX) {
             let name_start = start + SERVER_SWITCH_SESSION_PREFIX.len();
             let Some(end_offset) = self.pending[name_start..]
@@ -128,12 +136,12 @@ impl ServerOutputDecoder {
             return Ok((visible, Some(name)));
         }
 
-        let retained = (1..SERVER_SWITCH_SESSION_PREFIX.len())
-            .rev()
-            .find(|length| {
-                self.pending
-                    .ends_with(&SERVER_SWITCH_SESSION_PREFIX[..*length])
-            })
+        let retained = [SERVER_SWITCH_SESSION_PREFIX, crate::SERVER_SESSION_BUSY]
+            .into_iter()
+            .flat_map(|prefix| (1..prefix.len()).map(move |length| &prefix[..length]))
+            .filter(|prefix| self.pending.ends_with(prefix))
+            .map(<[u8]>::len)
+            .max()
             .unwrap_or(0);
         let visible_length = self.pending.len().saturating_sub(retained);
         Ok((self.pending.drain(..visible_length).collect(), None))
@@ -325,6 +333,9 @@ fn run_client(mut stream: UnixStream) -> Result<ClientExit> {
                 Ok(0) => break,
                 Ok(count) => {
                     let (visible, switch) = output_decoder.push(&output[..count])?;
+                    if output_decoder.busy {
+                        return Ok(ClientExit::Busy);
+                    }
                     let mut stdout = io::stdout().lock();
                     stdout.write_all(&visible)?;
                     stdout.flush()?;
@@ -486,6 +497,12 @@ pub(super) fn new_session(name: &str, detached: bool, layout: Option<&Path>) -> 
     }
 }
 
+fn warn_session_busy(name: &str) {
+    eprintln!(
+        "warning: session '{name}' is already attached to another client; detach that client before attaching here"
+    );
+}
+
 pub(super) fn attach_or_create(name: &str, create: bool) -> Result<()> {
     Config::load().map_err(|error| format!("configuration error: {error}"))?;
     let mut current_name = name.to_owned();
@@ -505,22 +522,36 @@ pub(super) fn attach_or_create(name: &str, create: bool) -> Result<()> {
         };
 
         let started = Instant::now();
-        if let ClientExit::SwitchSession(name) = run_client(stream)? {
-            current_name = name;
-            create_current = true;
-            continue;
+        match run_client(stream)? {
+            ClientExit::SwitchSession(name) => {
+                current_name = name;
+                create_current = true;
+                continue;
+            }
+            ClientExit::Busy => {
+                warn_session_busy(&current_name);
+                return Ok(());
+            }
+            ClientExit::Disconnected => {}
         }
         if started.elapsed() < EARLY_DISCONNECT_RETRY {
             // Servers started by an older rustmux build could accidentally apply a
             // previous client's POLLHUP to a newly accepted connection. Retrying
             // once preserves that in-memory session while recovering transparently.
             thread::sleep(Duration::from_millis(20));
-            if let Ok(stream) = UnixStream::connect(&socket)
-                && let ClientExit::SwitchSession(name) = run_client(stream)?
-            {
-                current_name = name;
-                create_current = true;
-                continue 'sessions;
+            if let Ok(stream) = UnixStream::connect(&socket) {
+                match run_client(stream)? {
+                    ClientExit::SwitchSession(name) => {
+                        current_name = name;
+                        create_current = true;
+                        continue 'sessions;
+                    }
+                    ClientExit::Busy => {
+                        warn_session_busy(&current_name);
+                        return Ok(());
+                    }
+                    ClientExit::Disconnected => {}
+                }
             }
         }
         return Ok(());

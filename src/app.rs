@@ -1109,12 +1109,28 @@ impl App {
                 Ok(false)
             }
             CLIENT_SHUTDOWN => Ok(false),
-            kind => {
+            CLIENT_RESIZE => {
+                // Consume the initial resize before closing a rejected socket, so
+                // unread request bytes cannot turn the warning into a reset.
+                let mut resize = [0_u8; 9];
+                resize[0] = CLIENT_RESIZE;
+                stream.read_exact(&mut resize[1..])?;
+                if self.client.is_some() {
+                    stream.set_write_timeout(Some(Duration::from_millis(250)))?;
+                    stream.write_all(crate::SERVER_SESSION_BUSY)?;
+                    stream.shutdown(std::net::Shutdown::Write)?;
+                    return Ok(true);
+                }
+                let columns = u16::from_be_bytes([resize[1], resize[2]]);
+                let rows = u16::from_be_bytes([resize[3], resize[4]]);
+                let width = u16::from_be_bytes([resize[5], resize[6]]);
+                let height = u16::from_be_bytes([resize[7], resize[8]]);
+                self.update_size((columns, rows), (width, height))?;
                 stream.set_read_timeout(None)?;
                 self.attach_client(stream)?;
-                self.client_input.push(kind);
                 Ok(true)
             }
+            _ => Err("unknown client connection request".into()),
         }
     }
 

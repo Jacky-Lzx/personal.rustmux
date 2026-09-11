@@ -469,3 +469,77 @@ fn attached_session_repaints_theme_and_keeps_last_valid_colors() {
     client.shutdown(std::net::Shutdown::Both).unwrap();
     reader_thread.join().unwrap();
 }
+
+#[test]
+fn second_attach_warns_without_disconnecting_resizing_or_resetting_first_client() {
+    let server = Server::new("autosave_interval_seconds = 0\n");
+    let mut first = server.attach();
+    input(&mut first, b"stty size > before-size\n");
+    eventually(|| server.root.join("before-size").exists());
+    input(&mut first, b"\x02"); // Keep the first client in normal mode.
+
+    let mut second = UnixStream::connect(&server.socket).unwrap();
+    second
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    second
+        .write_all(&[b'R', 0, 160, 0, 60, 0, 0, 0, 0])
+        .unwrap();
+    let mut response = Vec::new();
+    second.read_to_end(&mut response).unwrap();
+    assert_eq!(response, b"\x1b]777;rustmux-session-busy\x07");
+    input(&mut first, b"c");
+    eventually(|| server.status().is_some_and(|s| s.starts_with("2\t2\t1\t")));
+    input(&mut first, b"stty size > after-size\n");
+    eventually(|| server.root.join("after-size").exists());
+    assert_eq!(
+        fs::read(server.root.join("before-size")).unwrap(),
+        fs::read(server.root.join("after-size")).unwrap()
+    );
+
+    // Exercise the actual CLI, including raw-mode cleanup and warning output.
+    let pty = nix::pty::openpty(
+        Some(&nix::pty::Winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }),
+        None,
+    )
+    .unwrap();
+    let slave = fs::File::from(pty.slave);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rustmux"))
+        .args(["attach", "work"])
+        .env("TMPDIR", &server.root)
+        .env("XDG_CONFIG_HOME", server.root.join("config"))
+        .env_remove("RUSTMUX")
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("rejected client did not exit");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let warning = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        warning.contains("warning: session 'work' is already attached"),
+        "{warning}"
+    );
+    assert_eq!(warning.matches("warning:").count(), 1);
+    assert!(server.status().unwrap().starts_with("2\t2\t1\t"));
+    input(&mut first, b"\x02d");
+    eventually(|| server.status().is_some_and(|s| s.starts_with("2\t2\t0\t")));
+    let mut reattached = server.attach();
+    input(&mut reattached, b"touch reattached\n");
+    eventually(|| server.root.join("reattached").exists());
+}
