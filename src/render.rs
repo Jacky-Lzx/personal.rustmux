@@ -142,6 +142,23 @@ impl Renderer {
         self.mode_hints = mode_hints;
     }
 
+    pub(super) fn status_bar_contains(&self, position: (u16, u16)) -> bool {
+        self.previous.as_ref().is_some_and(|snapshot| {
+            !snapshot.compact
+                && snapshot.terminal_size.1 > 1
+                && position.1 == snapshot.terminal_size.1
+                && position.0 > 0
+                && position.0 <= snapshot.terminal_size.0
+        })
+    }
+
+    pub(super) fn status_click_at(&self, position: (u16, u16)) -> Option<StatusClick> {
+        if !self.status_bar_contains(position) {
+            return None;
+        }
+        status_click_at(self.previous.as_ref()?, position.0)
+    }
+
     pub(super) fn window_tab_at(&self, position: (u16, u16)) -> Option<usize> {
         if position.1 != 1 {
             return None;
@@ -1346,7 +1363,46 @@ fn action_hint_label(action: &str) -> String {
         .join(" + ")
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum StatusClick {
+    Key { mode: String, key: String },
+    Help,
+    CloseSessionManager,
+}
+
+struct StatusHint {
+    key: String,
+    label: String,
+    keys: Vec<String>,
+}
+
+struct StatusSegment {
+    text: String,
+    color: Rgb,
+    click: Option<StatusClick>,
+    aliases: Vec<(String, StatusClick)>,
+}
+
+impl StatusSegment {
+    fn new(text: String, color: Rgb, click: Option<StatusClick>) -> Self {
+        Self {
+            text,
+            color,
+            click,
+            aliases: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
 pub(super) fn compact_status_hints(hints: &[String]) -> Vec<(String, String)> {
+    status_hints(hints)
+        .into_iter()
+        .map(|hint| (hint.key, hint.label))
+        .collect()
+}
+
+fn status_hints(hints: &[String]) -> Vec<StatusHint> {
     let has_window_navigation = hints
         .iter()
         .any(|hint| hint == "n=next-window + mode:locked")
@@ -1356,7 +1412,7 @@ pub(super) fn compact_status_hints(hints: &[String]) -> Vec<(String, String)> {
     let mut grouped: Vec<(Vec<String>, String)> = Vec::new();
     let mut window_keys = Vec::new();
     for hint in hints {
-        let Some((key, action)) = hint.split_once('=') else {
+        let Some((key, action)) = hint.rsplit_once('=') else {
             continue;
         };
         let action = action.strip_suffix(" + mode:locked").unwrap_or(action);
@@ -1383,16 +1439,11 @@ pub(super) fn compact_status_hints(hints: &[String]) -> Vec<(String, String)> {
         }
     }
     if has_window_navigation {
-        grouped.push((vec!["n/p".to_owned()], "WINDOW".to_owned()));
+        grouped.push((vec!["n".to_owned(), "p".to_owned()], "WINDOW".to_owned()));
     }
     if !window_keys.is_empty() {
         window_keys.sort();
-        let key = if window_keys.len() > 1 {
-            format!("{}-{}", window_keys[0], window_keys[window_keys.len() - 1])
-        } else {
-            window_keys.remove(0)
-        };
-        grouped.push((vec![key], "WINDOW".to_owned()));
+        grouped.push((window_keys, "WINDOW".to_owned()));
     }
 
     let mut hints = grouped
@@ -1400,16 +1451,29 @@ pub(super) fn compact_status_hints(hints: &[String]) -> Vec<(String, String)> {
         .map(|(mut keys, action)| {
             keys.sort_by_key(|key| (UnicodeWidthStr::width(key.as_str()), key.clone()));
             keys.dedup();
-            let hidden_aliases = keys.len().saturating_sub(2);
-            let mut key = keys.into_iter().take(2).collect::<Vec<_>>().join("/");
+            let visible_count = if keys
+                .iter()
+                .all(|key| key.len() == 1 && key.as_bytes()[0].is_ascii_digit())
+            {
+                keys.len()
+            } else {
+                2
+            };
+            let hidden_aliases = keys.len().saturating_sub(visible_count);
+            keys.truncate(visible_count);
+            let mut key = keys.join("/");
             if hidden_aliases > 0 {
                 key.push_str("/…");
             }
-            (key, action)
+            StatusHint {
+                key,
+                label: action,
+                keys,
+            }
         })
         .collect::<Vec<_>>();
-    hints.sort_by_key(|(key, action)| {
-        let priority = match action.as_str() {
+    hints.sort_by_key(|hint| {
+        let priority = match hint.label.as_str() {
             "UNLOCK" => 0,
             "NEW WINDOW" => 10,
             "RENAME WINDOW" => 20,
@@ -1421,7 +1485,7 @@ pub(super) fn compact_status_hints(hints: &[String]) -> Vec<(String, String)> {
             "HELP" => 250,
             _ => 100,
         };
-        (priority, key.clone())
+        (priority, hint.key.clone())
     });
     hints
 }
@@ -1430,36 +1494,70 @@ fn powerline_segment_width(text: &str) -> usize {
     UnicodeWidthStr::width(text).saturating_add(4)
 }
 
-fn status_segments_width(segments: &[(String, Rgb)]) -> usize {
+fn status_segments_width(segments: &[StatusSegment]) -> usize {
     segments
         .iter()
-        .map(|(text, _)| powerline_segment_width(text))
+        .map(|segment| powerline_segment_width(&segment.text))
         .sum()
 }
 
 fn fit_status_hints(
-    theme: &Theme,
-    base: Vec<(String, Rgb)>,
-    hints: Vec<(String, String)>,
+    snapshot: &FrameSnapshot,
+    base: Vec<StatusSegment>,
+    hints: Vec<StatusHint>,
     width: usize,
-) -> Vec<(String, Rgb)> {
+) -> Vec<StatusSegment> {
+    let theme = &snapshot.theme;
     for shown in (0..=hints.len()).rev() {
         let hidden = hints.len() - shown;
-        let mut segments = base.clone();
-        for (index, (key, action)) in hints.iter().take(shown).enumerate() {
-            segments.push((key.clone(), theme.key));
-            segments.push((
-                action.clone(),
+        let mut segments: Vec<_> = base
+            .iter()
+            .map(|s| StatusSegment::new(s.text.clone(), s.color, s.click.clone()))
+            .collect();
+        for (index, hint) in hints.iter().take(shown).enumerate() {
+            let aliases: Vec<_> = hint
+                .keys
+                .iter()
+                .map(|key| {
+                    (
+                        key.clone(),
+                        StatusClick::Key {
+                            mode: snapshot.mode.clone(),
+                            key: key.clone(),
+                        },
+                    )
+                })
+                .collect();
+            let primary = aliases.first().map(|(_, click)| click.clone());
+            let mut key_segment = StatusSegment::new(hint.key.clone(), theme.key, primary.clone());
+            key_segment.aliases = aliases;
+            if hint.key.ends_with("/…") {
+                key_segment
+                    .aliases
+                    .push(("…".to_owned(), StatusClick::Help));
+            }
+            segments.push(key_segment);
+            segments.push(StatusSegment::new(
+                hint.label.clone(),
                 if index % 2 == 0 {
                     theme.secondary
                 } else {
                     theme.blue
                 },
+                primary,
             ));
         }
         if hidden > 0 {
-            segments.push(("?".to_owned(), theme.key));
-            segments.push((format!("MORE (+{hidden})"), theme.secondary));
+            segments.push(StatusSegment::new(
+                "?".to_owned(),
+                theme.key,
+                Some(StatusClick::Help),
+            ));
+            segments.push(StatusSegment::new(
+                format!("MORE (+{hidden})"),
+                theme.secondary,
+                Some(StatusClick::Help),
+            ));
         }
         if status_segments_width(&segments) <= width {
             return segments;
@@ -1468,35 +1566,86 @@ fn fit_status_hints(
     base
 }
 
-fn status_segments(snapshot: &FrameSnapshot, width: usize) -> Vec<(String, Rgb)> {
+fn status_segments(snapshot: &FrameSnapshot, width: usize) -> Vec<StatusSegment> {
     let theme = &snapshot.theme;
     if snapshot.session_manager.is_some() {
         return vec![
-            ("SESSION MANAGER".to_owned(), theme.accent),
-            ("Esc".to_owned(), theme.key),
-            ("CLOSE".to_owned(), theme.secondary),
+            StatusSegment::new("SESSION MANAGER".to_owned(), theme.accent, None),
+            StatusSegment::new(
+                "Esc".to_owned(),
+                theme.key,
+                Some(StatusClick::CloseSessionManager),
+            ),
+            StatusSegment::new(
+                "CLOSE".to_owned(),
+                theme.secondary,
+                Some(StatusClick::CloseSessionManager),
+            ),
         ];
     }
     if let Some(name) = &snapshot.rename_prompt {
-        return vec![(format!("RENAME: {name}_"), theme.warning)];
+        return vec![StatusSegment::new(
+            format!("RENAME: {name}_"),
+            theme.warning,
+            None,
+        )];
     }
     if let Some(query) = &snapshot.history_search_prompt {
-        return vec![(format!("SEARCH: {query}_"), theme.warning)];
+        return vec![StatusSegment::new(
+            format!("SEARCH: {query}_"),
+            theme.warning,
+            None,
+        )];
     }
     let mode_color = if snapshot.mode == "locked" {
         theme.error
     } else {
         theme.accent
     };
-    let mut segments = vec![(
+    let mut segments = vec![StatusSegment::new(
         mode_label(&snapshot.mode, snapshot.history_offset),
         mode_color,
+        None,
     )];
     if let Some(status) = &snapshot.border_status {
-        segments.push((status.clone(), theme.warning));
+        segments.push(StatusSegment::new(status.clone(), theme.warning, None));
     }
-    let hints = compact_status_hints(&snapshot.mode_hints);
-    fit_status_hints(theme, segments, hints, width)
+    fit_status_hints(
+        snapshot,
+        segments,
+        status_hints(&snapshot.mode_hints),
+        width,
+    )
+}
+
+fn status_click_at(snapshot: &FrameSnapshot, column: u16) -> Option<StatusClick> {
+    let pointer = usize::from(column.checked_sub(1)?);
+    let width = usize::from(snapshot.terminal_size.0);
+    if pointer >= width {
+        return None;
+    }
+    let mut used = 0;
+    for segment in status_segments(snapshot, width) {
+        let (_, label_width) = powerline_label(&segment.text, width.saturating_sub(used));
+        if label_width == 0 {
+            break;
+        }
+        let end = used + label_width + 2;
+        if pointer < end {
+            // A leading arrow and space precede the actual key label.
+            let mut offset = used + 2;
+            for (key, action) in segment.aliases {
+                let key_end = offset + UnicodeWidthStr::width(key.as_str());
+                if pointer >= offset && pointer < key_end {
+                    return Some(action);
+                }
+                offset = key_end + 1; // alias separator
+            }
+            return segment.click;
+        }
+        used = end;
+    }
+    None
 }
 
 fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
@@ -2159,7 +2308,10 @@ fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     draw_powerline_segments(
         theme,
         output,
-        &status_segments(snapshot, usize::from(width)),
+        &status_segments(snapshot, usize::from(width))
+            .into_iter()
+            .map(|segment| (segment.text, segment.color))
+            .collect::<Vec<_>>(),
         usize::from(width),
         theme.background,
     );
@@ -2234,6 +2386,10 @@ fn write_rgb_style(output: &mut Vec<u8>, foreground: Rgb, background: Option<Rgb
     output.push(b'm');
 }
 
+fn powerline_label(text: &str, available: usize) -> (String, usize) {
+    truncate_to_display_width(&format!(" {text} "), available.saturating_sub(2))
+}
+
 fn draw_powerline_segments(
     theme: &Theme,
     output: &mut Vec<u8>,
@@ -2246,9 +2402,7 @@ fn draw_powerline_segments(
         if used >= width {
             break;
         }
-        let available = width.saturating_sub(used).saturating_sub(2);
-        let label = format!(" {text} ");
-        let (label, label_width) = truncate_to_display_width(&label, available);
+        let (label, label_width) = powerline_label(text, width.saturating_sub(used));
         if label_width == 0 {
             break;
         }

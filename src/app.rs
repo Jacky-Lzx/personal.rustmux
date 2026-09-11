@@ -351,6 +351,7 @@ pub(super) struct App {
     session_manager: Option<SessionManagerState>,
     help_mode: Option<String>,
     mouse_drag: Option<MouseDrag>,
+    status_mouse_down: bool,
     last_autosave_check: Instant,
     last_saved_snapshot: Option<SessionSnapshot>,
     client: Option<UnixStream>,
@@ -406,6 +407,7 @@ impl App {
             session_manager: None,
             help_mode: None,
             mouse_drag: None,
+            status_mouse_down: false,
             last_autosave_check: Instant::now(),
             last_saved_snapshot: None,
             client: None,
@@ -1024,6 +1026,7 @@ impl App {
     }
 
     fn attach_client(&mut self, stream: UnixStream) -> Result<()> {
+        self.status_mouse_down = false;
         // The listener is nonblocking so it can share the server poll loop. On
         // macOS an accepted socket can retain that mode; a large initial frame
         // may then return EAGAIN, which must not be mistaken for a disconnect.
@@ -1409,6 +1412,7 @@ impl App {
     }
 
     fn detach_client(&mut self) {
+        self.status_mouse_down = false;
         self.autosave_session(true);
         if !self.windows.is_empty() {
             self.send_focus_event(self.active, false);
@@ -1779,8 +1783,12 @@ impl App {
             "grabbing"
         } else if self
             .renderer
-            .window_tab_at((position.column, position.row))
+            .status_click_at((position.column, position.row))
             .is_some()
+            || self
+                .renderer
+                .window_tab_at((position.column, position.row))
+                .is_some()
         {
             "pointer"
         } else if let Some((_, handle)) = self.pane_resize_at(position) {
@@ -1879,6 +1887,33 @@ impl App {
         self.outer_dnd_window = desired.filter(|_| self.client.is_some());
     }
 
+    fn execute_status_click(&mut self, click: crate::render::StatusClick) -> Result<bool> {
+        use crate::render::StatusClick;
+        match click {
+            StatusClick::Key { mode, key } => {
+                if mode != self.mode {
+                    return Ok(true);
+                }
+                let Some(actions) = self.config.actions(&mode, &key).map(<[Action]>::to_vec) else {
+                    return Ok(true);
+                };
+                self.help_mode = None;
+                self.renderer.set_help(None);
+                self.redraw()?;
+                self.execute_actions(&actions)
+            }
+            StatusClick::Help => {
+                self.show_help()?;
+                Ok(true)
+            }
+            StatusClick::CloseSessionManager => {
+                self.close_session_manager();
+                self.redraw()?;
+                Ok(true)
+            }
+        }
+    }
+
     fn handle_decoded_input(&mut self, bytes: &[u8]) -> Result<bool> {
         let mut passthrough = Vec::with_capacity(bytes.len());
         let mut index = 0;
@@ -1892,6 +1927,51 @@ impl App {
                 self.send_focus_event(self.active, focused);
                 index += consumed;
                 continue;
+            }
+            if let Some((mouse, consumed)) = decode_sgr_mouse(&bytes[index..]) {
+                let position = (mouse.position().column, mouse.position().row);
+                let captured =
+                    self.status_mouse_down && !matches!(mouse, MouseAction::SelectStart(_));
+                let dragging_selection = self.selection.is_some()
+                    && matches!(
+                        mouse,
+                        MouseAction::SelectExtend(_) | MouseAction::SelectEnd(_)
+                    );
+                let on_bar = self.renderer.status_bar_contains(position)
+                    && self.mouse_drag.is_none()
+                    && !dragging_selection;
+                if captured || on_bar {
+                    if !passthrough.is_empty() {
+                        self.write_active(&passthrough)?;
+                        passthrough.clear();
+                    }
+                    self.update_pointer_for_position(mouse.position());
+                    if matches!(mouse, MouseAction::SelectEnd(_)) {
+                        self.status_mouse_down = false;
+                    }
+                    if !captured && matches!(mouse, MouseAction::SelectStart(_)) {
+                        self.status_mouse_down = true;
+                        if let Some(click) = self.renderer.status_click_at(position)
+                            && !self.execute_status_click(click)?
+                        {
+                            return Ok(false);
+                        }
+                    }
+                    index += consumed;
+                    continue;
+                }
+                // Modal overlays must not decode mouse escape sequences as text keys.
+                if self.help_mode.is_some()
+                    || self.session_manager.is_some()
+                    || self.rename_state.is_some()
+                    || self
+                        .history_search
+                        .as_ref()
+                        .is_some_and(|search| search.editing)
+                {
+                    index += consumed;
+                    continue;
+                }
             }
             if let Some(help_mode) = self.help_mode.clone() {
                 let (key, consumed) = decode_key(&bytes[index..]);

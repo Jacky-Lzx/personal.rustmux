@@ -58,3 +58,14 @@ Reaching the bottom with the mouse wheel does not leave scroll mode. This preven
 
 Press `?` to show every visible binding for the current mode. Pressing a listed shortcut closes the overlay and runs its action immediately. Esc closes the overlay without running an action.
 
+
+## Clickable bottom shortcuts
+
+Left-click a shortcut key or its action label in the bottom bar to execute its configured action sequence, including any mode change. Hovering a clickable hint shows a pointer cursor when the outer terminal supports cursor shapes. No additional configuration is required.
+
+- In grouped hints such as `n/p`, click `n` or `p` to choose that key. Clicking the action label, padding, or separator executes the first displayed key.
+- Window-number shortcuts are displayed individually (`1/2/3`) so each number can be clicked.
+- Click `MORE` or the alias ellipsis to open contextual help for additional bindings.
+- The Session Manager's bottom `Esc` and `CLOSE` hints close the manager.
+
+Only visible hints have click targets. Mode labels, blank space, and rename/search input prompts do not execute actions. Dragging or releasing after a bottom-bar press does not execute the action again or send the mouse event to an application. With `compact = true`, the bottom bar is hidden and has no click targets.

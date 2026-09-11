@@ -531,7 +531,7 @@ fn status_hints_group_aliases_and_window_shortcuts() {
     let compact = compact_status_hints(&hints);
 
     assert!(compact.contains(&("&/x".to_owned(), "CLOSE WINDOW".to_owned())));
-    assert!(compact.contains(&("1-2".to_owned(), "WINDOW".to_owned())));
+    assert!(compact.contains(&("1/2".to_owned(), "WINDOW".to_owned())));
     assert!(compact.contains(&("n/p".to_owned(), "WINDOW".to_owned())));
     assert!(compact.contains(&("?".to_owned(), "HELP".to_owned())));
     assert!(compact.iter().all(|(_, action)| !action.contains("LOCK")));
@@ -2156,4 +2156,97 @@ fn session_busy_response_is_recognized_at_every_packet_boundary() {
         assert!(second.is_empty() && target.is_none());
         assert!(decoder.busy);
     }
+}
+
+#[test]
+fn status_click_targets_match_rendered_aliases_numbers_and_wide_keys() {
+    use crate::render::StatusClick;
+    let width = 240;
+    let windows = [test_window(1, "shell", 22, width - 2)];
+    let mut renderer = Renderer::default();
+    renderer.set_ui(
+        false,
+        [
+            "n=next-window + mode:locked",
+            "p=previous-window + mode:locked",
+            "1=window:1",
+            "2=window:2",
+            "3=window:3",
+            "界=close-pane",
+            "==focus-next-pane",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+    );
+    let frame = renderer.render(&windows, 0, (width, 24), "normal", None, &[]);
+    let mut parser = vt100::Parser::new(24, width, 0);
+    parser.process(&frame);
+    let bottom = parser.screen().rows(0, width).last().unwrap();
+    let column = |label: &str| -> u16 {
+        let offset = bottom.find(label).unwrap();
+        unicode_width::UnicodeWidthStr::width(&bottom[..offset]) as u16 + 1
+    };
+    for (label, offset, key) in [
+        ("n/p", 0, "n"),
+        ("n/p", 2, "p"),
+        ("1/2/3", 0, "1"),
+        ("1/2/3", 2, "2"),
+        ("1/2/3", 4, "3"),
+        ("界", 0, "界"),
+        ("界", 1, "界"),
+        (" = ", 1, "="),
+    ] {
+        assert_eq!(
+            renderer.status_click_at((column(label) + offset, 24)),
+            Some(StatusClick::Key {
+                mode: "normal".to_owned(),
+                key: key.to_owned()
+            })
+        );
+    }
+    assert_eq!(
+        renderer.status_click_at((column("CLOSE PANE"), 24)),
+        Some(StatusClick::Key {
+            mode: "normal".to_owned(),
+            key: "界".to_owned()
+        })
+    );
+    assert!(renderer.status_click_at((1, 24)).is_none());
+    assert!(renderer.status_click_at((240, 24)).is_none());
+    assert!(renderer.status_click_at((column("n/p"), 23)).is_none());
+    renderer.set_ui(true, vec!["n=next-window".to_owned()]);
+    renderer.render(&windows, 0, (width, 24), "normal", None, &[]);
+    assert!(!renderer.status_bar_contains((10, 24)));
+}
+
+#[test]
+fn status_overflow_clicks_open_help_and_hidden_hints_are_not_targets() {
+    use crate::render::StatusClick;
+    let windows = [test_window(1, "shell", 20, 58)];
+    let mut renderer = Renderer::default();
+    renderer.set_ui(
+        false,
+        [
+            "c=new-window",
+            "x=close-window",
+            "d=detach",
+            "s=switch-session",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+    );
+    let frame = renderer.render(&windows, 0, (60, 24), "normal", None, &[]);
+    let mut parser = vt100::Parser::new(24, 60, 0);
+    parser.process(&frame);
+    let bottom = parser.screen().rows(0, 60).last().unwrap();
+    let offset = bottom.find("MORE").unwrap();
+    let column = unicode_width::UnicodeWidthStr::width(&bottom[..offset]) as u16 + 1;
+    assert_eq!(
+        renderer.status_click_at((column, 24)),
+        Some(StatusClick::Help)
+    );
+    assert!((1..=60).all(|column| !matches!(renderer.status_click_at((column, 24)), Some(StatusClick::Key { key, .. }) if key == "d")));
+    renderer.set_ui(false, vec![]);
+    renderer.render(&windows, 0, (60, 24), "normal", None, &[]);
+    assert!(renderer.status_click_at((column, 24)).is_none());
 }

@@ -543,3 +543,58 @@ fn second_attach_warns_without_disconnecting_resizing_or_resetting_first_client(
     input(&mut reattached, b"touch reattached\n");
     eventually(|| server.root.join("reattached").exists());
 }
+
+#[test]
+fn status_clicks_execute_bindings_once_and_work_with_overlays() {
+    use std::sync::{Arc, Mutex};
+    let server = Server::new("autosave_interval_seconds = 0\n");
+    let screen = Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0)));
+    let parsed = screen.clone();
+    let mut client = UnixStream::connect(&server.socket).unwrap();
+    client.write_all(&[b'R', 0, 80, 0, 24, 0, 0, 0, 0]).unwrap();
+    let mut reader = client.try_clone().unwrap();
+    let reader_thread = thread::spawn(move || {
+        let mut bytes = [0; 8192];
+        loop {
+            match reader.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => parsed.lock().unwrap().process(&bytes[..count]),
+            }
+        }
+    });
+    let bottom = || screen.lock().unwrap().screen().rows(0, 80).last().unwrap();
+    let column = |label: &str| {
+        let row = bottom();
+        row.find(label)
+            .map(|offset| unicode_width::UnicodeWidthStr::width(&row[..offset]) as u16 + 1)
+    };
+    let click = |client: &mut UnixStream, label: &str| {
+        eventually(|| column(label).is_some());
+        let column = column(label).unwrap();
+        input(
+            client,
+            format!("\x1b[<0;{column};24M\x1b[<0;{column};24m").as_bytes(),
+        );
+    };
+    click(&mut client, "UNLOCK");
+    click(&mut client, "NEW WINDOW");
+    eventually(|| server.status().is_some_and(|s| s.starts_with("2\t2\t1\t")));
+    eventually(|| bottom().contains("LOCKED"));
+    click(&mut client, "UNLOCK");
+    click(&mut client, "MORE");
+    eventually(|| screen.lock().unwrap().screen().contents().contains("HELP"));
+    // Clicking a bottom hint while Help is open executes it and closes Help.
+    click(&mut client, "NEW WINDOW");
+    eventually(|| server.status().is_some_and(|s| s.starts_with("3\t3\t1\t")));
+    input(&mut client, b"\x02s");
+    eventually(|| bottom().contains("SESSION MANAGER"));
+    click(&mut client, "CLOSE");
+    eventually(|| bottom().contains("LOCKED"));
+    // Empty bottom-bar space must not enter the shell as mouse input.
+    input(&mut client, b"\x1b[<0;80;24M\x1b[<32;20;10M\x1b[<0;20;10m");
+    input(&mut client, b"touch status-click-ok\n");
+    eventually(|| server.root.join("status-click-ok").exists());
+    assert!(server.status().unwrap().starts_with("3\t3\t1\t"));
+    client.shutdown(std::net::Shutdown::Both).unwrap();
+    reader_thread.join().unwrap();
+}
