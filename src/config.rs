@@ -55,13 +55,18 @@ fn config_snapshot(path: &Path) -> ConfigSnapshot {
     }
 }
 
-pub const DEFAULT_CONFIG_TOML: &str = r#"
+pub const DEFAULT_CONFIG_TOML: &str = r##"
 default_mode = "locked"
 clear_defaults = false
 compact = false
 scrollback_lines = 1000
 autosave_interval_seconds = 30 # 0 disables automatic saving.
 # shell = "/bin/zsh" # Defaults to $SHELL, then /bin/sh.
+
+[theme]
+preset = "mocha" # "mocha" or "light"
+# [theme.colors]
+# accent = "#a6e3a1"
 
 [notifications]
 enabled = true
@@ -171,7 +176,7 @@ e = ["scroll-bottom", { action = "switch-mode", mode = "locked" }, "edit-last-ou
 y = ["copy-selection"]
 q = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
 esc = ["scroll-bottom", { action = "switch-mode", mode = "locked" }]
-"#;
+"##;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -230,6 +235,7 @@ pub enum Action {
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub(super) theme: crate::theme::Theme,
     pub(super) shell: Option<String>,
     pub(super) autosave_interval_seconds: u64,
     pub default_mode: String,
@@ -262,6 +268,7 @@ enum BindingDisplay {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    theme: Option<crate::theme::ThemeConfig>,
     shell: Option<String>,
     autosave_interval_seconds: Option<u64>,
     default_mode: Option<String>,
@@ -343,6 +350,9 @@ impl Config {
     }
 
     fn apply_user(&mut self, user: ConfigFile) -> Result<(), String> {
+        if let Some(theme) = user.theme {
+            self.theme = theme.resolve()?;
+        }
         if let Some(seconds) = user.autosave_interval_seconds {
             self.autosave_interval_seconds = seconds;
         }
@@ -386,6 +396,7 @@ impl Config {
         )?;
         let notifications = file.notifications.unwrap_or_default();
         let mut config = Self {
+            theme: file.theme.unwrap_or_default().resolve()?,
             shell: file.shell.map(validate_shell).transpose()?,
             autosave_interval_seconds: file.autosave_interval_seconds.unwrap_or(30),
             default_mode,
@@ -1443,5 +1454,59 @@ exclude_applications = ["  "]
             .unwrap();
         assert!(!config.compact());
         fs::remove_dir(&directory).unwrap();
+    }
+    #[test]
+    fn theme_reload_rejects_invalid_updates_and_restores_defaults() {
+        let directory = std::env::temp_dir().join(format!(
+            "rustmux-theme-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        let mut reloader = ConfigReloader::new(path.clone());
+        let start = Instant::now();
+        fs::write(
+            &path,
+            "[theme]\npreset='light'\n[theme.colors]\naccent='#010203'\n",
+        )
+        .unwrap();
+        let valid = reloader
+            .poll(start + Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(valid.theme.accent, (1, 2, 3));
+        assert_eq!(valid.theme.background, (245, 246, 250));
+        fs::write(&path, "[theme.colors]\naccent='invalid'\n").unwrap();
+        assert!(
+            reloader
+                .poll(start + Duration::from_secs(2))
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(valid.theme.accent, (1, 2, 3));
+        fs::write(&path, "[theme.colors]\naccent='#040506'\n").unwrap();
+        let updated = reloader
+            .poll(start + Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.theme.accent, (4, 5, 6));
+        assert_eq!(
+            updated.theme.background,
+            crate::theme::Theme::default().background
+        );
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            reloader
+                .poll(start + Duration::from_secs(4))
+                .unwrap()
+                .unwrap()
+                .theme,
+            crate::theme::Theme::default()
+        );
+        fs::remove_dir(directory).unwrap();
     }
 }

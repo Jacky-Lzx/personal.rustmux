@@ -426,3 +426,46 @@ fn pane_moves_preserve_shell_state_and_saved_layout() {
             .any(|pane| pane["name"].as_str() == Some("moved"))
     );
 }
+
+#[test]
+fn attached_session_repaints_theme_and_keeps_last_valid_colors() {
+    use std::sync::{Arc, Mutex};
+    let server = Server::new("[theme]\npreset='light'\n");
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let received = frames.clone();
+    let mut client = UnixStream::connect(&server.socket).unwrap();
+    client.write_all(&[b'R', 0, 80, 0, 24, 0, 0, 0, 0]).unwrap();
+    let mut reader = client.try_clone().unwrap();
+    let reader_thread = thread::spawn(move || {
+        let mut bytes = [0; 8192];
+        loop {
+            match reader.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => received.lock().unwrap().extend_from_slice(&bytes[..count]),
+            }
+        }
+    });
+    let contains = |needle: &str| String::from_utf8_lossy(&frames.lock().unwrap()).contains(needle);
+    eventually(|| contains("48;2;245;246;250"));
+    let path = server.root.join("config/rustmux/config.toml");
+    fs::write(
+        &path,
+        "[theme.colors]\nbackground='#010203'\naccent='#040506'\n",
+    )
+    .unwrap();
+    eventually(|| contains("48;2;1;2;3") && contains("38;2;4;5;6"));
+    frames.lock().unwrap().clear();
+    fs::write(&path, "[theme.colors]\naccent='invalid'\n").unwrap();
+    eventually(|| contains("config reload failed"));
+    assert!(
+        contains("48;2;1;2;3"),
+        "invalid update must retain the last valid palette"
+    );
+    let default_bar_style = "\x1b[0;38;2;205;214;244;48;2;30;30;46m";
+    assert!(!contains(default_bar_style));
+    frames.lock().unwrap().clear();
+    fs::remove_file(&path).unwrap();
+    eventually(|| contains(default_bar_style));
+    client.shutdown(std::net::Shutdown::Both).unwrap();
+    reader_thread.join().unwrap();
+}

@@ -788,7 +788,11 @@ fn frame_has_catppuccin_powerline_tabs_and_terminal_contents() {
 
 #[test]
 fn labels_are_truncated_by_terminal_column_width() {
-    let cells = styled_text_cells("a界b", 3, CellStyle::border());
+    let cells = styled_text_cells(
+        "a界b",
+        3,
+        CellStyle::border(&crate::theme::Theme::default()),
+    );
     assert_eq!(cells.len(), 3);
     assert_eq!(cells[0].contents, "a");
     assert_eq!(cells[1].contents, "界");
@@ -2098,4 +2102,46 @@ fn directory_falls_back_to_process_without_shell_integration() {
 fn detached_creation_is_allowed_inside_an_existing_session() {
     let cli = Cli::try_parse_from(["rustmux", "new-session", "other", "--detached"]).unwrap();
     assert!(!starts_session(&cli));
+}
+
+#[test]
+fn theme_changes_redraw_ui_and_preserve_application_colors_and_cursor() {
+    let mut window = test_window(1, "shell", 20, 78);
+    window.terminal.process(b"\x1b[38;2;7;8;9mapplication");
+    window.terminal_osc.process(b"\x1b]12;#0a0b0c\x07");
+    let windows = [window];
+    let mut renderer = Renderer::default();
+    renderer.render(&windows, 0, (80, 24), "locked", None, &[]);
+    let theme = crate::theme::Theme {
+        accent: (1, 2, 3),
+        background: (4, 5, 6),
+        ..Default::default()
+    };
+    renderer.set_theme(theme);
+    let frame = renderer.render(&windows, 0, (80, 24), "locked", None, &[]);
+    let text = String::from_utf8_lossy(&frame);
+    assert!(
+        text.contains("\x1b[2J"),
+        "theme updates must repaint unchanged UI"
+    );
+    assert!(text.contains("38;2;1;2;3"));
+    assert!(text.contains("48;2;4;5;6"));
+    assert!(text.contains("38;2;7;8;9"));
+    assert!(text.contains("\x1b]12;#0a0b0c"));
+    assert!(!text.contains("\x1b]10;") && !text.contains("\x1b]11;"));
+    renderer.set_theme(theme);
+    assert!(
+        renderer
+            .render(&windows, 0, (80, 24), "locked", None, &[])
+            .is_empty()
+    );
+    renderer.set_help(Some(HelpView {
+        mode: "locked".to_owned(),
+        hints: vec!["Ctrl b: normal".to_owned()],
+    }));
+    let frame = renderer.render(&windows, 0, (80, 24), "locked", None, &[]);
+    assert!(String::from_utf8_lossy(&frame).contains("48;2;4;5;6"));
+    renderer.set_theme(crate::theme::Theme::default());
+    let frame = renderer.render(&windows, 0, (80, 24), "locked", None, &[]);
+    assert!(String::from_utf8_lossy(&frame).contains("48;2;30;30;46"));
 }

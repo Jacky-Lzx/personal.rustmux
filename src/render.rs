@@ -9,25 +9,8 @@ use crate::layout::{
     FloatingLayout, content_size_for, floating_layout_for, pane_pty_size, tiled_content_rect_for,
 };
 use crate::session::SessionInfo;
+use crate::theme::{Rgb, Theme};
 
-type Rgb = (u8, u8, u8);
-
-const MOCHA_CRUST: Rgb = (17, 17, 27);
-const MOCHA_BASE: Rgb = (30, 30, 46);
-const MOCHA_SURFACE_0: Rgb = (49, 50, 68);
-const MOCHA_SURFACE_1: Rgb = (69, 71, 90);
-const MOCHA_OVERLAY_0: Rgb = (108, 112, 134);
-const MOCHA_SUBTEXT_0: Rgb = (166, 173, 200);
-const MOCHA_TEXT: Rgb = (205, 214, 244);
-const MOCHA_RED: Rgb = (243, 139, 168);
-const MOCHA_GREEN: Rgb = (166, 227, 161);
-const MOCHA_PEACH: Rgb = (250, 179, 135);
-const MOCHA_YELLOW: Rgb = (249, 226, 175);
-const MOCHA_BLUE: Rgb = (137, 180, 250);
-const MOCHA_LAVENDER: Rgb = (180, 190, 254);
-const MOCHA_PINK: Rgb = (245, 194, 231);
-const MOCHA_MAUVE: Rgb = (203, 166, 247);
-const MOCHA_TEAL: Rgb = (148, 226, 213);
 const POWERLINE_RIGHT: &str = "";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +77,7 @@ pub(super) fn help_rect((columns, rows): (u16, u16), hint_count: usize) -> (u16,
 
 #[derive(Default)]
 pub(super) struct Renderer {
+    theme: Theme,
     previous: Option<FrameSnapshot>,
     border_status: Option<String>,
     compact: bool,
@@ -107,6 +91,13 @@ pub(super) struct Renderer {
 }
 
 impl Renderer {
+    pub(super) fn set_theme(&mut self, theme: Theme) {
+        if self.theme != theme {
+            self.theme = theme;
+            self.invalidate();
+        }
+    }
+
     pub(super) fn invalidate(&mut self) {
         self.previous = None;
     }
@@ -174,6 +165,7 @@ impl Renderer {
             active,
             terminal_size,
             RenderUi {
+                theme: self.theme,
                 mode,
                 compact: self.compact,
                 mode_hints: &self.mode_hints,
@@ -304,6 +296,7 @@ impl Renderer {
         if title_changed && current.outer_border {
             let _ = write!(output, "\x1b[2;1H");
             draw_terminal_border(
+                &current.theme,
                 &mut output,
                 &current.terminal_title,
                 terminal_size.0,
@@ -391,6 +384,7 @@ impl Renderer {
 
 #[derive(Eq, PartialEq)]
 pub(super) struct FrameSnapshot {
+    theme: Theme,
     terminal_size: (u16, u16),
     pub(super) content_size: (u16, u16),
     pub(super) content_origin: (u16, u16),
@@ -429,6 +423,7 @@ impl FrameSnapshot {
             active,
             terminal_size,
             RenderUi {
+                theme: Theme::default(),
                 mode,
                 compact: false,
                 mode_hints: &[],
@@ -452,6 +447,7 @@ impl FrameSnapshot {
         selection: Option<&TextSelection>,
     ) -> Self {
         let RenderUi {
+            theme,
             mode,
             compact,
             mode_hints,
@@ -488,6 +484,7 @@ impl FrameSnapshot {
         for (index, window) in tab_panes {
             if window.pane_framed {
                 overlay_pane_cells(
+                    &theme,
                     &mut cells,
                     (columns, rows),
                     window,
@@ -518,6 +515,7 @@ impl FrameSnapshot {
         }
         if windows[active].floating {
             overlay_floating_cells(
+                &theme,
                 &mut cells,
                 (columns, rows),
                 &windows[active],
@@ -561,6 +559,7 @@ impl FrameSnapshot {
             terminal_state.hide_cursor = true;
         }
         Self {
+            theme,
             terminal_size,
             content_size: (columns, rows),
             content_origin,
@@ -604,6 +603,7 @@ impl FrameSnapshot {
 
 #[derive(Clone, Copy)]
 struct RenderUi<'a> {
+    theme: Theme,
     mode: &'a str,
     compact: bool,
     mode_hints: &'a [String],
@@ -640,6 +640,7 @@ pub(super) fn render_base_index(windows: &[Window], active: usize) -> usize {
 }
 
 fn overlay_pane_cells(
+    theme: &Theme,
     cells: &mut [CellSnapshot],
     canvas_size: (u16, u16),
     window: &Window,
@@ -649,11 +650,11 @@ fn overlay_pane_cells(
     let (columns, rows) = canvas_size;
     let rect = window.pane_rect;
     let border_style = if active {
-        CellStyle::active_border()
+        CellStyle::active_border(theme)
     } else if window.bell_pending {
-        CellStyle::bell_border()
+        CellStyle::bell_border(theme)
     } else {
-        CellStyle::border()
+        CellStyle::border(theme)
     };
     let border_cell = |contents: char| CellSnapshot {
         contents: contents.to_string(),
@@ -726,6 +727,7 @@ fn overlay_pane_cells(
 }
 
 fn overlay_floating_cells(
+    theme: &Theme,
     cells: &mut [CellSnapshot],
     canvas_size: (u16, u16),
     window: &Window,
@@ -772,7 +774,7 @@ fn overlay_floating_cells(
         };
     let border_cell = |contents: char| CellSnapshot {
         contents: contents.to_string(),
-        style: CellStyle::active_border(),
+        style: CellStyle::active_border(theme),
         wide_continuation: false,
         hyperlink: None,
     };
@@ -800,7 +802,7 @@ fn overlay_floating_cells(
     let title_cells = styled_text_cells(
         &title,
         usize::from(layout.width.saturating_sub(2)),
-        CellStyle::active_border(),
+        CellStyle::active_border(theme),
     );
     for (offset, cell) in title_cells.into_iter().enumerate() {
         replace(cells, 0, offset as u16 + 1, cell);
@@ -967,24 +969,24 @@ impl CellStyle {
         }
     }
 
-    pub(super) fn border() -> Self {
+    pub(super) fn border(theme: &Theme) -> Self {
         Self {
-            foreground: vt100::Color::Rgb(MOCHA_OVERLAY_0.0, MOCHA_OVERLAY_0.1, MOCHA_OVERLAY_0.2),
+            foreground: vt100::Color::Rgb(theme.border.0, theme.border.1, theme.border.2),
             ..Self::plain()
         }
     }
 
-    fn active_border() -> Self {
+    fn active_border(theme: &Theme) -> Self {
         Self {
-            foreground: vt100::Color::Rgb(MOCHA_GREEN.0, MOCHA_GREEN.1, MOCHA_GREEN.2),
+            foreground: vt100::Color::Rgb(theme.accent.0, theme.accent.1, theme.accent.2),
             bold: true,
             ..Self::plain()
         }
     }
 
-    fn bell_border() -> Self {
+    fn bell_border(theme: &Theme) -> Self {
         Self {
-            foreground: vt100::Color::Rgb(MOCHA_PEACH.0, MOCHA_PEACH.1, MOCHA_PEACH.2),
+            foreground: vt100::Color::Rgb(theme.orange.0, theme.orange.1, theme.orange.2),
             bold: true,
             ..Self::plain()
         }
@@ -997,6 +999,7 @@ pub(super) fn render_frame(
     snapshot: &FrameSnapshot,
     graphics: &[Vec<u8>],
 ) -> Vec<u8> {
+    let theme = &snapshot.theme;
     let terminal_size = snapshot.terminal_size;
     let (width, height) = terminal_size;
     let (content_columns, content_rows) = snapshot.content_size;
@@ -1014,6 +1017,7 @@ pub(super) fn render_frame(
     if snapshot.outer_border {
         let _ = write!(output, "\x1b[2;1H");
         draw_terminal_border(
+            theme,
             &mut output,
             &snapshot.terminal_title,
             width,
@@ -1036,9 +1040,9 @@ pub(super) fn render_frame(
             write_rgb_style(
                 &mut output,
                 if windows[active].floating {
-                    MOCHA_OVERLAY_0
+                    theme.border
                 } else {
-                    MOCHA_GREEN
+                    theme.accent
                 },
                 None,
                 false,
@@ -1075,9 +1079,9 @@ pub(super) fn render_frame(
             write_rgb_style(
                 &mut output,
                 if windows[active].floating {
-                    MOCHA_OVERLAY_0
+                    theme.border
                 } else {
-                    MOCHA_GREEN
+                    theme.accent
                 },
                 None,
                 false,
@@ -1099,7 +1103,7 @@ pub(super) fn render_frame(
     if !snapshot.compact && height > 1 {
         if snapshot.outer_border && height > 2 {
             let _ = write!(output, "\x1b[{};1H", height - 1);
-            draw_bottom_border(&mut output, width, !windows[active].floating);
+            draw_bottom_border(theme, &mut output, width, !windows[active].floating);
         }
         draw_bottom_status(&mut output, snapshot);
     }
@@ -1207,10 +1211,11 @@ fn draw_window_bar(
     width: u16,
     snapshot: &FrameSnapshot,
 ) {
+    let theme = &snapshot.theme;
     if width == 0 {
         return;
     }
-    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+    write_rgb_style(output, theme.foreground, Some(theme.background), false);
     output.extend_from_slice(b"\x1b[2K");
     let inner_width = usize::from(width);
     let compact_status = compact_status(snapshot);
@@ -1227,7 +1232,7 @@ fn draw_window_bar(
         .map(|label| {
             let available = tabs_width.saturating_sub(6);
             let (label, label_width) = truncate_to_display_width(label, available);
-            write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), true);
+            write_rgb_style(output, theme.foreground, Some(theme.background), true);
             output.extend_from_slice(label.as_bytes());
             label_width
         })
@@ -1239,24 +1244,24 @@ fn draw_window_bar(
     for (index, (tab_id, name)) in snapshot.tabs.iter().enumerate() {
         let display_index = index + 1;
         let color = if *tab_id == active_tab {
-            MOCHA_GREEN
+            theme.accent
         } else {
-            MOCHA_TEXT
+            theme.foreground
         };
         tabs.push((format!("{display_index} {name}"), color));
     }
-    draw_powerline_segments(output, &tabs, tabs_width, MOCHA_BASE);
+    draw_powerline_segments(theme, output, &tabs, tabs_width, theme.background);
     if let Some(status) = compact_status {
         let label = format!(" {status} ");
         let (label, label_width) =
             truncate_to_display_width(&label, compact_width.saturating_sub(2));
         let column = inner_width.saturating_sub(label_width + 2) + 1;
         let _ = write!(output, "\x1b[1;{column}H");
-        write_rgb_style(output, MOCHA_BASE, Some(MOCHA_GREEN), false);
+        write_rgb_style(output, theme.background, Some(theme.accent), false);
         output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
-        write_rgb_style(output, MOCHA_CRUST, Some(MOCHA_GREEN), true);
+        write_rgb_style(output, theme.badge_text, Some(theme.accent), true);
         output.extend_from_slice(label.as_bytes());
-        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.accent, Some(theme.background), false);
         output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
     }
     output.extend_from_slice(b"\x1b[0m");
@@ -1433,6 +1438,7 @@ fn status_segments_width(segments: &[(String, Rgb)]) -> usize {
 }
 
 fn fit_status_hints(
+    theme: &Theme,
     base: Vec<(String, Rgb)>,
     hints: Vec<(String, String)>,
     width: usize,
@@ -1441,19 +1447,19 @@ fn fit_status_hints(
         let hidden = hints.len() - shown;
         let mut segments = base.clone();
         for (index, (key, action)) in hints.iter().take(shown).enumerate() {
-            segments.push((key.clone(), MOCHA_PINK));
+            segments.push((key.clone(), theme.key));
             segments.push((
                 action.clone(),
                 if index % 2 == 0 {
-                    MOCHA_LAVENDER
+                    theme.secondary
                 } else {
-                    MOCHA_BLUE
+                    theme.blue
                 },
             ));
         }
         if hidden > 0 {
-            segments.push(("?".to_owned(), MOCHA_PINK));
-            segments.push((format!("MORE (+{hidden})"), MOCHA_LAVENDER));
+            segments.push(("?".to_owned(), theme.key));
+            segments.push((format!("MORE (+{hidden})"), theme.secondary));
         }
         if status_segments_width(&segments) <= width {
             return segments;
@@ -1463,36 +1469,38 @@ fn fit_status_hints(
 }
 
 fn status_segments(snapshot: &FrameSnapshot, width: usize) -> Vec<(String, Rgb)> {
+    let theme = &snapshot.theme;
     if snapshot.session_manager.is_some() {
         return vec![
-            ("SESSION MANAGER".to_owned(), MOCHA_GREEN),
-            ("Esc".to_owned(), MOCHA_PINK),
-            ("CLOSE".to_owned(), MOCHA_LAVENDER),
+            ("SESSION MANAGER".to_owned(), theme.accent),
+            ("Esc".to_owned(), theme.key),
+            ("CLOSE".to_owned(), theme.secondary),
         ];
     }
     if let Some(name) = &snapshot.rename_prompt {
-        return vec![(format!("RENAME: {name}_"), MOCHA_YELLOW)];
+        return vec![(format!("RENAME: {name}_"), theme.warning)];
     }
     if let Some(query) = &snapshot.history_search_prompt {
-        return vec![(format!("SEARCH: {query}_"), MOCHA_YELLOW)];
+        return vec![(format!("SEARCH: {query}_"), theme.warning)];
     }
     let mode_color = if snapshot.mode == "locked" {
-        MOCHA_RED
+        theme.error
     } else {
-        MOCHA_GREEN
+        theme.accent
     };
     let mut segments = vec![(
         mode_label(&snapshot.mode, snapshot.history_offset),
         mode_color,
     )];
     if let Some(status) = &snapshot.border_status {
-        segments.push((status.clone(), MOCHA_YELLOW));
+        segments.push((status.clone(), theme.warning));
     }
     let hints = compact_status_hints(&snapshot.mode_hints);
-    fit_status_hints(segments, hints, width)
+    fit_status_hints(theme, segments, hints, width)
 }
 
 fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
+    let theme = &snapshot.theme;
     let Some(manager) = &snapshot.session_manager else {
         return;
     };
@@ -1507,7 +1515,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let blank = " ".repeat(usize::from(columns));
     for row in 0..rows {
         let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
-        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.foreground, Some(theme.background), false);
         output.extend_from_slice(blank.as_bytes());
     }
     if columns < 4 || rows < 3 {
@@ -1526,7 +1534,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         truncate_to_display_width(&session_count, inner_width.saturating_sub(title_width));
     let show_session_count = title_width + session_count_width <= inner_width;
     let _ = write!(output, "\x1b[{origin_row};{origin_column}H");
-    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    write_rgb_style(output, theme.accent, Some(theme.background), true);
     output.extend_from_slice("┌".as_bytes());
     output.extend_from_slice(title.as_bytes());
     let rule_width = if show_session_count {
@@ -1538,15 +1546,15 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         output.extend_from_slice("─".as_bytes());
     }
     if show_session_count {
-        write_rgb_style(output, MOCHA_LAVENDER, Some(MOCHA_BASE), true);
+        write_rgb_style(output, theme.secondary, Some(theme.background), true);
         output.extend_from_slice(session_count.as_bytes());
-        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+        write_rgb_style(output, theme.accent, Some(theme.background), true);
     }
     output.extend_from_slice("┐".as_bytes());
 
     for row in 1..rows - 1 {
         let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
-        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.accent, Some(theme.background), false);
         output.extend_from_slice("│".as_bytes());
         let _ = write!(
             output,
@@ -1592,19 +1600,20 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             ("Search: ", manager.query.as_str())
         };
         let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
-        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+        write_rgb_style(output, theme.accent, Some(theme.background), true);
         output.extend_from_slice(query_label.as_bytes());
         let query_width = UnicodeWidthStr::width(query_label);
         let (query_value, _) = truncate_to_display_width(
             query_value,
             inner_width.saturating_sub(query_width.saturating_add(3)),
         );
-        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), true);
+        write_rgb_style(output, theme.foreground, Some(theme.background), true);
         output.extend_from_slice(query_value.as_bytes());
-        write_rgb_style(output, MOCHA_PINK, Some(MOCHA_BASE), true);
+        write_rgb_style(output, theme.key, Some(theme.background), true);
         output.extend_from_slice(b"_");
     } else {
         draw_session_manager_help_line(
+            theme,
             output,
             origin_row + 1,
             origin_column + 2,
@@ -1652,14 +1661,14 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             write_rgb_style(
                 output,
                 if index == manager.selected {
-                    MOCHA_GREEN
+                    theme.accent
                 } else {
-                    MOCHA_TEXT
+                    theme.foreground
                 },
                 Some(if index == manager.selected {
-                    MOCHA_SURFACE_0
+                    theme.surface
                 } else {
-                    MOCHA_BASE
+                    theme.background
                 }),
                 index == manager.selected,
             );
@@ -1670,7 +1679,12 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
 
     let body_width = inner_width.saturating_sub(2);
     let _ = write!(output, "\x1b[{};{}H", origin_row + 2, origin_column + 2);
-    write_rgb_style(output, MOCHA_SURFACE_1, Some(MOCHA_BASE), false);
+    write_rgb_style(
+        output,
+        theme.surface_highlight,
+        Some(theme.background),
+        false,
+    );
     output.extend_from_slice("─".repeat(body_width).as_bytes());
 
     let marker_width = 2;
@@ -1693,21 +1707,28 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         .saturating_sub(marker_width + name_width + layout_width + status_width + created_width);
 
     let _ = write!(output, "\x1b[{};{}H", origin_row + 3, origin_column + 2);
-    write_session_manager_field(output, "", marker_width, MOCHA_SUBTEXT_0, MOCHA_BASE, false);
+    write_session_manager_field(
+        output,
+        "",
+        marker_width,
+        theme.muted,
+        theme.background,
+        false,
+    );
     write_session_manager_field(
         output,
         "SESSION",
         name_width,
-        MOCHA_SUBTEXT_0,
-        MOCHA_BASE,
+        theme.muted,
+        theme.background,
         true,
     );
     write_session_manager_field(
         output,
         "LAYOUT",
         layout_width,
-        MOCHA_SUBTEXT_0,
-        MOCHA_BASE,
+        theme.muted,
+        theme.background,
         true,
     );
     if status_width > 0 {
@@ -1715,8 +1736,8 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             output,
             "STATUS",
             status_width,
-            MOCHA_SUBTEXT_0,
-            MOCHA_BASE,
+            theme.muted,
+            theme.background,
             true,
         );
     }
@@ -1725,8 +1746,8 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             output,
             "CREATED",
             created_width,
-            MOCHA_SUBTEXT_0,
-            MOCHA_BASE,
+            theme.muted,
+            theme.background,
             true,
         );
     }
@@ -1734,8 +1755,8 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         output,
         "",
         trailing_width,
-        MOCHA_SUBTEXT_0,
-        MOCHA_BASE,
+        theme.muted,
+        theme.background,
         false,
     );
 
@@ -1754,18 +1775,18 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         let selected = index == manager.selected;
         let current = session.name == manager.current;
         let background = if selected {
-            MOCHA_SURFACE_0
+            theme.surface
         } else {
-            MOCHA_BASE
+            theme.background
         };
         let (state, state_color) = if current {
-            ("[CURRENT]", MOCHA_GREEN)
+            ("[CURRENT]", theme.accent)
         } else if session.connected {
-            ("[ATTACH]", MOCHA_PEACH)
+            ("[ATTACH]", theme.orange)
         } else if session.saved {
-            ("[SAVED]", MOCHA_MAUVE)
+            ("[SAVED]", theme.purple)
         } else {
-            ("[DETACHED]", MOCHA_OVERLAY_0)
+            ("[DETACHED]", theme.border)
         };
         let layout = if layout_width >= 17 {
             format!("{} tabs · {} panes", session.tabs, session.panes)
@@ -1782,11 +1803,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             output,
             if selected { "› " } else { "  " },
             marker_width,
-            if selected {
-                MOCHA_GREEN
-            } else {
-                MOCHA_OVERLAY_0
-            },
+            if selected { theme.accent } else { theme.border },
             background,
             selected,
         );
@@ -1794,11 +1811,18 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             output,
             &session.name,
             name_width,
-            if current { MOCHA_GREEN } else { MOCHA_TEAL },
+            if current { theme.accent } else { theme.teal },
             background,
             true,
         );
-        write_session_manager_field(output, &layout, layout_width, MOCHA_TEXT, background, false);
+        write_session_manager_field(
+            output,
+            &layout,
+            layout_width,
+            theme.foreground,
+            background,
+            false,
+        );
         if status_width > 0 {
             write_session_manager_field(output, state, status_width, state_color, background, true);
         }
@@ -1807,12 +1831,19 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
                 output,
                 &session_created(session.created_at),
                 created_width,
-                MOCHA_SUBTEXT_0,
+                theme.muted,
                 background,
                 false,
             );
         }
-        write_session_manager_field(output, "", trailing_width, MOCHA_TEXT, background, false);
+        write_session_manager_field(
+            output,
+            "",
+            trailing_width,
+            theme.foreground,
+            background,
+            false,
+        );
     }
 
     if manager.sessions.is_empty() {
@@ -1823,7 +1854,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         };
         let (message, _) = truncate_to_display_width(&message, body_width);
         let _ = write!(output, "\x1b[{};{}H", origin_row + 4, origin_column + 2);
-        write_rgb_style(output, MOCHA_PEACH, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.orange, Some(theme.background), false);
         output.extend_from_slice(message.as_bytes());
     }
 
@@ -1868,6 +1899,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             .map(|(key, description)| (key.as_str(), *description))
             .collect();
         draw_session_manager_help_line(
+            theme,
             output,
             origin_row + rows - 3 + row as u16,
             origin_column + 2,
@@ -1896,6 +1928,7 @@ fn write_session_manager_field(
 }
 
 fn draw_session_manager_help_line(
+    theme: &Theme,
     output: &mut Vec<u8>,
     row: u16,
     column: u16,
@@ -1905,7 +1938,7 @@ fn draw_session_manager_help_line(
 ) {
     let _ = write!(output, "\x1b[{row};{column}H");
     let (prefix, prefix_width) = truncate_to_display_width(prefix, width);
-    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+    write_rgb_style(output, theme.foreground, Some(theme.background), false);
     output.extend_from_slice(prefix.as_bytes());
     let mut used = prefix_width;
     for (index, (key, description)) in hints.iter().enumerate() {
@@ -1917,11 +1950,11 @@ fn draw_session_manager_help_line(
         if used + required > width {
             continue;
         }
-        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.foreground, Some(theme.background), false);
         output.extend_from_slice(separator.as_bytes());
-        write_rgb_style(output, MOCHA_PINK, Some(MOCHA_BASE), true);
+        write_rgb_style(output, theme.key, Some(theme.background), true);
         output.extend_from_slice(key.as_bytes());
-        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.foreground, Some(theme.background), false);
         output.extend_from_slice(b" ");
         output.extend_from_slice(description.as_bytes());
         used += required;
@@ -1949,6 +1982,7 @@ fn session_created(created_at: u64) -> String {
 }
 
 fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
+    let theme = &snapshot.theme;
     let Some(help) = &snapshot.help else {
         return;
     };
@@ -1962,14 +1996,14 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let blank = " ".repeat(usize::from(columns));
     for row in 0..rows {
         let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
-        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.foreground, Some(theme.background), false);
         output.extend_from_slice(blank.as_bytes());
     }
 
     let title = "─ Keybindings ";
     let (title, title_width) = truncate_to_display_width(title, inner_width);
     let _ = write!(output, "\x1b[{origin_row};{origin_column}H");
-    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    write_rgb_style(output, theme.accent, Some(theme.background), true);
     output.extend_from_slice("┌".as_bytes());
     output.extend_from_slice(title.as_bytes());
     for _ in title_width..inner_width {
@@ -1979,7 +2013,7 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
 
     for row in 1..rows - 1 {
         let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
-        write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.accent, Some(theme.background), false);
         output.extend_from_slice("│".as_bytes());
         let _ = write!(
             output,
@@ -1993,7 +2027,7 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let mode = format!("Mode: {}", help.mode.to_ascii_uppercase());
     let (mode, _) = truncate_to_display_width(&mode, inner_width.saturating_sub(2));
     let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
-    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    write_rgb_style(output, theme.accent, Some(theme.background), true);
     output.extend_from_slice(mode.as_bytes());
 
     let available_rows = usize::from(rows - 4);
@@ -2029,14 +2063,14 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         );
         if let Some((key, action)) = hint.split_once('=') {
             let (key, key_width) = truncate_to_display_width(key, key_widths[column]);
-            write_rgb_style(output, MOCHA_PINK, Some(MOCHA_BASE), true);
+            write_rgb_style(output, theme.key, Some(theme.background), true);
             output.extend_from_slice(key.as_bytes());
 
             let padding = key_widths[column]
                 .saturating_sub(key_width)
                 .saturating_add(2)
                 .min(available.saturating_sub(key_width));
-            write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+            write_rgb_style(output, theme.foreground, Some(theme.background), false);
             output.extend_from_slice(" ".repeat(padding).as_bytes());
             let action = action_hint_label(action);
             let (action, _) =
@@ -2044,7 +2078,7 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             output.extend_from_slice(action.as_bytes());
         } else {
             let (label, _) = truncate_to_display_width(hint, available);
-            write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+            write_rgb_style(output, theme.foreground, Some(theme.background), false);
             output.extend_from_slice(label.as_bytes());
         }
     }
@@ -2052,7 +2086,7 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     let footer = "─ Esc close · press a key to run ";
     let (footer, footer_width) = truncate_to_display_width(footer, inner_width);
     let _ = write!(output, "\x1b[{};{}H", origin_row + rows - 1, origin_column);
-    write_rgb_style(output, MOCHA_GREEN, Some(MOCHA_BASE), true);
+    write_rgb_style(output, theme.accent, Some(theme.background), true);
     output.extend_from_slice("└".as_bytes());
     output.extend_from_slice(footer.as_bytes());
     for _ in footer_width..inner_width {
@@ -2062,6 +2096,7 @@ fn draw_help(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
 }
 
 fn draw_notification(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
+    let theme = &snapshot.theme;
     let Some(message) = &snapshot.notification else {
         return;
     };
@@ -2075,14 +2110,14 @@ fn draw_notification(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
 
     for row in 0..rows {
         let _ = write!(output, "\x1b[{};{}H", origin_row + row, origin_column);
-        write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+        write_rgb_style(output, theme.foreground, Some(theme.background), false);
         output.extend_from_slice(" ".repeat(usize::from(columns)).as_bytes());
     }
 
     let title = "─ Rustmux Warning ";
     let (title, title_width) = truncate_to_display_width(title, inner_width);
     let _ = write!(output, "\x1b[{origin_row};{origin_column}H");
-    write_rgb_style(output, MOCHA_YELLOW, Some(MOCHA_BASE), true);
+    write_rgb_style(output, theme.warning, Some(theme.background), true);
     output.extend_from_slice("┌".as_bytes());
     output.extend_from_slice(title.as_bytes());
     for _ in title_width..inner_width {
@@ -2091,11 +2126,11 @@ fn draw_notification(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     output.extend_from_slice("┐".as_bytes());
 
     let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column);
-    write_rgb_style(output, MOCHA_YELLOW, Some(MOCHA_BASE), false);
+    write_rgb_style(output, theme.warning, Some(theme.background), false);
     output.extend_from_slice("│".as_bytes());
     let (message, _) = truncate_to_display_width(message, inner_width.saturating_sub(2));
     let _ = write!(output, "\x1b[{};{}H", origin_row + 1, origin_column + 2);
-    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+    write_rgb_style(output, theme.foreground, Some(theme.background), false);
     output.extend_from_slice(message.as_bytes());
     let _ = write!(
         output,
@@ -2103,7 +2138,7 @@ fn draw_notification(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         origin_row + 1,
         origin_column + columns - 1
     );
-    write_rgb_style(output, MOCHA_YELLOW, Some(MOCHA_BASE), false);
+    write_rgb_style(output, theme.warning, Some(theme.background), false);
     output.extend_from_slice("│".as_bytes());
 
     let _ = write!(
@@ -2116,27 +2151,35 @@ fn draw_notification(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
 }
 
 fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
+    let theme = &snapshot.theme;
     let (width, height) = snapshot.terminal_size;
     let _ = write!(output, "\x1b[{height};1H");
-    write_rgb_style(output, MOCHA_TEXT, Some(MOCHA_BASE), false);
+    write_rgb_style(output, theme.foreground, Some(theme.background), false);
     output.extend_from_slice(b"\x1b[2K");
     draw_powerline_segments(
+        theme,
         output,
         &status_segments(snapshot, usize::from(width)),
         usize::from(width),
-        MOCHA_BASE,
+        theme.background,
     );
     output.extend_from_slice(b"\x1b[0m");
 }
 
-fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16, active: bool) {
+fn draw_terminal_border(
+    theme: &Theme,
+    output: &mut Vec<u8>,
+    title: &str,
+    width: u16,
+    active: bool,
+) {
     if width == 0 {
         return;
     }
     output.extend_from_slice(b"\x1b[0;49m\x1b[2K");
     write_rgb_style(
         output,
-        if active { MOCHA_GREEN } else { MOCHA_OVERLAY_0 },
+        if active { theme.accent } else { theme.border },
         None,
         false,
     );
@@ -2153,13 +2196,13 @@ fn draw_terminal_border(output: &mut Vec<u8>, title: &str, width: u16, active: b
     }
 }
 
-fn draw_bottom_border(output: &mut Vec<u8>, width: u16, active: bool) {
+fn draw_bottom_border(theme: &Theme, output: &mut Vec<u8>, width: u16, active: bool) {
     if width == 0 {
         return;
     }
     write_rgb_style(
         output,
-        if active { MOCHA_GREEN } else { MOCHA_OVERLAY_0 },
+        if active { theme.accent } else { theme.border },
         None,
         false,
     );
@@ -2192,6 +2235,7 @@ fn write_rgb_style(output: &mut Vec<u8>, foreground: Rgb, background: Option<Rgb
 }
 
 fn draw_powerline_segments(
+    theme: &Theme,
     output: &mut Vec<u8>,
     segments: &[(String, Rgb)],
     width: usize,
@@ -2210,7 +2254,7 @@ fn draw_powerline_segments(
         }
         write_rgb_style(output, bar_background, Some(*background), false);
         output.extend_from_slice(POWERLINE_RIGHT.as_bytes());
-        write_rgb_style(output, MOCHA_CRUST, Some(*background), true);
+        write_rgb_style(output, theme.badge_text, Some(*background), true);
         output.extend_from_slice(label.as_bytes());
         write_rgb_style(output, *background, Some(bar_background), false);
         output.extend_from_slice(POWERLINE_RIGHT.as_bytes());

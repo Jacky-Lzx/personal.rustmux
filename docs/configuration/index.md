@@ -93,3 +93,15 @@ The server checks for configuration changes every 500ms. Valid updates apply aut
 
 
 Set `shell` to an executable name or path (without arguments). `RUSTMUX_SHELL` takes precedence; otherwise the default is `$SHELL`, falling back to `/bin/sh`. Reloaded shell settings apply to new panes.
+
+## Interface theme
+
+Choose `mocha` (default) or `light`, then optionally override individual colors. Themes reload automatically. See [Themes](themes.md) for all supported color keys.
+
+```toml
+[theme]
+preset = "mocha"
+
+[theme.colors]
+accent = "#89b4fa"
+```

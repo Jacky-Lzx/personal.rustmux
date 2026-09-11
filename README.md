@@ -30,7 +30,7 @@ The demos are generated from reproducible [VHS tapes](demos/README.md).
 
 ## Highlights
 
-- **Zellij-inspired interface** — Catppuccin Mocha status lines, powerline window tabs, modal keybindings, and compact floating overlays.
+- **Zellij-inspired interface** — Configurable Mocha and light themes, powerline window tabs, modal keybindings, and compact floating overlays.
 - **Persistent sessions** — Detach and reconnect without stopping applications, or save pane layouts and working directories for later restoration.
 - **Flexible layouts** — Split, resize, move, zoom, and close panes using the keyboard or by dragging pane borders with the mouse.
 - **Integrated history tools** — Search scrollback, copy selections through OSC 52, and open the full history or the previous command output in an editor.

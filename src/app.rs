@@ -3589,6 +3589,7 @@ impl App {
         if self.client.is_none() {
             return Ok(());
         }
+        self.renderer.set_theme(self.config.theme);
         self.renderer.set_ui(
             self.config.compact(),
             self.config.describe_status_mode(&self.mode),

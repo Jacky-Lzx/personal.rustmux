@@ -19,6 +19,7 @@
 # Configuration
 
 - [Configuration File](./configuration/index.md)
+- [Themes](./configuration/themes.md)
 - [Notifications](./configuration/notifications.md)
 
 # Reference

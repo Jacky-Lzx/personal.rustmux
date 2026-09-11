@@ -9,6 +9,7 @@ mod render;
 mod session;
 mod shell;
 mod terminal;
+mod theme;
 
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
