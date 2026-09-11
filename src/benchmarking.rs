@@ -92,6 +92,7 @@ impl ImagePreviewRunner {
                 zoomed: false,
                 master,
                 child: Pid::from_raw(1),
+                spawn_directory: None,
                 terminal: vt100::Parser::new_with_callbacks(
                     rows,
                     columns,

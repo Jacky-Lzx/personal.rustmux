@@ -63,6 +63,7 @@ pub(super) struct Window {
     pub(super) zoomed: bool,
     pub(super) master: OwnedFd,
     pub(super) child: Pid,
+    pub(super) spawn_directory: Option<PathBuf>,
     pub(super) terminal: vt100::Parser<TerminalMetadata>,
     pub(super) cursor_style: CursorStyleTracker,
     pub(super) input_modes: InputModeTracker,
@@ -509,7 +510,7 @@ impl App {
                     .filter_map(|id| self.windows.iter().find(|window| window.id == id))
                     .map(|window| SnapshotPane {
                         id: window.id,
-                        cwd: window.terminal.callbacks().current_directory.clone(),
+                        cwd: self.window_directory(window),
                     })
                     .collect::<Vec<_>>();
                 let name = self
@@ -531,7 +532,7 @@ impl App {
             .iter()
             .find(|window| window.floating)
             .map(|window| SnapshotFloating {
-                cwd: window.terminal.callbacks().current_directory.clone(),
+                cwd: self.window_directory(window),
                 visible: self.windows[self.active].id == window.id,
                 return_to: window.return_to_window,
             });
@@ -634,10 +635,13 @@ impl App {
         );
         (winsize.ws_col, winsize.ws_row) = terminal_parser_size(winsize.ws_col, winsize.ws_row);
         let (columns, rows) = (winsize.ws_col, winsize.ws_row);
-        let current_directory = options
+        let spawn_directory = options
             .current_directory
-            .as_ref()
+            .clone()
             .filter(|path| path.is_dir())
+            .or_else(|| std::env::current_dir().ok());
+        let current_directory = spawn_directory
+            .as_ref()
             .map(|path| CString::new(path.as_os_str().as_encoded_bytes()))
             .transpose()?;
 
@@ -692,6 +696,7 @@ impl App {
                     zoomed: false,
                     master,
                     child,
+                    spawn_directory,
                     terminal: vt100::Parser::new_with_callbacks(
                         rows,
                         columns,
@@ -740,19 +745,34 @@ impl App {
     }
 
     fn active_spawn_directory(&self) -> Option<PathBuf> {
-        let window = self.windows.get(self.active)?;
-        let tracked = window.terminal.callbacks().current_directory.clone();
+        self.windows
+            .get(self.active)
+            .and_then(|window| self.window_directory(window))
+    }
+
+    fn window_directory(&self, window: &Window) -> Option<PathBuf> {
+        let tracked = window
+            .terminal
+            .callbacks()
+            .current_directory
+            .clone()
+            .filter(|path| path.is_dir());
         let foreground = tcgetpgrp(&window.master).ok();
         let application = foreground.and_then(process_name);
-        let process_directory = foreground
-            .filter(|_| {
-                application
-                    .as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("yazi"))
-            })
-            .and_then(process_current_directory)
-            .filter(|path| path.is_dir());
+        let process_directory = if tracked.is_none()
+            || application
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("yazi"))
+        {
+            foreground
+                .and_then(process_current_directory)
+                .filter(|path| path.is_dir())
+                .or_else(|| process_current_directory(window.child).filter(|path| path.is_dir()))
+        } else {
+            None
+        };
         preferred_spawn_directory(tracked, application.as_deref(), process_directory)
+            .or_else(|| window.spawn_directory.clone().filter(|path| path.is_dir()))
     }
 
     pub(super) fn run_server(&mut self, listener: UnixListener) -> Result<()> {
@@ -3535,7 +3555,7 @@ pub(super) fn preferred_spawn_directory(
     if foreground_application.is_some_and(|name| name.eq_ignore_ascii_case("yazi")) {
         foreground_directory.or(tracked)
     } else {
-        tracked
+        tracked.or(foreground_directory)
     }
 }
 

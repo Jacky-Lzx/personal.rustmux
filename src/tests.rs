@@ -58,6 +58,7 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         zoomed: false,
         master,
         child: Pid::from_raw(1),
+        spawn_directory: None,
         terminal: vt100::Parser::new_with_callbacks(
             rows,
             columns,
@@ -2080,4 +2081,14 @@ fn long_semantic_command_notification_reaches_the_outer_terminal() {
             .count(),
         4
     );
+}
+
+#[test]
+fn directory_falls_back_to_process_without_shell_integration() {
+    let directory = PathBuf::from("/workspace");
+    assert_eq!(
+        preferred_spawn_directory(None, Some("sh"), Some(directory.clone())),
+        Some(directory)
+    );
+    assert_eq!(preferred_spawn_directory(None, None, None), None);
 }
