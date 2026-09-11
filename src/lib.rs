@@ -5,6 +5,7 @@ mod input;
 mod layout;
 mod render;
 mod session;
+mod shell;
 mod terminal;
 
 #[cfg(feature = "benchmarks")]

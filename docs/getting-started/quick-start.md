@@ -19,7 +19,7 @@ cargo install --path .
 rustmux
 ```
 
-New windows start `fish` by default. Override the shell for one launch with:
+New windows use `RUSTMUX_SHELL`, then the `shell` configuration option, then `$SHELL`, and finally `/bin/sh`. Explicit overrides must name an executable; invalid overrides report an error. Override the shell for one launch with:
 
 ```sh
 RUSTMUX_SHELL=zsh rustmux

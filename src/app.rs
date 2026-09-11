@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::env;
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -17,7 +16,7 @@ use nix::poll::{PollFd, PollFlags, poll};
 use nix::pty::{ForkptyResult, Winsize, forkpty};
 use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::{Pid, execvp, read, tcgetpgrp, write};
+use nix::unistd::{Pid, execvp, pipe, read, tcgetpgrp, write};
 
 use crate::config::{Action, Config, ConfigReloader, config_path};
 use crate::input::{
@@ -418,7 +417,7 @@ impl App {
     }
 
     fn restore_session(&mut self, snapshot: SessionSnapshot) -> Result<()> {
-        let shell_name = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
+        let shell_name = crate::shell::resolve_shell(self.config.shell.as_deref())?;
         let shell_label = Path::new(&shell_name)
             .file_name()
             .and_then(|name| name.to_str())
@@ -547,7 +546,7 @@ impl App {
 
     fn create_window(&mut self) -> Result<()> {
         let current_directory = self.active_spawn_directory();
-        let shell = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
+        let shell = crate::shell::resolve_shell(self.config.shell.as_deref())?;
         let name = Path::new(&shell)
             .file_name()
             .and_then(|name| name.to_str())
@@ -596,7 +595,7 @@ impl App {
             return self.redraw();
         }
 
-        let shell = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
+        let shell = crate::shell::resolve_shell(self.config.shell.as_deref())?;
         let name = Path::new(&shell)
             .file_name()
             .and_then(|name| name.to_str())
@@ -642,10 +641,32 @@ impl App {
             .map(|path| CString::new(path.as_os_str().as_encoded_bytes()))
             .transpose()?;
 
+        let (exec_status_read, exec_status_write) = pipe()?;
+        for fd in [&exec_status_read, &exec_status_write] {
+            fcntl(fd, FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC))?;
+        }
+
         // SAFETY: the child immediately calls execvp and _exit, both of which are
         // async-signal-safe; all application bookkeeping remains in the parent.
         match unsafe { forkpty(&winsize, None) }? {
             ForkptyResult::Parent { child, master } => {
+                drop(exec_status_write);
+                let mut status = Vec::new();
+                fs::File::from(exec_status_read).read_to_end(&mut status)?;
+                if !status.is_empty() {
+                    let _ = waitpid(child, None);
+                    let code = i32::from_ne_bytes(
+                        status
+                            .try_into()
+                            .map_err(|_| "invalid child startup response")?,
+                    );
+                    return Err(format!(
+                        "could not start {}: {}",
+                        program.to_string_lossy(),
+                        io::Error::from_raw_os_error(code)
+                    )
+                    .into());
+                }
                 let setup = (|| {
                     let flags = OFlag::from_bits_truncate(fcntl(&master, FcntlArg::F_GETFL)?);
                     fcntl(&master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
@@ -705,10 +726,13 @@ impl App {
                 if let Some(directory) = current_directory
                     && unsafe { nix::libc::chdir(directory.as_ptr()) } == -1
                 {
+                    let code = Errno::last() as i32;
+                    let _ = write(&exec_status_write, &code.to_ne_bytes());
                     // SAFETY: exiting directly is required after fork if setup fails.
                     unsafe { nix::libc::_exit(127) };
                 }
-                let _ = execvp(&program, &arguments);
+                let code = execvp(&program, &arguments).unwrap_err() as i32;
+                let _ = write(&exec_status_write, &code.to_ne_bytes());
                 // SAFETY: exiting directly is required after fork if exec fails.
                 unsafe { nix::libc::_exit(127) };
             }
@@ -2773,7 +2797,7 @@ impl App {
         if !enough_space {
             return self.notify("not enough space to split this pane");
         }
-        let shell_name = env::var("RUSTMUX_SHELL").unwrap_or_else(|_| "fish".to_owned());
+        let shell_name = crate::shell::resolve_shell(self.config.shell.as_deref())?;
         let name = Path::new(&shell_name)
             .file_name()
             .and_then(|name| name.to_str())

@@ -60,6 +60,7 @@ default_mode = "locked"
 clear_defaults = false
 compact = false
 scrollback_lines = 1000
+# shell = "/bin/zsh" # Defaults to $SHELL, then /bin/sh.
 
 [notifications]
 enabled = true
@@ -225,6 +226,7 @@ pub enum Action {
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub(super) shell: Option<String>,
     pub default_mode: String,
     compact: bool,
     scrollback_lines: usize,
@@ -255,6 +257,7 @@ enum BindingDisplay {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    shell: Option<String>,
     default_mode: Option<String>,
     #[serde(default)]
     clear_defaults: bool,
@@ -334,6 +337,9 @@ impl Config {
     }
 
     fn apply_user(&mut self, user: ConfigFile) -> Result<(), String> {
+        if let Some(shell) = user.shell {
+            self.shell = Some(validate_shell(shell)?);
+        }
         if user.clear_defaults {
             self.bindings.clear();
         }
@@ -371,6 +377,7 @@ impl Config {
         )?;
         let notifications = file.notifications.unwrap_or_default();
         let mut config = Self {
+            shell: file.shell.map(validate_shell).transpose()?,
             default_mode,
             compact: file.compact.unwrap_or(false),
             scrollback_lines: validate_scrollback_lines(
@@ -908,6 +915,13 @@ fn parse_action(
         _ => return Err(format!("unknown action '{name}'")),
     };
     Ok(action)
+}
+
+fn validate_shell(shell: String) -> Result<String, String> {
+    if shell.trim().is_empty() || shell.contains('\0') {
+        return Err("shell must be a nonempty executable name or path".to_owned());
+    }
+    Ok(shell)
 }
 
 fn normalize_mode(mode: &str) -> Result<String, String> {

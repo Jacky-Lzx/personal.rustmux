@@ -367,6 +367,8 @@ fn run_client(mut stream: UnixStream) -> Result<ClientExit> {
 }
 
 fn start_server(socket: &Path, size: crossterm::terminal::WindowSize) -> Result<()> {
+    let config = Config::load()?;
+    crate::shell::resolve_shell(config.shell.as_deref())?;
     ensure_session_dir()?;
     if socket.exists() {
         fs::remove_file(socket)?;

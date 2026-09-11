@@ -17,6 +17,7 @@ default_mode = "locked"
 clear_defaults = false
 compact = false
 scrollback_lines = 1000
+# shell = "/bin/zsh"
 ```
 
 | Option | Purpose |
@@ -88,3 +89,5 @@ The server checks for configuration changes every 500ms. Valid updates apply aut
 
 `scrollback_lines` affects only panes created afterward; bindings and notification settings apply immediately.
 
+
+Set `shell` to an executable name or path (without arguments). `RUSTMUX_SHELL` takes precedence; otherwise the default is `$SHELL`, falling back to `/bin/sh`. Reloaded shell settings apply to new panes.
