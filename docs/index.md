@@ -8,15 +8,15 @@
         <span class="hero-wordmark-tagline">TERMINAL MULTIPLEXER</span>
       </span>
     </h1>
-    <p class="hero-summary">A small terminal multiplexer built for focused work: persistent sessions, fluid pane layouts, and modern Kitty protocols without a heavy layer between you and your shell.</p>
+    <p class="hero-summary">Yet another terminal multiplexer, a spiritual successor to <a href="https://zellij.dev/">Zellij</a>.</p>
     <div class="hero-actions">
       <a class="primary-button" href="getting-started/quick-start.html">Get started <span aria-hidden="true">→</span></a>
       <a class="secondary-button" href="https://github.com/Jacky-Lzx/personal.rustmux">View on GitHub</a>
     </div>
     <div class="hero-meta" aria-label="Project highlights">
-      <span>Written in Rust</span>
-      <span>macOS + Linux</span>
       <span>Kitty-native</span>
+      <span>macOS + Linux</span>
+      <span>Written in Rust</span>
     </div>
   </div>
   <div class="terminal-window" aria-label="Rustmux terminal preview">
@@ -59,32 +59,67 @@
   </div>
 </section>
 
-## Built around the way you work
+> [!WARNING]
+> **Rustmux is still at an early stage. Configuration and persistence formats may evolve.**
 
-<p class="section-intro">Rustmux keeps the familiar terminal model, then adds just enough structure to make long-running workspaces calm and dependable.</p>
+## TL;DR
 
-<div class="feature-grid">
-  <article><small class="feature-number">01 / FLOW</small><strong>A clear interaction model</strong><span>Stay locked while you work. Press Ctrl-b for an action, then return directly to the terminal.</span></article>
-  <article><small class="feature-number">02 / PROTOCOLS</small><strong>Modern terminal interoperability</strong><span>Kitty keyboard, graphics, drag-and-drop, clipboard and file IPC, plus common OSC protocols.</span></article>
-  <article><small class="feature-number">03 / YAZI</small><strong>Designed for terminal file work</strong><span>Image previews, cross-pane drag-and-drop, mouse input, and working-directory inheritance work through the multiplexer.</span></article>
-  <article><small class="feature-number">04 / SESSIONS</small><strong>Restorable workspaces</strong><span>Keep processes alive, save layouts and working directories, and reconnect when you are ready.</span></article>
+- Zellij-inspired terminal multiplexing.
+- Persistent sessions, flexible panes.
+- Kitty-native, built with Yazi in mind.
+- Mostly AI-generated, but with a commitment to understand every line.
+
+<div class="hero-actions">
+  <a class="primary-button" href="getting-started/quick-start.html">Get started <span aria-hidden="true">→</span></a>
 </div>
 
-## How it works
+## A Few Thoughts
 
-Rustmux runs a lightweight background session server. Detaching a client leaves the session and its processes running, ready to reconnect from another terminal.
+I have used [tmux](https://github.com/tmux/tmux) for years.
+A terminal without a multiplexer feels like a desk with nowhere to leave an unfinished page.
+I want to step away and return to find my work where I left it: the editor open, a process still running, a few panes holding the threads of an idea.
+tmux has the bearing of a swordsman from an older age: spare, disciplined, and dependable.
+There is a quiet dignity to a tool that serves you for years without asking for much attention.
+But the terminal around it has kept growing, and so has my sense of what working in one could feel like.
 
-1. A **Session** is a persistent workspace.
-2. A **Window** is a tab in the top status line.
-3. A **Pane** is a resizable terminal region inside a window.
-4. A **Mode** decides which keys Rustmux handles and which reach the active application.
+[Zellij](https://zellij.dev/) gives that feeling a shape.
+There is care in making a workspace approachable, in helping someone discover an action, in making panes and sessions feel like things they can comfortably arrange and inhabit.
+Rustmux owes much of its sensibility to that care.
+Calling it a spiritual successor is a statement of affection and intent; Zellij remains very much its own living project.
+What I want to carry forward is the belief that a terminal workspace deserves thoughtful design, down to the small interactions we repeat all day.
 
-## Platform support
+[Kitty](https://sw.kovidgoyal.net/kitty/) opens another door.
+Richer keyboard input, graphics, and closer integration with the desktop expand what an application can express inside a terminal.
+These capabilities make me reluctant to accept that adding a multiplexer should mean giving some of them up.
+Every layer between an application and the terminal takes on a responsibility: to preserve as much of that conversation as it can.
 
-| Platform | Status            | Notes                                           |
-| -------- | ----------------- | ----------------------------------------------- |
-| macOS    | Supported         | Kitty provides the most complete feature set    |
-| Linux    | Supported         | CI continuously runs tests and fuzz smoke tests |
-| Windows  | Not yet supported | The current implementation depends on Unix PTYs |
+[Yazi](https://yazi-rs.github.io/) makes that responsibility concrete.
+A file manager brings you into contact with the ordinary texture of your work: directories, images, previews, files to move and open.
+Here, a missing capability becomes a small interruption you feel in your hands.
+A preview should appear where you expect it.
+A new pane should begin in a directory that makes sense.
+Enough care with details like these can make a collection of separate programs feel like a place you know your way around.
 
-> Rustmux is still at an early stage. Configuration and persistence formats may evolve.
+Rustmux grows out of wanting these things together: the continuity I have long relied on, the consideration I admire in Zellij, and room for applications to use what Kitty makes possible.
+Yazi helps keep that ambition grounded in everyday use.
+The aim is a workspace that remembers enough, responds readily, and asks for attention only when there is something worth attending to.
+
+AI helped turn building a terminal multiplexer from a distant ambition into something I could sit down and work on, one evening at a time.
+It gave the project its first momentum, helping me get the basic functionality working quickly enough that an idea became something I could actually use, question, and improve.
+There is something deeply encouraging about that moment: a tool you had only imagined begins to respond beneath your hands, and the distance between wanting to make it and being able to begin suddenly feels smaller.
+
+But I want my part in this project to amount to more than passing requests to AI and accepting whatever comes back.
+The early foundations came together quickly with its help; my commitment is to review and understand every line of code that ultimately belongs here.
+That means taking the time to trace a behavior, question a decision, and learn enough to recognize when a plausible solution is the wrong one.
+I want to be able to explain why the code is there, what it promises, and where it might fail.
+AI made it easier to begin. Making this a project I understand and can stand behind is the work I am choosing to do.
+
+This is still a small, unfinished project.
+There are rough edges, and much of the work ahead lives in details that will never make an impressive screenshot.
+I think those details are worth the effort.
+When I sit down at a terminal, I want to pick up a thought where I left it. Rustmux is my attempt to make that a little easier.
+
+<p style="text-align: right;">
+  — Jacky Li<br>
+  <em style="color: #888;">This section was generated by AI. Sorry, writing isn't my strong suit.</em>
+</p>
