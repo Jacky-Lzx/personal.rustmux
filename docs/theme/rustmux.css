@@ -794,7 +794,7 @@ table th {
   color: var(--green);
   background: var(--table-header-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.941176rem;
+  font-size: 1em;
 }
 
 table td,
