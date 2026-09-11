@@ -4,7 +4,7 @@ Rustmux is a terminal multiplexer written in Rust, built around a compact modal 
 
 It runs on macOS and Linux. Windows is not currently supported.
 
-For installation guides, keybindings, configuration, session management, and protocol compatibility, see the [Rustmux Documentation](docs/index.md). The documentation is written in English by default and also includes a Chinese translation.
+For installation guides, keybindings, configuration, session management, and protocol compatibility, see the [Rustmux Documentation](docs/index.md). The documentation is written in English.
 
 ## Feature demos
 
@@ -16,7 +16,7 @@ Create and rename windows, split and focus panes, rearrange layouts, and zoom th
 
 ### Session Manager
 
-Search and switch between running or saved sessions from a compact overlay. Entering a new name creates a session immediately.
+Search and switch between running or saved sessions from a compact overlay. Press `/` to search, then Enter to open a match or create a session when no name matches.
 
 ![Rustmux session manager](demos/assets/session-manager.gif)
 
@@ -58,7 +58,7 @@ Rustmux creates or attaches to the default session. Use `Ctrl-b` to enter normal
 
 ## Documentation
 
-Build the complete English and Chinese documentation site with:
+Build the documentation site with:
 
 ```sh
 ./scripts/build-docs.sh

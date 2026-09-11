@@ -5,7 +5,7 @@ The README animations are generated from versioned [VHS](https://github.com/char
 ## Record every keyboard-driven demo
 
 ```sh
-brew install go ttyd ffmpeg
+brew install go ttyd ffmpeg fish
 ./scripts/install-demo-tools.sh
 ./scripts/record-demos.sh
 ```

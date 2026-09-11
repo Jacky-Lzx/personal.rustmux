@@ -12,9 +12,11 @@ rustmux check-config
 
 ## General options
 
+This minimal override file keeps the built-in keybindings:
+
 ```toml
 default_mode = "locked"
-clear_defaults = true
+clear_defaults = false
 compact = false
 mouse_hover_cursor = false
 scrollback_lines = 5000
@@ -52,9 +54,10 @@ c = ["new-window", { action = "switch-mode", mode = "locked" }]
 Parameterized actions use object syntax:
 
 ```toml
-key = [{ action = "switch-mode", mode = "locked" }]
-key = [{ action = "go-to-window", index = 2 }]
-key = [{ action = "send-key", key = "Ctrl c" }]
+[keybinds.normal]
+q = [{ action = "switch-mode", mode = "locked" }]
+"2" = [{ action = "go-to-window", index = 2 }]
+"Ctrl c" = [{ action = "send-key", key = "Ctrl c" }]
 ```
 
 Set a binding to an empty array to remove its default:

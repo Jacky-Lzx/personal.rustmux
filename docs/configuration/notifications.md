@@ -31,7 +31,7 @@ Focusing that pane clears the indicators.
 
 ## Requirements
 
-- The shell must provide OSC 133 command boundaries; the default Fish setup does.
+- The shell must provide OSC 133 command boundaries. Rustmux does not install shell integration; configure it in the shell if needed.
 - A Kitty client must be attached to the session. There is no outer terminal to receive notifications while detached.
 - On macOS, notification banner behavior is controlled by system settings. An entry in Notification Center or a Dock badge does not guarantee a banner.
 

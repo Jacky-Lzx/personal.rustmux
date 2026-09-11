@@ -37,7 +37,7 @@ Keep the default filter:
 
 ```toml
 [notifications]
-exclude_applications = ["yazi", "nvim"]
+exclude_applications = ["yazi", "nvim", "lazygit"]
 ```
 
 Rustmux inspects foreground processes seen throughout the command, rather than only the outer Fish wrapper.

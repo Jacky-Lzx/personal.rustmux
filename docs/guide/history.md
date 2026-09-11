@@ -24,7 +24,7 @@ Mouse selection is active only in scroll mode. In locked mode, mouse input goes 
 
 In scroll mode:
 
-- `E` opens complete history with `$VISUAL` or `$EDITOR`;
+- `E` opens complete history with `$VISUAL`, then `$EDITOR`, falling back to `vi`;
 - `e` opens the previous command's output;
 - `y` copies the previous command's output through OSC 52.
 

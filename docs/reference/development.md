@@ -3,9 +3,11 @@
 ## Routine checks
 
 ```sh
-cargo fmt --check
-cargo test --locked
+cargo fmt --all --check
+cargo fmt --manifest-path fuzz/Cargo.toml --all --check
+cargo test --all-targets --locked
 cargo clippy --all-targets --locked -- -D warnings
+cargo check --features benchmarks --bench image_preview --locked
 ```
 
 CI runs formatting, the complete test suite, and Clippy on macOS and Linux.
@@ -17,11 +19,11 @@ Nightly Rust compiles every libFuzzer target. Linux CI also runs short smoke tes
 ```sh
 cargo install cargo-fuzz --locked
 cargo fuzz list
-cargo fuzz run input-decode
-cargo fuzz run kitty-graphics
-cargo fuzz run kitty-dnd
-cargo fuzz run osc-terminal
-cargo fuzz run terminal-render
+cargo +nightly fuzz run input-decode
+cargo +nightly fuzz run kitty-graphics
+cargo +nightly fuzz run kitty-dnd
+cargo +nightly fuzz run osc-terminal
+cargo +nightly fuzz run terminal-render
 ```
 
 The targets cover keyboard and mouse decoding, Kitty graphics, Kitty drag-and-drop, OSC and terminal responses, and complete terminal-frame rendering.

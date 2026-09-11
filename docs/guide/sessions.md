@@ -21,6 +21,8 @@ rustmux ka -y
 
 The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` aliases `list-sessions`, `k` aliases `kill-session`, and `ka` aliases `kill-all-sessions`. Without `-y` or `--yes`, `kill-all-sessions` asks for confirmation. It stops running sessions but preserves saved snapshots. `rustmux attach -c work` creates the session when it does not exist. The earlier `new-session -s work`, `attach-session -t work`, and `kill-session -t work` forms remain supported.
 
+Session names contain 1–64 ASCII letters, digits, hyphens, or underscores.
+
 Press <kbd>Ctrl-b</kbd>, <kbd>Ctrl-o</kbd>, <kbd>d</kbd> inside Rustmux to detach. The server and its programs keep running.
 
 A session accepts one interactive client at a time. If another client is already attached, a second attach exits with a warning and leaves the original client connected, with its mode and terminal size unchanged. Detach the original client before attaching elsewhere. Script control commands remain available while a client is attached.
@@ -33,13 +35,13 @@ Press `Ctrl-w` in normal mode, or `w` in session mode, to open the centered Sess
 
 - The first session is selected when the manager opens; the search field stays hidden.
 - `j` / `k` (or `↓` / `↑`) selects a session.
-- `/` enters search mode. Type to filter sessions by name; `j` and `k` enter text in this mode. Use the arrow keys to select a search result.
-- `Tab` completes the selected name.
+- `/` enters search mode. Type to filter sessions by a case-insensitive substring; `j` and `k` enter text in this mode. Use the arrow keys to select a search result.
+- `Tab` completes the selected name while searching.
 - `Enter` enters the selected session; with no match, it creates a session from the query.
 - `Ctrl-a` saves the current layout.
 - `Ctrl-r` renames a session.
 - `Ctrl-x` disconnects other clients from the selected session.
-- `Delete` deletes a session or saved snapshot.
+- `Delete` stops the selected session and its processes and removes its saved snapshot, or removes the snapshot alone if the session is not running. It does not ask for confirmation.
 - `Esc` leaves search mode and restores the full list; press it again to close the manager. While renaming, it cancels the rename.
 
 The list includes window and pane counts, connection state, saved state, and creation time.

@@ -55,7 +55,7 @@ command = "nvim"
 
 Directories are relative to the layout file and must exist. Each pane after the first splits the preceding pane; `split` is `right` by default or `down`. Layouts support at most 128 panes. Unknown fields, empty windows, and invalid directories fail before launching the server.
 
-Commands execute through the configured shell with `-c`. A pane closes when its command exits; append `; exec /bin/sh` when a command should leave an interactive shell behind. Panes without commands open the configured interactive shell. Explicit startup commands are included in saved snapshots and rerun when restoring the session. Existing process memory and terminal contents are not restored.
+Commands execute through the configured shell with `-c`. A pane closes when its command exits; append `; exec /bin/sh` when a command should leave an interactive shell behind. Panes without commands open the configured interactive shell. Explicit startup commands are included in saved snapshots and rerun when restoring the session. Processes start anew. Terminal history can be saved and restored separately with `save_scrollback = true`; see [Save scrollback](sessions.md#save-scrollback).
 
 ## Move panes between windows
 
@@ -69,7 +69,7 @@ rustmux break-pane -s work -p 1 --name editor
 
 Both commands preserve the pane ID, running process, terminal contents, and working directory, and focus the moved pane. Floating panes and temporary history editor panes cannot be moved this way. Invalid destinations leave the layout unchanged.
 
-The corresponding interactive actions are `break-pane`, `move-pane-next-window`, and `move-pane-previous-window`. The latter two split the first pane in the adjacent window to the right, wrapping around the window list. They have no default keys; configure them as needed:
+The corresponding interactive actions are `break-pane`, `move-pane-next-window`, and `move-pane-previous-window`. The latter two split the first pane in the adjacent window to the right, wrapping around the window list. Their default pane-mode keys are `b`, `]`, and `[` respectively, followed by a return to locked mode. To add alternative bindings that stay in pane mode:
 
 ```toml
 [keybinds.pane]
