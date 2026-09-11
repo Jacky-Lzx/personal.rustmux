@@ -3,4 +3,7 @@
 /fuzz/target/
 /fuzz/artifacts/
 /fuzz/corpus/
+# Local copies of generated autosave benchmark results.
+/docs/reference/autosave-performance-stages.csv
+/docs/reference/autosave-performance-live.json
 .DS_Store

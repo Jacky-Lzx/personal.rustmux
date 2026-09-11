@@ -182,3 +182,130 @@ impl Default for ImagePreviewRunner {
         Self::new()
     }
 }
+
+/// Measurements of the production history capture and background save paths.
+pub struct SessionSaveSample {
+    pub capture_ms: f64,
+    pub unchanged_ms: f64,
+    pub encode_ms: f64,
+    pub background_ms: f64,
+    pub bytes: usize,
+}
+
+pub struct SessionSaveRunner {
+    terminals: Vec<vt100::Parser<TerminalMetadata>>,
+    lines: usize,
+    save_history: bool,
+    colored: bool,
+    sequence: usize,
+}
+
+impl SessionSaveRunner {
+    /// `density`: 0 = plain, 1 = 3 style runs/row, 2 = one style/cell.
+    pub fn new(panes: usize, lines: usize, density: u8, save_history: bool, colored: bool) -> Self {
+        let mut terminals = Vec::new();
+        for _ in 0..panes {
+            let mut terminal =
+                vt100::Parser::new_with_callbacks(24, 120, lines, TerminalMetadata::default());
+            for row in 0..lines + 24 {
+                let mut output = String::new();
+                for column in 0..120 {
+                    if density == 2 || (density == 1 && column % 40 == 0) {
+                        use std::fmt::Write;
+                        write!(&mut output, "\x1b[38;5;{}m", (row + column) % 216 + 16).unwrap();
+                    }
+                    output.push(char::from(b'a' + ((row + column) % 26) as u8));
+                }
+                output.push_str("\x1b[0m\r\n");
+                terminal.process(output.as_bytes());
+            }
+            terminals.push(terminal);
+        }
+        Self {
+            terminals,
+            lines,
+            save_history,
+            colored,
+            sequence: 0,
+        }
+    }
+
+    fn snapshot(&self) -> crate::session::SessionSnapshot {
+        use crate::session::{ScrollbackFormat, SessionSnapshot, SnapshotPane, SnapshotTab};
+        let tabs = self
+            .terminals
+            .iter()
+            .enumerate()
+            .map(|(index, terminal)| {
+                let id = index + 1;
+                SnapshotTab {
+                    id,
+                    name: format!("pane-{id}"),
+                    root: crate::layout::PaneNode::Leaf(id),
+                    panes: vec![SnapshotPane {
+                        id,
+                        cwd: Some(std::path::PathBuf::from("/tmp")),
+                        command: None,
+                        scrollback_format: if self.colored && self.save_history {
+                            ScrollbackFormat::Ansi
+                        } else {
+                            ScrollbackFormat::Plain
+                        },
+                        scrollback: self.save_history.then(|| {
+                            crate::app::snapshot_scrollback(
+                                terminal.screen(),
+                                self.lines,
+                                self.colored,
+                            )
+                        }),
+                    }],
+                }
+            })
+            .collect();
+        SessionSnapshot::new(tabs, None, 1)
+    }
+
+    pub fn measure(&mut self) -> SessionSaveSample {
+        use std::hint::black_box;
+        use std::sync::Arc;
+        use std::time::Instant;
+        self.sequence += 1;
+        for terminal in &mut self.terminals {
+            terminal.process(format!("update {}\r\n", self.sequence).as_bytes());
+        }
+        let started = Instant::now();
+        let snapshot = Arc::new(self.snapshot());
+        let capture_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let candidate = self.snapshot();
+        assert!(black_box(&candidate) == snapshot.as_ref());
+        drop(candidate);
+        let unchanged_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let encoded = toml::to_string_pretty(snapshot.as_ref()).unwrap();
+        let encode_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let bytes = encoded.len();
+        drop(encoded);
+        let mut writer = crate::persistence::SnapshotWriter::default();
+        let started = Instant::now();
+        writer
+            .submit(crate::persistence::SaveRequest {
+                name: "save-benchmark".to_owned(),
+                snapshot,
+                notify: false,
+                replies: Vec::new(),
+            })
+            .unwrap();
+        for completion in writer.flush() {
+            completion.result.unwrap();
+        }
+        let background_ms = started.elapsed().as_secs_f64() * 1000.0;
+        SessionSaveSample {
+            capture_ms,
+            unchanged_ms,
+            encode_ms,
+            background_ms,
+            bytes,
+        }
+    }
+}

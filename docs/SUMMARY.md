@@ -27,4 +27,4 @@
 - [Terminal Compatibility](./reference/terminal-compatibility.md)
 - [Troubleshooting](./reference/troubleshooting.md)
 - [Development and Testing](./reference/development.md)
-
+- [Autosave Performance](./reference/autosave-performance.md)

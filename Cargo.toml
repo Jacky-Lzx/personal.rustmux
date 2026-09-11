@@ -23,3 +23,8 @@ vt100 = "0.16.2"
 name = "image_preview"
 harness = false
 required-features = ["benchmarks"]
+
+[[bench]]
+name = "session_save"
+harness = false
+required-features = ["benchmarks"]
