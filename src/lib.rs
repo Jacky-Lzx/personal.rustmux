@@ -30,7 +30,7 @@ use session::{attach_or_create, available_sessions, kill_session, list_sessions,
 const PREFIX: u8 = 0x02;
 const SCROLLBACK_LINES: usize = 1_000;
 const ESCAPE_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(20);
-const FRAME_INTERVAL: Duration = Duration::from_millis(8);
+const FRAME_INTERVAL: Duration = Duration::from_millis(6);
 const EARLY_DISCONNECT_RETRY: Duration = Duration::from_millis(100);
 const MAX_PTY_READS_PER_TICK: usize = 32;
 const MOUSE_SCROLL_LINES: usize = 3;
