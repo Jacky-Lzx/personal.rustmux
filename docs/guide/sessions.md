@@ -91,7 +91,7 @@ autosave_interval_seconds = 30 # Optional; keep 0 for manual saving only.
 
 With `save_scrollback` enabled, manual and automatic saves include the most recent rows from each pane's main terminal buffer, including visible text and floating-terminal history. Up to `scrollback_lines` rows are retained per pane. Full-screen applications' alternate buffers, images, and terminal modes are not saved.
 
-History is plain text by default. Set `save_scrollback_colors = true` to retain indexed and RGB foreground/background colors, bold, dim, italic, underline, and inverse styles. Consecutive cells with the same style share ANSI SGR sequences. Default and indexed colors use the palette available when restored; custom OSC palette changes are not saved. Color formatting is captured with the snapshot; TOML encoding and writes continue to run in the background.
+History is plain text by default. Set `save_scrollback_colors = true` to retain indexed and RGB foreground/background colors, bold, dim, italic, underline, and inverse styles. Consecutive cells with the same style share [ANSI SGR sequences](https://www.invisible-island.net/xterm/ctlseqs/ctlseqs.html). Default and indexed colors use the palette available when restored; custom OSC palette changes are not saved. Color formatting is captured with the snapshot; TOML encoding and writes continue to run in the background.
 
 The color option supports hot reload and affects future saves. Each snapshot records its own format, so existing colored snapshots restore with colors even if the option is subsequently disabled. Old plain-text snapshots remain readable. Restoration accepts only text and SGR styling, and resets styles before starting the fresh live screen.
 
@@ -101,6 +101,6 @@ This option supports hot reload and does not enable automatic saving by itself. 
 
 After the server stops, creating the same session again starts fresh shells (or reruns explicit project startup commands) in the saved directories and rebuilds the layout. Saved sessions that are not running remain visible in the Session Manager.
 
-Working directories prefer OSC 7 shell integration and fall back to the foreground process, shell process, and original pane directory. Yazi’s process directory takes precedence over a stale shell directory. Missing directories fall back to the server’s working directory when restoring.
+Working directories prefer [OSC 7](https://sw.kovidgoyal.net/kitty/shell-integration/#notes-for-shell-developers) shell integration and fall back to the foreground process, shell process, and original pane directory. Yazi’s process directory takes precedence over a stale shell directory. Missing directories fall back to the server’s working directory when restoring.
 
 Temporary history editor windows are excluded from saved layouts.

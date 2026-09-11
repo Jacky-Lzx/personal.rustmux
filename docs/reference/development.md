@@ -14,7 +14,7 @@ CI runs formatting, the complete test suite, and Clippy on macOS and Linux.
 
 ## Fuzz testing
 
-Nightly Rust compiles every libFuzzer target. Linux CI also runs short smoke tests.
+[Nightly Rust](https://rust-lang.github.io/rustup/concepts/channels.html) compiles every [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html) target. Linux CI also runs short smoke tests.
 
 ```sh
 cargo install cargo-fuzz --locked
@@ -46,7 +46,7 @@ Fixtures are generated under `target/image-preview-bench-fixtures/` and are not 
 
 ## Build this manual
 
-The documentation uses mdBook:
+The documentation uses [mdBook](https://rust-lang.github.io/mdBook/):
 
 ```sh
 ./scripts/build-docs.sh

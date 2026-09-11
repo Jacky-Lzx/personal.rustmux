@@ -30,14 +30,14 @@ The demos are generated from reproducible [VHS tapes](demos/README.md).
 
 ## Highlights
 
-- **Zellij-inspired interface** — Configurable Mocha and light themes, powerline window tabs, modal keybindings, and compact floating overlays.
+- **[Zellij](https://zellij.dev/)-inspired interface** — Configurable [Mocha and light themes](docs/configuration/themes.md), powerline window tabs, modal keybindings, and compact floating overlays.
 - **Persistent sessions** — Detach and reconnect without stopping applications, or save pane layouts and working directories for later restoration.
 - **Flexible layouts** — Split, resize, move, zoom, and close panes using the keyboard or by dragging pane borders with the mouse.
-- **Integrated history tools** — Search scrollback, copy selections through OSC 52, and open the full history or the previous command output in an editor.
-- **Kitty and Yazi interoperability** — Supports Kitty graphics, keyboard enhancements, file drag and drop, rich clipboard and file transfer, terminal notifications, and related OSC protocols.
+- **Integrated history tools** — Search scrollback, copy selections through [OSC 52](https://www.invisible-island.net/xterm/ctlseqs/ctlseqs.html), and open the full history or the previous command output in an editor.
+- **Kitty and Yazi interoperability** — Supports Kitty graphics, keyboard enhancements, file drag and drop, rich clipboard and file transfer, terminal notifications, and related [OSC protocols](docs/reference/terminal-compatibility.md).
 - **Attention indicators** — Bells and completed long-running commands mark the relevant window and pane until it receives focus.
 - **Efficient rendering** — Each pane maintains an independent terminal state, including alternate screens, scrollback, colors, mouse modes, and image placeholders; only changed cells are redrawn.
-- **Live configuration reloads** — Configuration changes are applied without restarting the session server, while invalid updates leave the last valid configuration active.
+- **[Live configuration reloads](docs/configuration/index.md#hot-reload)** — Configuration changes are applied without restarting the session server, while invalid updates leave the last valid configuration active.
 
 ## Quick start
 

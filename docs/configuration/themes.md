@@ -7,7 +7,7 @@ Rustmux supports two interface presets and individual color overrides. Add a the
 preset = "light"
 ```
 
-`mocha` is the default, preserving the original Catppuccin Mocha interface. `light` is a light-background palette with darker accents. Preset names are lowercase.
+`mocha` is the default, preserving the original [Catppuccin Mocha](https://catppuccin.com/palette/) interface. `light` is a light-background palette with darker accents. Preset names are lowercase.
 
 ## Customize colors
 

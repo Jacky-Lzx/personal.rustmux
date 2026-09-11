@@ -14,7 +14,7 @@ Press `/` in scroll mode, enter a query, and press Enter. Use `n` for the next r
 
 ## Copy text
 
-Hold the left mouse button and drag in scroll mode. Releasing copies through OSC 52 and shows a brief confirmation.
+Hold the left mouse button and drag in scroll mode. Releasing copies through [OSC 52](https://www.invisible-island.net/xterm/ctlseqs/ctlseqs.html) and shows a brief confirmation.
 
 Keyboard selection is available through custom bindings for `toggle-history-selection`, `selection-left/right`, `scroll-up/down`, and `copy-selection`; these selection shortcuts are not assigned by default.
 
@@ -30,4 +30,4 @@ In scroll mode:
 
 These actions return to the live screen and locked mode.
 
-Rustmux prefers exact command boundaries from OSC 133 shell integration. Without OSC 133, it falls back to command echo and prompt detection.
+Rustmux prefers exact command boundaries from [OSC 133](https://iterm2.com/documentation-escape-codes.html) shell integration. Without OSC 133, it falls back to command echo and prompt detection.

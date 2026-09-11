@@ -91,7 +91,7 @@ Press `?` to show every visible binding for the current mode. Pressing a listed 
 
 ## Clickable bottom shortcuts
 
-Left-click a shortcut key or its action label in the bottom bar to execute its configured action sequence, including any mode change. Set `mouse_hover_cursor = true` to show a pointer cursor over clickable hints when the outer terminal supports cursor shapes; this is disabled by default.
+Left-click a shortcut key or its action label in the bottom bar to execute its configured action sequence, including any mode change. Set [`mouse_hover_cursor = true`](../configuration/index.md#general-options) to show a pointer cursor over clickable hints when the outer terminal supports cursor shapes; this is disabled by default.
 
 - In grouped hints such as `n/p`, click `n` or `p` to choose that key. Clicking the action label, padding, or separator executes the first displayed key.
 - Window-number shortcuts are hidden by default. If configured with `display = "always"`, each displayed number can be clicked.

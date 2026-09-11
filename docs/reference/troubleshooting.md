@@ -18,7 +18,7 @@ Running without arguments tries to attach to `default`. Use `list-sessions` to i
 
 ## Esc is slow or broken inside an application
 
-Esc can be a standalone key or the first byte of OSC, CSI, and other escape sequences. Rustmux waits for a very short decode window to see whether more bytes arrive, then releases a standalone Esc to the pane. If the problem affects only one application, also check whether it enables the Kitty keyboard protocol.
+Esc can be a standalone key or the first byte of OSC, CSI, and other escape sequences. Rustmux waits for a very short decode window to see whether more bytes arrive, then releases a standalone Esc to the pane. If the problem affects only one application, also check whether it enables the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/).
 
 ## Kitty records a notification but shows no banner
 
@@ -27,8 +27,8 @@ This is usually a macOS presentation setting rather than a lost protocol message
 If direct Kitty commands create a Dock badge but Rustmux commands do not, check that:
 
 - the session is currently attached;
-- shell integration provides OSC 133;
-- the command reaches `command_duration_seconds`;
+- shell integration provides [OSC 133](https://iterm2.com/documentation-escape-codes.html);
+- the command reaches [`command_duration_seconds`](../configuration/notifications.md);
 - its foreground application is not in `exclude_applications`.
 
 ## Exiting Yazi still triggers a long-command notification
@@ -54,7 +54,7 @@ The benchmark excludes Yazi's PDF/SVG/JPEG conversion and Kitty's own image deco
 
 ## OSC 52 does not copy
 
-The outer terminal must permit applications to write to the system clipboard. Rustmux sends OSC 52, but terminal security settings may reject it.
+The outer terminal must permit applications to write to the system clipboard. Rustmux sends [OSC 52](https://www.invisible-island.net/xterm/ctlseqs/ctlseqs.html), but [terminal security settings](https://sw.kovidgoyal.net/kitty/conf/#opt-kitty.clipboard_control) may reject it.
 
 ## The outer shell retains interface fragments after detach
 

@@ -16,6 +16,8 @@ Record one tape while iterating:
 ./scripts/record-demos.sh demos/tapes/windows-and-panes.tape
 ```
 
+On macOS, the install command uses [Homebrew](https://brew.sh/). The recorder requires [Fish](https://fishshell.com/), [ttyd](https://github.com/tsl0922/ttyd), and [FFmpeg](https://ffmpeg.org/); installing VHS also requires [Go](https://go.dev/doc/install).
+
 The installer keeps a pinned VHS binary under the ignored `target/demo-tools/` directory. The recording script builds Rustmux in release mode, uses an isolated Rustmux/Fish configuration, disables Fish autosuggestions in both the VHS launcher shell and shells inside Rustmux, removes stale demo sessions before recording, verifies every output file, and cleans up its sessions on exit.
 
 VHS 0.12.0 currently cancels its render context before starting ffmpeg on macOS, then suppresses the encoding error. The pinned 0.11.0 release avoids that regression and prevents a recording run from reporting success without producing a file.

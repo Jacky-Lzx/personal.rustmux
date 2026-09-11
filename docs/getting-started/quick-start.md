@@ -2,7 +2,7 @@
 
 ## Run from source
 
-Rustmux requires a stable Rust toolchain and macOS or Linux.
+Rustmux requires [a stable Rust toolchain](https://www.rust-lang.org/tools/install) and macOS or Linux.
 
 ```sh
 git clone https://github.com/Jacky-Lzx/Rustmux.git

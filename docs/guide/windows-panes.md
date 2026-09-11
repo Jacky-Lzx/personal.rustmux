@@ -17,7 +17,7 @@ f       zoom or restore the current pane
 x       close the current pane
 ```
 
-New windows, splits, and floating terminals inherit the active pane's working directory. Rustmux prefers a valid OSC 7 directory, then falls back to the foreground process, shell process, and original pane directory. When Yazi is the foreground application, its process directory takes precedence over a stale OSC 7 directory. If no valid directory is available, the session server's working directory is used.
+New windows, splits, and floating terminals inherit the active pane's working directory. Rustmux prefers a valid [OSC 7](https://sw.kovidgoyal.net/kitty/shell-integration/#notes-for-shell-developers) directory, then falls back to the foreground process, shell process, and original pane directory. When Yazi is the foreground application, its process directory takes precedence over a stale OSC 7 directory. If no valid directory is available, the session server's working directory is used.
 
 ## Focus and resize
 
