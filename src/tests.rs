@@ -2257,7 +2257,7 @@ fn saved_scrollback_uses_primary_screen_without_disturbing_alternate_screen() {
     terminal.process(b"old\r\nkeep one\r\nkeep two\r\nkeep three");
     terminal.process(b"\x1b[?1049h\x1b[2J\x1b[Htemporary TUI");
     let before = terminal.screen().state_formatted();
-    let lines = crate::app::snapshot_scrollback(terminal.screen(), 3);
+    let lines = crate::app::snapshot_scrollback(terminal.screen(), 3, false);
     assert_eq!(lines, ["keep one", "keep two", "keep three"]);
     assert_eq!(terminal.screen().state_formatted(), before);
     assert!(terminal.screen().alternate_screen());
@@ -2271,11 +2271,16 @@ fn restored_scrollback_is_bounded_and_leaves_a_clean_live_screen() {
         "中文 output".to_owned(),
         "last line".to_owned(),
     ];
-    crate::app::restore_scrollback(&mut terminal, &lines, 2);
+    crate::app::restore_scrollback(
+        &mut terminal,
+        &lines,
+        2,
+        crate::session::ScrollbackFormat::Plain,
+    );
     assert_eq!(terminal.screen().contents(), "");
     assert_eq!(terminal.screen().cursor_position(), (0, 0));
     assert_eq!(
-        crate::app::snapshot_scrollback(terminal.screen(), 3),
+        crate::app::snapshot_scrollback(terminal.screen(), 3, false),
         ["中文 output", "last line"]
     );
     terminal.process(b"fresh shell");
@@ -2289,10 +2294,81 @@ fn restored_scrollback_does_not_interpret_embedded_terminal_controls() {
         &mut terminal,
         &["before\x1b[?1049h\x07after".to_owned()],
         10,
+        crate::session::ScrollbackFormat::Plain,
     );
     assert!(!terminal.screen().alternate_screen());
     assert_eq!(
-        crate::app::snapshot_scrollback(terminal.screen(), 10),
+        crate::app::snapshot_scrollback(terminal.screen(), 10, false),
         ["before[?1049hafter"]
+    );
+}
+
+#[test]
+fn colored_scrollback_preserves_cell_styles_unicode_and_colored_spaces() {
+    use crate::session::ScrollbackFormat;
+    let mut source = vt100::Parser::new_with_callbacks(3, 40, 10, TerminalMetadata::default());
+    source.process(
+        "\x1b[1;2;3;4;7;38;2;12;34;56;48;5;123m中e\u{301} \x1b[0m plain\r\n\x1b[44m\x1b[2K\x1b[0m"
+            .as_bytes(),
+    );
+    let expected = source.screen().clone();
+    source.process(b"\x1b[?1049h\x1b[2Jtemporary application");
+    let saved = crate::app::snapshot_scrollback(source.screen(), 10, true);
+    assert_eq!(saved.len(), 2);
+    let mut restored = vt100::Parser::new_with_callbacks(3, 40, 10, TerminalMetadata::default());
+    crate::app::restore_scrollback(&mut restored, &saved, 10, ScrollbackFormat::Ansi);
+    assert_eq!(restored.screen().contents(), "");
+    assert_eq!(restored.screen().fgcolor(), vt100::Color::Default);
+    assert_eq!(restored.screen().bgcolor(), vt100::Color::Default);
+    restored.screen_mut().set_scrollback(usize::MAX);
+    for row in 0..2 {
+        for column in 0..40 {
+            let actual = restored.screen().cell(row, column).unwrap();
+            let expected = expected.cell(row, column).unwrap();
+            assert_eq!(CellStyle::from(actual), CellStyle::from(expected));
+            assert_eq!(actual.contents().trim_end(), expected.contents().trim_end());
+            assert_eq!(
+                actual.is_wide_continuation(),
+                expected.is_wide_continuation()
+            );
+        }
+    }
+}
+
+#[test]
+fn colored_scrollback_encodes_style_runs_and_respects_the_line_limit() {
+    let mut source = vt100::Parser::new_with_callbacks(3, 80, 10, TerminalMetadata::default());
+    source.process(b"discard\r\n\x1b[31mred red red\x1b[32mgreen green\x1b[0m\r\nlast");
+    let saved = crate::app::snapshot_scrollback(source.screen(), 2, true);
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved[0].matches("38;5;").count(), 2);
+    assert_eq!(saved[1], "last");
+    assert_eq!(
+        crate::app::snapshot_scrollback(source.screen(), 2, false),
+        ["red red redgreen green", "last"]
+    );
+}
+
+#[test]
+fn colored_scrollback_restoration_accepts_only_sgr_and_keeps_the_live_screen_plain() {
+    let mut terminal = vt100::Parser::new_with_callbacks(3, 80, 10, TerminalMetadata::default());
+    crate::app::restore_scrollback(
+        &mut terminal,
+        &["\x1b[31mred\x1b[?1049h\x1b]52;c;AAAA\x07".to_owned()],
+        10,
+        crate::session::ScrollbackFormat::Ansi,
+    );
+    assert!(!terminal.screen().alternate_screen());
+    assert_eq!(terminal.screen().fgcolor(), vt100::Color::Default);
+    assert_eq!(terminal.screen().cursor_position(), (0, 0));
+    terminal.process(b"new shell");
+    assert_eq!(
+        terminal.screen().cell(0, 0).unwrap().fgcolor(),
+        vt100::Color::Default
+    );
+    terminal.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(
+        terminal.screen().cell(0, 0).unwrap().fgcolor(),
+        vt100::Color::Idx(1)
     );
 }

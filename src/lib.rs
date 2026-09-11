@@ -7,6 +7,7 @@ mod layout;
 mod persistence;
 mod project;
 mod render;
+mod scrollback;
 mod session;
 mod shell;
 mod terminal;

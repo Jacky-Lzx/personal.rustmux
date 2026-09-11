@@ -100,6 +100,7 @@ fn parse(source: &str, base: &Path) -> Result<SessionSnapshot> {
                 );
             }
             panes.push(SnapshotPane {
+                scrollback_format: crate::session::ScrollbackFormat::Plain,
                 scrollback: None,
                 id: next_id,
                 cwd: Some(cwd),

@@ -65,7 +65,8 @@ scrollback_lines = 5000
 # Match Zellij's session_serialization=false. Use a positive interval (e.g. 30)
 # to enable automatic saving; manual saving remains available in Session Manager.
 autosave_interval_seconds = 0
-save_scrollback = false # Include plain-text history in saved sessions.
+save_scrollback = false # Include terminal history in saved sessions.
+save_scrollback_colors = false # Preserve colors and text styles when saving history.
 
 [theme]
 preset = "mocha" # Matches Zellij's catppuccin-mocha.
@@ -338,6 +339,7 @@ pub struct Config {
     pub(super) shell: Option<String>,
     pub(super) autosave_interval_seconds: u64,
     pub(super) save_scrollback: bool,
+    pub(super) save_scrollback_colors: bool,
     pub default_mode: String,
     compact: bool,
     mouse_hover_cursor: bool,
@@ -373,6 +375,7 @@ struct ConfigFile {
     shell: Option<String>,
     autosave_interval_seconds: Option<u64>,
     save_scrollback: Option<bool>,
+    save_scrollback_colors: Option<bool>,
     default_mode: Option<String>,
     #[serde(default)]
     clear_defaults: bool,
@@ -462,6 +465,9 @@ impl Config {
         if let Some(enabled) = user.save_scrollback {
             self.save_scrollback = enabled;
         }
+        if let Some(enabled) = user.save_scrollback_colors {
+            self.save_scrollback_colors = enabled;
+        }
         if let Some(shell) = user.shell {
             self.shell = Some(validate_shell(shell)?);
         }
@@ -509,6 +515,7 @@ impl Config {
             shell: file.shell.map(validate_shell).transpose()?,
             autosave_interval_seconds: file.autosave_interval_seconds.unwrap_or(0),
             save_scrollback: file.save_scrollback.unwrap_or(false),
+            save_scrollback_colors: file.save_scrollback_colors.unwrap_or(false),
             default_mode,
             compact: file.compact.unwrap_or(false),
             mouse_hover_cursor: file.mouse_hover_cursor.unwrap_or(false),
@@ -1554,6 +1561,12 @@ exclude_applications = ["  "]
     #[test]
     fn scrollback_persistence_is_opt_in_and_can_be_reloaded() {
         let mut config = Config::test_defaults();
+        assert!(!config.save_scrollback);
+        assert!(!config.save_scrollback_colors);
+        config
+            .apply_user(toml::from_str("save_scrollback_colors = true").unwrap())
+            .unwrap();
+        assert!(config.save_scrollback_colors);
         assert!(!config.save_scrollback);
         config
             .apply_user(toml::from_str("save_scrollback = true").unwrap())

@@ -6,7 +6,7 @@ Press <kbd>Ctrl-b</kbd>, <kbd>Enter</kbd> to enter scroll mode. Browse with the 
 
 Each new pane keeps 5,000 lines by default. Set `scrollback_lines` from 1 to 1,000,000 to change the limit.
 
-Set `save_scrollback = true` to include plain-text history in manual and automatic session saves. Restored history remains available for scrolling, searching, and copying above the new shell. See [Save scrollback](sessions.md#save-scrollback) for details; the option is disabled by default.
+Set `save_scrollback = true` to include history in manual and automatic session saves. Add `save_scrollback_colors = true` to preserve colors and text styles; otherwise history is saved as plain text. Restored history remains available for scrolling, searching, and copying above the new shell. See [Save scrollback](sessions.md#save-scrollback) for details; both options are disabled by default.
 
 ## Search
 

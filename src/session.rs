@@ -42,8 +42,24 @@ pub(super) struct SnapshotTab {
     pub(super) panes: Vec<SnapshotPane>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ScrollbackFormat {
+    #[default]
+    Plain,
+    Ansi,
+}
+
+impl ScrollbackFormat {
+    fn is_plain(&self) -> bool {
+        *self == Self::Plain
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct SnapshotPane {
+    #[serde(default, skip_serializing_if = "ScrollbackFormat::is_plain")]
+    pub(super) scrollback_format: ScrollbackFormat,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) scrollback: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,6 +70,8 @@ pub(super) struct SnapshotPane {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct SnapshotFloating {
+    #[serde(default, skip_serializing_if = "ScrollbackFormat::is_plain")]
+    pub(super) scrollback_format: ScrollbackFormat,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) scrollback: Option<Vec<String>>,
     pub(super) cwd: Option<PathBuf>,
@@ -782,12 +800,17 @@ mod snapshot_tests {
                 },
                 panes: vec![
                     SnapshotPane {
-                        scrollback: Some(vec!["previous output".to_owned(), "中文".to_owned()]),
+                        scrollback_format: ScrollbackFormat::Ansi,
+                        scrollback: Some(vec![
+                            "\x1b[31mprevious output\x1b[0m".to_owned(),
+                            "中文".to_owned(),
+                        ]),
                         command: None,
                         id: 10,
                         cwd: Some(PathBuf::from("/tmp/project")),
                     },
                     SnapshotPane {
+                        scrollback_format: crate::session::ScrollbackFormat::Plain,
                         scrollback: None,
                         id: 11,
                         cwd: None,
@@ -796,6 +819,7 @@ mod snapshot_tests {
                 ],
             }],
             Some(SnapshotFloating {
+                scrollback_format: crate::session::ScrollbackFormat::Plain,
                 scrollback: Some(vec!["floating output".to_owned()]),
                 cwd: Some(PathBuf::from("/tmp")),
                 visible: true,
@@ -814,6 +838,7 @@ mod snapshot_tests {
         let mut legacy = snapshot;
         for pane in &mut legacy.tabs[0].panes {
             pane.scrollback = None;
+            pane.scrollback_format = ScrollbackFormat::Plain;
         }
         legacy.floating.as_mut().unwrap().scrollback = None;
         let encoded = toml::to_string_pretty(&legacy).unwrap();
@@ -830,6 +855,7 @@ mod snapshot_tests {
                 name: "broken".to_owned(),
                 root: PaneNode::Leaf(1),
                 panes: vec![SnapshotPane {
+                    scrollback_format: crate::session::ScrollbackFormat::Plain,
                     scrollback: None,
                     id: 2,
                     cwd: None,

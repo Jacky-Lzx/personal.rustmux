@@ -82,11 +82,16 @@ A snapshot contains window names, pane split trees and ratios, the active pane, 
 
 ```toml
 save_scrollback = true
+save_scrollback_colors = true # Optional; false saves plain text.
 scrollback_lines = 5000
 autosave_interval_seconds = 30 # Optional; keep 0 for manual saving only.
 ```
 
-With `save_scrollback` enabled, manual and automatic saves include the most recent plain-text rows from each pane's main terminal buffer, including visible text and floating-terminal history. Up to `scrollback_lines` rows are retained per pane. Full-screen applications' alternate buffers, colors, images, and terminal modes are not saved.
+With `save_scrollback` enabled, manual and automatic saves include the most recent rows from each pane's main terminal buffer, including visible text and floating-terminal history. Up to `scrollback_lines` rows are retained per pane. Full-screen applications' alternate buffers, images, and terminal modes are not saved.
+
+History is plain text by default. Set `save_scrollback_colors = true` to retain indexed and RGB foreground/background colors, bold, dim, italic, underline, and inverse styles. Consecutive cells with the same style share ANSI SGR sequences. Default and indexed colors use the palette available when restored; custom OSC palette changes are not saved. Color formatting is captured with the snapshot; TOML encoding and writes continue to run in the background.
+
+The color option supports hot reload and affects future saves. Each snapshot records its own format, so existing colored snapshots restore with colors even if the option is subsequently disabled. Old plain-text snapshots remain readable. Restoration accepts only text and SGR styling, and resets styles before starting the fresh live screen.
 
 On restoration, the saved text becomes scrollback above a fresh live screen. Enter scroll mode to browse, search, or copy it. Restoring at a narrower width may wrap lines and reduce how much history fits within the current limit. Applications start anew; saved output is not executed.
 

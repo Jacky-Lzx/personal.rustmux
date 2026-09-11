@@ -668,10 +668,15 @@ fn saved_scrollback_survives_restart_and_can_be_disabled_by_reload() {
 
 #[test]
 fn autosave_records_new_output_and_restores_floating_history() {
-    let mut server = Server::new("save_scrollback = true\nautosave_interval_seconds = 1\n");
+    let mut server = Server::new(
+        "save_scrollback = true\nsave_scrollback_colors = true\nautosave_interval_seconds = 1\n",
+    );
     let mut client = server.attach();
     input(&mut client, b"\x02i");
-    input(&mut client, b"printf 'floating-%s\\n' history\n");
+    input(
+        &mut client,
+        b"printf '\\033[32mfloating-%s\\033[0m\\n' history\n",
+    );
     eventually(|| {
         fs::read_to_string(server.snapshot()).is_ok_and(|s| s.contains("floating-history"))
     });
@@ -684,6 +689,23 @@ fn autosave_records_new_output_and_restores_floating_history() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("floating-history"), "{text}");
     assert!(text.contains("later-output"), "{text}");
+    assert!(server.cli(&["save-session", "-s", "work"]).status.success());
+    let saved: toml::Value =
+        toml::from_str(&fs::read_to_string(server.snapshot()).unwrap()).unwrap();
+    assert_eq!(
+        saved["floating"]["scrollback_format"].as_str(),
+        Some("ansi")
+    );
+    assert!(
+        saved["floating"]["scrollback"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| {
+                let line = line.as_str().unwrap();
+                line.contains("floating-history") && line.contains("\x1b[38;5;2m")
+            })
+    );
 }
 
 // Submit a save without waiting for its response, then use a status request as
@@ -735,5 +757,90 @@ fn queued_save_is_finished_before_renaming_a_session() {
             .root
             .join("state/rustmux/sessions/renamed.toml")
             .exists()
+    );
+}
+
+#[test]
+fn colored_scrollback_round_trips_through_restart_and_can_be_disabled() {
+    let mut server = Server::new("save_scrollback = true\nsave_scrollback_colors = true\n");
+    let run = |server: &Server, args: &[&str]| {
+        let output = server.cli(args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    run(
+        &server,
+        &[
+            "send-keys",
+            "-s",
+            "work",
+            "-p",
+            "1",
+            "--literal",
+            "--enter",
+            "printf '\\033[1;38;2;12;34;56;48;5;123mcolored-%s\\033[0m\\n' history",
+        ],
+    );
+    eventually(|| {
+        run(
+            &server,
+            &["capture-pane", "-s", "work", "-p", "1", "--history"],
+        )
+        .contains("colored-history")
+    });
+    run(&server, &["save-session", "-s", "work"]);
+    let read_pane = |server: &Server| {
+        let snapshot: toml::Value =
+            toml::from_str(&fs::read_to_string(server.snapshot()).unwrap()).unwrap();
+        snapshot["tabs"][0]["panes"][0].clone()
+    };
+    let saved = read_pane(&server);
+    assert_eq!(saved["scrollback_format"].as_str(), Some("ansi"));
+    let colored_line = saved["scrollback"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|line| {
+            line.as_str()
+                .filter(|line| line.contains("colored-history"))
+        })
+        .unwrap()
+        .to_owned();
+    assert!(colored_line.contains("\x1b[38;2;12;34;56m"));
+    assert!(colored_line.contains("\x1b[48;5;123m"));
+    server.stop(false);
+    server.start();
+    run(&server, &["save-session", "-s", "work"]);
+    assert!(
+        read_pane(&server)["scrollback"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line.as_str() == Some(&colored_line))
+    );
+    fs::write(
+        server.root.join("config/rustmux/config.toml"),
+        "save_scrollback = true\nsave_scrollback_colors = false\n",
+    )
+    .unwrap();
+    eventually(|| {
+        run(&server, &["save-session", "-s", "work"]);
+        read_pane(&server).get("scrollback_format").is_none()
+    });
+    let plain = read_pane(&server);
+    assert!(plain["scrollback"].as_array().unwrap().iter().any(|line| {
+        line.as_str()
+            .is_some_and(|line| line.contains("colored-history"))
+    }));
+    assert!(
+        plain["scrollback"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|line| !line.as_str().unwrap().contains('\x1b'))
     );
 }

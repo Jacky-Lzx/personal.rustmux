@@ -935,7 +935,7 @@ impl TerminalState {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CellStyle {
     foreground: vt100::Color,
     background: vt100::Color,
@@ -974,7 +974,7 @@ impl CellStyle {
         style
     }
 
-    fn plain() -> Self {
+    pub(super) fn plain() -> Self {
         Self {
             foreground: vt100::Color::Default,
             background: vt100::Color::Default,
@@ -2424,7 +2424,7 @@ fn write_hyperlink(output: &mut Vec<u8>, hyperlink: Option<&str>) {
     }
 }
 
-fn write_cell_style(output: &mut Vec<u8>, style: CellStyle) {
+pub(super) fn write_cell_style(output: &mut Vec<u8>, style: CellStyle) {
     output.extend_from_slice(b"\x1b[0m");
     if style.bold {
         output.extend_from_slice(b"\x1b[1m");

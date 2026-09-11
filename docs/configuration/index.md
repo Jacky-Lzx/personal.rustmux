@@ -20,6 +20,7 @@ mouse_hover_cursor = false
 scrollback_lines = 5000
 autosave_interval_seconds = 0
 save_scrollback = false
+save_scrollback_colors = false
 # shell = "/bin/zsh"
 ```
 
@@ -30,7 +31,8 @@ save_scrollback = false
 | `compact` | Hide the bottom status line and show the mode at the top right |
 | `mouse_hover_cursor` | Change the pointer over tabs, bottom shortcuts, resize handles, and while dragging; defaults to `false`. Mouse actions still work, and inner applications retain control of their own pointer shape. Hot reload is supported. |
 | `autosave_interval_seconds` | Save changed layouts periodically and on detach/server shutdown; `0` disables automatic saving |
-| `save_scrollback` | Include plain-text pane history in session snapshots and restore it above a fresh live screen; defaults to `false`. Applies to manual and automatic saves, including floating terminals. Limited by `scrollback_lines`. |
+| `save_scrollback` | Include pane history in session snapshots and restore it above a fresh live screen; defaults to `false`. Applies to manual and automatic saves, including floating terminals. Limited by `scrollback_lines`. |
+| `save_scrollback_colors` | Preserve foreground/background colors and text styles when `save_scrollback` is enabled; defaults to `false`. Supports hot reload and affects future saves. Existing colored snapshots restore with their saved styles. |
 | `scrollback_lines` | History capacity for new panes, from 1 to 1,000,000 |
 
 The generated configuration contains the full default keymap and sets `clear_defaults = true`. For a small override file that inherits omitted bindings, omit `clear_defaults` or set it to `false`.

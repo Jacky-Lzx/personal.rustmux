@@ -33,7 +33,7 @@ use crate::layout::{
 use crate::persistence::{SaveCompletion, SaveRequest, SnapshotWriter};
 use crate::render::{HelpView, Renderer, SessionManagerView, render_base_index};
 use crate::session::{
-    SessionInfo, SessionSnapshot, SnapshotFloating, SnapshotPane, SnapshotTab,
+    ScrollbackFormat, SessionInfo, SessionSnapshot, SnapshotFloating, SnapshotPane, SnapshotTab,
     available_session_info, delete_session, delete_session_snapshot, disconnect_session,
     ensure_session_dir, load_session_snapshot, rename_session, rename_session_snapshot,
     validate_session_name,
@@ -479,7 +479,7 @@ impl App {
                 if self.config.save_scrollback
                     && let Some(lines) = &pane.scrollback
                 {
-                    saved_histories.push((pane_id, lines.clone()));
+                    saved_histories.push((pane_id, lines.clone(), pane.scrollback_format));
                 }
             }
             self.tabs.push(Tab {
@@ -524,7 +524,7 @@ impl App {
             if self.config.save_scrollback
                 && let Some(lines) = scrollback
             {
-                saved_histories.push((floating_id, lines));
+                saved_histories.push((floating_id, lines, floating.scrollback_format));
             }
             if !floating.visible {
                 self.active = self
@@ -535,15 +535,28 @@ impl App {
             }
         }
         self.resize_windows()?;
-        for (id, lines) in saved_histories {
+        for (id, lines, format) in saved_histories {
             let window = self
                 .windows
                 .iter_mut()
                 .find(|window| window.id == id)
                 .unwrap();
-            restore_scrollback(&mut window.terminal, &lines, self.config.scrollback_lines());
+            restore_scrollback(
+                &mut window.terminal,
+                &lines,
+                self.config.scrollback_lines(),
+                format,
+            );
         }
         Ok(())
+    }
+
+    fn saved_scrollback_format(&self) -> ScrollbackFormat {
+        if self.config.save_scrollback && self.config.save_scrollback_colors {
+            ScrollbackFormat::Ansi
+        } else {
+            ScrollbackFormat::Plain
+        }
     }
 
     fn session_snapshot(&self) -> Result<SessionSnapshot> {
@@ -568,10 +581,12 @@ impl App {
                     .into_iter()
                     .filter_map(|id| self.windows.iter().find(|window| window.id == id))
                     .map(|window| SnapshotPane {
+                        scrollback_format: self.saved_scrollback_format(),
                         scrollback: self.config.save_scrollback.then(|| {
                             snapshot_scrollback(
                                 window.terminal.screen(),
                                 self.config.scrollback_lines(),
+                                self.config.save_scrollback_colors,
                             )
                         }),
                         command: window.startup_command.clone(),
@@ -607,8 +622,13 @@ impl App {
             .iter()
             .find(|window| window.floating)
             .map(|window| SnapshotFloating {
+                scrollback_format: self.saved_scrollback_format(),
                 scrollback: self.config.save_scrollback.then(|| {
-                    snapshot_scrollback(window.terminal.screen(), self.config.scrollback_lines())
+                    snapshot_scrollback(
+                        window.terminal.screen(),
+                        self.config.scrollback_lines(),
+                        self.config.save_scrollback_colors,
+                    )
                 }),
                 cwd: self.window_directory(window),
                 visible: self.windows[self.active].id == window.id,
@@ -4041,13 +4061,33 @@ fn screen_history_lines(screen: &mut vt100::Screen) -> Vec<String> {
     lines
 }
 
-pub(super) fn snapshot_scrollback(screen: &vt100::Screen, limit: usize) -> Vec<String> {
+pub(super) fn snapshot_scrollback(
+    screen: &vt100::Screen,
+    limit: usize,
+    colored: bool,
+) -> Vec<String> {
     // Inspect a copy so saving does not alter scroll position or the live TUI.
     let mut parser = vt100::Parser::new(1, 1, 0);
     *parser.screen_mut() = screen.clone();
     // Select the primary buffer without resetting it or replaying application output.
     parser.process(b"\x1b[?47l");
-    let mut lines = screen_history_lines(parser.screen_mut());
+    let screen = parser.screen_mut();
+    let mut lines = if colored {
+        screen.set_scrollback(usize::MAX);
+        let history_rows = screen.scrollback();
+        let mut lines = Vec::new();
+        for offset in (1..=history_rows).rev() {
+            screen.set_scrollback(offset);
+            lines.push(crate::scrollback::colored_row(screen, 0));
+        }
+        screen.set_scrollback(0);
+        for row in 0..screen.size().0 {
+            lines.push(crate::scrollback::colored_row(screen, row));
+        }
+        lines
+    } else {
+        screen_history_lines(screen)
+    };
     while lines.last().is_some_and(String::is_empty) {
         lines.pop();
     }
@@ -4059,14 +4099,16 @@ pub(super) fn restore_scrollback(
     terminal: &mut vt100::Parser<TerminalMetadata>,
     lines: &[String],
     limit: usize,
+    format: ScrollbackFormat,
 ) {
     if lines.is_empty() {
         return;
     }
     for line in &lines[lines.len().saturating_sub(limit)..] {
         // Snapshot text is data, including when a user edits the TOML file.
-        let text: String = line.chars().filter(|ch| !ch.is_control()).collect();
+        let text = crate::scrollback::sanitize_saved_line(line, format == ScrollbackFormat::Ansi);
         terminal.process(text.as_bytes());
+        terminal.process(b"\x1b[0m");
         terminal.process(b"\r\n");
     }
     // Move restored text entirely into scrollback, leaving a fresh live screen.
