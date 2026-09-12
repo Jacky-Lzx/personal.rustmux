@@ -11,6 +11,12 @@ cargo check --features benchmarks --bench image_preview --locked
 ```
 
 CI runs formatting, the complete test suite, and Clippy on macOS and Linux.
+It runs on pushes to `main` and pull requests. Changes confined to `docs/`,
+`README.md`, `demos/`, `book.toml`, the documentation build script, or the Pages
+workflow skip Rust CI. Mixed code and documentation changes still run the full
+checks, including fuzz jobs. A new CI run cancels an unfinished run for the same
+branch or pull request; different pull requests run independently. Documentation
+deployment uses a separate concurrency group and is not canceled by CI.
 
 ## Fuzz testing
 
