@@ -75,6 +75,8 @@ pub(super) struct Window {
     pub(super) input_modes: InputModeTracker,
     pub(super) terminal_osc: TerminalOscTracker,
     pub(super) kitty_graphics: KittyGraphicsParser,
+    pub(super) graphics_cache: crate::graphics::GraphicsCache,
+    pub(super) graphics_replay_pending: bool,
     pub(super) kitty_dnd: KittyDndParser,
     pub(super) kitty_ipc: KittyIpcParser,
     pub(super) hyperlinks: HyperlinkTracker,
@@ -902,6 +904,8 @@ impl App {
                     input_modes: InputModeTracker::default(),
                     terminal_osc: TerminalOscTracker::default(),
                     kitty_graphics: KittyGraphicsParser::default(),
+                    graphics_cache: crate::graphics::GraphicsCache::default(),
+                    graphics_replay_pending: false,
                     kitty_dnd: KittyDndParser::default(),
                     kitty_ipc: KittyIpcParser::default(),
                     hyperlinks: HyperlinkTracker::default(),
@@ -1160,6 +1164,11 @@ impl App {
         // may then return EAGAIN, which must not be mistaken for a disconnect.
         stream.set_nonblocking(false)?;
         self.client = Some(stream);
+        // TerminalGuard re-enters the alternate screen on every connection,
+        // clearing the outer terminal's uploads even though child apps stay alive.
+        for window in &mut self.windows {
+            window.graphics_replay_pending = true;
+        }
         self.last_connected_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -3857,7 +3866,19 @@ impl App {
             self.config.compact(),
             self.config.describe_status_mode(&self.mode),
         );
-        let graphics = std::mem::take(&mut self.windows[self.active].pending_graphics);
+        // Cache only commands already sent. Replay that state before output
+        // queued while detached, including continuations of chunked uploads.
+        let window = &mut self.windows[self.active];
+        let pending = std::mem::take(&mut window.pending_graphics);
+        let mut graphics = if std::mem::take(&mut window.graphics_replay_pending) {
+            window.graphics_cache.replay()
+        } else {
+            Vec::new()
+        };
+        for command in &pending {
+            window.graphics_cache.record(command);
+        }
+        graphics.extend(pending);
         let frame = self.renderer.render(
             &self.windows,
             self.active,

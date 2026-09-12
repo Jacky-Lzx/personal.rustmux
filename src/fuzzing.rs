@@ -144,6 +144,8 @@ pub fn render(data: &[u8]) {
         input_modes: InputModeTracker::default(),
         terminal_osc: TerminalOscTracker::default(),
         kitty_graphics: KittyGraphicsParser::default(),
+        graphics_cache: crate::graphics::GraphicsCache::default(),
+        graphics_replay_pending: false,
         kitty_dnd: KittyDndParser::default(),
         kitty_ipc: KittyIpcParser::default(),
         hyperlinks: HyperlinkTracker::default(),

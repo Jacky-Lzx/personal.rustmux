@@ -71,6 +71,8 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
         input_modes: InputModeTracker::default(),
         terminal_osc: TerminalOscTracker::default(),
         kitty_graphics: KittyGraphicsParser::default(),
+        graphics_cache: crate::graphics::GraphicsCache::default(),
+        graphics_replay_pending: false,
         kitty_dnd: KittyDndParser::default(),
         kitty_ipc: KittyIpcParser::default(),
         hyperlinks: HyperlinkTracker::default(),

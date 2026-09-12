@@ -2,6 +2,7 @@ mod app;
 mod cli;
 mod config;
 mod control;
+mod graphics;
 mod input;
 mod layout;
 mod listing;

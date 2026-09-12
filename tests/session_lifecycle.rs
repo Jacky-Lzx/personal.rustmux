@@ -1010,3 +1010,48 @@ fn colored_scrollback_round_trips_through_restart_and_can_be_disabled() {
             .all(|line| !line.as_str().unwrap().contains('\x1b'))
     );
 }
+
+#[test]
+fn snacks_graphics_are_reuploaded_before_placements_on_reattach() {
+    fn connect(server: &Server) -> UnixStream {
+        let mut client = UnixStream::connect(&server.socket).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client.write_all(&[b'R', 0, 80, 0, 24, 0, 0, 0, 0]).unwrap();
+        client
+    }
+    fn until(client: &mut UnixStream, needle: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        while !output.windows(needle.len()).any(|part| part == needle) {
+            let mut bytes = [0; 8192];
+            let count = client.read(&mut bytes).unwrap();
+            assert!(count > 0, "client disconnected before image restoration");
+            output.extend_from_slice(&bytes[..count]);
+        }
+        output
+    }
+    let server = Server::new("autosave_interval_seconds = 0\n");
+    let mut client = connect(&server);
+    // Same persistent-file upload and Unicode placement emitted by Snacks.
+    input(&mut client, b"printf '\\033_Gq=2,t=f,i=42,f=100;L3RtcC9pbWcucG5n\\033\\\\\\033_Gq=2,a=p,U=1,i=42,p=11,c=10,r=5;\\033\\\\'\n");
+    let placement = b"\x1b_Gq=2,a=p,U=1,i=42,p=11,c=10,r=5;\x1b\\";
+    until(&mut client, placement);
+    for _ in 0..2 {
+        input(&mut client, b"\x02\x0fd");
+        let mut remaining = Vec::new();
+        client.read_to_end(&mut remaining).unwrap();
+        client = connect(&server);
+        let output = until(&mut client, placement);
+        let upload = b"\x1b_Gq=2,t=f,i=42,f=100;L3RtcC9pbWcucG5n\x1b\\";
+        let upload_at = output
+            .windows(upload.len())
+            .position(|part| part == upload)
+            .expect("cached upload is replayed");
+        let placement_at = output
+            .windows(placement.len())
+            .position(|part| part == placement)
+            .unwrap();
+        assert!(upload_at < placement_at);
+    }
+}
