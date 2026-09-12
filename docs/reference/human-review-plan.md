@@ -126,8 +126,8 @@ Local PR 0 candidate prepared on 2026-09-12:
 | --- | --- |
 | Empty target anchor | `b59e6c1e73f6fd307bfe5cd92ca6ea8a6e5faf61` |
 | Candidate branch | `codex/human-bootstrap` |
-| Final candidate commit | `55559491366ba6fb6ba4dbe4ed36425179cc6122` |
-| Diff | 8 new files, 165 lines; no inherited application code |
+| Final candidate commit | `9eec31aa22b0995a8a4fdac745482fa3d2a2fab0` |
+| Diff | 8 new files, 137 lines; no inherited application code |
 | Local environment | macOS; rustc 1.97.1, cargo 1.97.1 |
 | Formatting | `cargo fmt --all --check` passed |
 | Build | `cargo build --locked --offline` passed |
@@ -142,13 +142,13 @@ To read the entire first review locally from either worktree:
 
 ```sh
 git diff main-human..codex/human-bootstrap
-git show --stat 55559491366ba6fb6ba4dbe4ed36425179cc6122
+git show --stat 9eec31aa22b0995a8a4fdac745482fa3d2a2fab0
 ```
 
 Build, formatting, Clippy and runtime results above were obtained on `73bf1a5`.
-The candidate `5555949` only updates the owner direct-commit policy in documentation
-and the PR template; its whitespace check passed, and executable/build inputs
-are unchanged. Owner review remains pending on this updated final revision.
+Subsequent changes through candidate `9eec31a` update the owner direct-commit
+policy, PR template and README. The candidate whitespace check passed;
+executable/build inputs are unchanged. Owner review remains pending on this updated final revision.
 
 PR 0 intentionally has no PTY or behavior test suite. Its smoke check verifies
 only the placeholder contract and is not evidence of terminal functionality.
