@@ -149,11 +149,18 @@ fn kill_all_sessions(skip_confirmation: bool) -> Result<()> {
         }
     }
 
-    let count = sessions.len();
+    let mut count = 0;
+    let mut errors = Vec::new();
     for session in sessions {
-        kill_session(&session)?;
+        match kill_session(&session) {
+            Ok(()) => count += 1,
+            Err(error) => errors.push(format!("{session}: {error}")),
+        }
     }
     println!("killed {count} session(s)");
+    if !errors.is_empty() {
+        return Err(format!("failed to stop session(s):\n{}", errors.join("\n")).into());
+    }
     Ok(())
 }
 

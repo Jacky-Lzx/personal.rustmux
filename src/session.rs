@@ -642,12 +642,25 @@ fn send_control_session(name: &str, request: &[u8]) -> Result<()> {
     let socket = session_socket(name)?;
     let stream = UnixStream::connect(&socket)
         .map_err(|error| format!("session '{name}' not found: {error}"))?;
-    send_control_request(stream, request)
+    send_control_request(stream, request)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while socket.exists() {
+        if Instant::now() >= deadline {
+            return Err(format!("session '{name}' did not shut down within 5 seconds").into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 fn send_control_request(mut stream: UnixStream, request: &[u8]) -> Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.write_all(request)?;
     stream.shutdown(std::net::Shutdown::Write)?;
+    // Keep the read half alive until the server handles the request and closes
+    // its connection. On macOS, closing immediately can make the server's
+    // SO_RCVTIMEO setup fail with EINVAL before it reads the shutdown byte.
+    stream.read_to_end(&mut Vec::new())?;
     Ok(())
 }
 
@@ -776,14 +789,16 @@ mod snapshot_tests {
     use crate::layout::SplitAxis;
 
     #[test]
-    fn shutdown_request_does_not_wait_for_a_response() {
+    fn shutdown_request_waits_for_server_to_close_without_a_response() {
         let (client, mut server) = UnixStream::pair().unwrap();
-
-        send_control_request(client, &[CLIENT_SHUTDOWN]).unwrap();
-
+        let sender =
+            thread::spawn(move || send_control_request(client, &[CLIENT_SHUTDOWN]).is_ok());
         let mut request = Vec::new();
         server.read_to_end(&mut request).unwrap();
         assert_eq!(request, [CLIENT_SHUTDOWN]);
+        assert!(!sender.is_finished());
+        drop(server);
+        assert!(sender.join().unwrap());
     }
 
     #[test]

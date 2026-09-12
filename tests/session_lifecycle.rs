@@ -428,6 +428,78 @@ fn pane_moves_preserve_shell_state_and_saved_layout() {
 }
 
 #[test]
+fn kill_all_sessions_stops_attached_server() {
+    let mut server = Server::new("autosave_interval_seconds = 0\n");
+    let _client = server.attach();
+    let output = server.cli(&["kill-all-sessions", "--yes"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    eventually(|| server.child.as_mut().unwrap().try_wait().unwrap().is_some());
+    assert!(!server.socket.exists());
+}
+
+#[test]
+fn kill_all_sessions_continues_after_stale_socket_and_preserves_snapshot() {
+    let mut server = Server::new("autosave_interval_seconds = 0\n");
+    let snapshot = server.snapshot();
+    fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+    fs::write(&snapshot, "saved snapshot sentinel").unwrap();
+    let stale = server.socket.parent().unwrap().join("aaa-stale.sock");
+    drop(std::os::unix::net::UnixListener::bind(stale).unwrap());
+    let output = server.cli(&["kill-all-sessions", "--yes"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("aaa-stale"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("killed 1 session(s)"));
+    eventually(|| server.child.as_mut().unwrap().try_wait().unwrap().is_some());
+    assert!(!server.socket.exists());
+    assert_eq!(
+        fs::read_to_string(snapshot).unwrap(),
+        "saved snapshot sentinel"
+    );
+}
+
+#[test]
+fn open_session_manager_reloads_delete_binding() {
+    use std::sync::{Arc, Mutex};
+    let server = Server::new("[session_manager]\ndelete=['delete']\n");
+    let screen = Arc::new(Mutex::new(vt100::Parser::new(24, 200, 0)));
+    let parsed = screen.clone();
+    let mut client = UnixStream::connect(&server.socket).unwrap();
+    client
+        .write_all(&[b'R', 0, 200, 0, 24, 0, 0, 0, 0])
+        .unwrap();
+    let mut reader = client.try_clone().unwrap();
+    let reader_thread = thread::spawn(move || {
+        let mut bytes = [0; 8192];
+        loop {
+            match reader.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => parsed.lock().unwrap().process(&bytes[..count]),
+            }
+        }
+    });
+    input(&mut client, b"\x02\x17");
+    let contents = || screen.lock().unwrap().screen().contents();
+    eventually(|| contents().contains("<Delete> Delete"));
+    fs::write(
+        server.root.join("config/rustmux/config.toml"),
+        "[session_manager]\ndelete=['d']\n",
+    )
+    .unwrap();
+    eventually(|| contents().contains("<d> Delete") && !contents().contains("<Delete> Delete"));
+    // The old key must no longer delete the session.
+    input(&mut client, b"\x1b[3~");
+    thread::sleep(Duration::from_millis(150));
+    assert!(server.status().is_some());
+    input(&mut client, b"d");
+    eventually(|| server.status().is_none());
+    reader_thread.join().unwrap();
+}
+
+#[test]
 fn attached_session_repaints_theme_and_keeps_last_valid_colors() {
     use std::sync::{Arc, Mutex};
     let server = Server::new("[theme]\npreset='light'\n");
