@@ -81,6 +81,22 @@
     headings.forEach((heading) => observer.observe(heading));
   }
 
+  function enhancePageNavigation() {
+    const chapters = [...document.querySelectorAll(".sidebar .chapter a[href]")];
+    for (const link of document.querySelectorAll(".nav-wrapper a")) {
+      const previous = link.classList.contains("previous");
+      const direction = previous ? "Previous" : "Next";
+      const chapter = chapters.find((chapter) => chapter.href === link.href);
+      const label = document.createElement("span");
+      label.className = "page-nav-direction";
+      label.textContent = previous ? "← Previous" : "Next →";
+      const title = document.createElement("strong");
+      title.textContent = chapter?.textContent.trim() || `${direction} chapter`;
+      link.replaceChildren(label, title);
+      link.setAttribute("aria-label", `${direction}: ${title.textContent}`);
+    }
+  }
+
   function bindSearchShortcut() {
     document.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -102,6 +118,7 @@
     enhanceBrand();
     addCopyButtons();
     addTableOfContents();
+    enhancePageNavigation();
     bindSearchShortcut();
     markExternalLinks();
   });

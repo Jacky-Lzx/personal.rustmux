@@ -526,7 +526,7 @@ a {
 /* } */
 
 .mux-panes {
-  display: grid;
+  display: grid !important; /* Override mdBook sidebar-dependent display rules. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   min-height: 214px;
   overflow: visible;
@@ -1029,5 +1029,85 @@ kbd {
 
   * {
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* Keep chapter navigation below the article at every viewport width. */
+.nav-wide-wrapper {
+  display: none;
+}
+
+.page-wrapper .content .nav-wrapper {
+  display: grid !important; /* Override mdBook sidebar-dependent display rules. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  max-width: var(--content-max-width);
+  margin: 48px auto 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.nav-wrapper .mobile-nav-chapters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  float: none;
+  position: static;
+  width: auto;
+  min-width: 0;
+  padding: 18px 22px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 16px;
+  line-height: 1.5;
+  text-align: left;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.nav-wrapper .next {
+  grid-column: 2;
+  text-align: right;
+}
+
+.nav-wrapper .page-nav-direction {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.nav-wrapper .mobile-nav-chapters:hover,
+.nav-wrapper .mobile-nav-chapters:focus-visible {
+  border-color: var(--green);
+  background: var(--panel-hover);
+  color: var(--green);
+}
+
+@media (max-width: 600px) {
+  .page-wrapper .content .nav-wrapper {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .nav-wrapper .next {
+    grid-column: 1;
+  }
+}
+
+.content main {
+  padding-bottom: 0;
+}
+
+.nav-wrapper .mobile-nav-chapters:visited {
+  color: var(--fg);
+}
+
+.nav-wrapper .mobile-nav-chapters:hover {
+  text-decoration: none;
+}
+
+@media print {
+  .page-wrapper .content .nav-wrapper {
+    display: none !important;
   }
 }
