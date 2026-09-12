@@ -6,6 +6,7 @@ on:
     paths-ignore:
       - 'docs/**'
       - 'README.md'
+      - 'CONTRIBUTING.md'
       - 'demos/**'
       - 'book.toml'
       - 'scripts/build-docs.sh'
@@ -14,6 +15,7 @@ on:
     paths-ignore:
       - 'docs/**'
       - 'README.md'
+      - 'CONTRIBUTING.md'
       - 'demos/**'
       - 'book.toml'
       - 'scripts/build-docs.sh'

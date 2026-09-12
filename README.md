@@ -6,6 +6,17 @@ It runs on macOS and Linux. Windows is not currently supported.
 
 For installation guides, keybindings, configuration, session management, and protocol compatibility, see the [Rustmux Documentation](docs/index.md). The documentation is written in English.
 
+## Development tracks
+
+`main` supports rapid, largely AI-generated development and may use AI review.
+The `main-human` track may also contain AI-generated code, but requires the
+project owner's personal review before changes are merged. It can progressively
+reimplement `main` features with its own architecture and commit history.
+
+See [Development Tracks and Human Review](docs/reference/development-tracks.md)
+for the issue/PR rules and feature coverage record, and
+[Contributing](CONTRIBUTING.md) before opening an issue or PR.
+
 ## Feature demos
 
 ### Windows, panes, and rearrangement

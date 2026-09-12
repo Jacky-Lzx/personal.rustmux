@@ -69,6 +69,11 @@
 - Kitty-native, built with Yazi in mind.
 - Mostly AI-generated, but with a commitment to understand every line.
 
+The [development tracks and human review policy](reference/development-tracks.md)
+describe how `main` and `main-human` differ, how issues and PRs are reviewed,
+and how accepted feature coverage will be tracked. Both tracks may use
+AI-generated code; `main-human` requires the project owner's personal review.
+
 <div class="hero-actions">
   <a class="primary-button" href="getting-started/quick-start.html">Get started <span aria-hidden="true">→</span></a>
 </div>
