@@ -11,8 +11,11 @@ Choose the development track before opening an issue or pull request:
 The PR target branch determines the policy. AI suggestions and passing tests do
 not replace the owner's review for `main-human`. AI must not approve, merge, close,
 or mark work accepted on that track on the owner's behalf without the required
-personal review or acceptance. Owner-authored PRs also need an explicit review
-record tied to the final commit.
+personal review or acceptance. The owner may commit directly to `main-human`
+without a PR or a separate PR review record. This exception applies to commits
+personally made by the owner, not AI actions using the owner's Git identity.
+Other contributors and AI must use a PR and obtain the owner's final-revision
+review. Direct commits do not automatically establish feature acceptance.
 
 Implementations on `main-human` may be reorganized or rewritten independently;
 they do not have to reproduce the commit history of `main`. Use linked, separate

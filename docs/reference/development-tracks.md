@@ -46,8 +46,13 @@ obsolete or not planned; such closures do not count as completed features.
 The PR's target branch determines its review requirements. Add the matching
 track label for filtering; a label never overrides the target branch's policy.
 
-Every change entering `main-human` must go through a PR and the owner's personal
-review. Include:
+The project owner may commit directly to `main-human` without a PR or a separate
+PR review record. The owner is responsible for reviewing those changes before
+committing. This exception applies to commits personally made by the owner;
+AI submitting changes under the owner's Git identity does not qualify.
+
+Changes submitted by AI or other contributors must go through a PR and the
+owner's personal review. For these PRs, include:
 
 1. The linked issue and the feature or behavior being changed.
 2. The implementation approach, including intentional differences from `main`.
@@ -58,10 +63,15 @@ AI review and passing CI are supporting evidence, not approval for `main-human`.
 The owner must review changes added after an earlier approval. Do not merge an
 updated PR using an approval that covered an older revision only.
 
-For an owner-authored PR, record the owner's explicit review of the final commit
-in the PR discussion or review checklist before merging. Do not treat authorship
-alone as proof of review. An AI must never create this confirmation on the owner's
-behalf. For PRs authored by others, use the owner's review on the final revision.
+If the owner chooses to use a PR, their personal decision to merge the reviewed
+final revision is sufficient; no separate self-review record is required. For
+PRs submitted by AI or others, record the owner's review of the final revision.
+An AI must never create this confirmation on the owner's behalf or infer it
+from the Git author field.
+
+Direct owner commits still need verification and explicit feature acceptance
+before they increase coverage or close an issue. Record their commit SHA in the
+acceptance ledger instead of a PR link.
 
 Avoid automatic closing references for `track:main-human` issues before the owner
 has confirmed their acceptance. A merged PR may implement only part of an issue.
@@ -97,7 +107,7 @@ To establish and maintain the progress record:
 2. Track each item as **not started**, **in progress**, **awaiting owner review**,
    or **accepted**. Record its issue, PR or implementation commit, verification
    evidence, and the owner's acceptance record.
-3. Count an item as accepted only after its implementation is merged into
+3. Count an item as accepted only after its implementation is present on
    `main-human`, its acceptance criteria pass, and the owner has reviewed and
    accepted that revision. If acceptance is withdrawn, remove it from the count.
 4. Calculate coverage as `accepted items / total baseline items × 100`. Update

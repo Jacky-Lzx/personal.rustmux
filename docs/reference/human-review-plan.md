@@ -13,7 +13,9 @@ The existing checkout remains on `main`. A sibling worktree, `Rustmux-human`,
 holds `codex/human-bootstrap`; its PR target will be `main-human`.
 `main-human` starts at an empty root commit used only as a branch anchor. It
 contains no application, CI, or documentation and represents no accepted work.
-All content, including the first skeleton, enters through an owner-reviewed PR.
+AI and other contributors submit content, including this AI-prepared skeleton,
+through an owner-reviewed PR. The owner may personally commit directly without
+a PR; Git author metadata alone does not qualify an AI submission for that exception.
 The two tracks intentionally have independent histories; do not merge all of
 `main` into `main-human`. Feature branches share ancestry with `main-human`.
 
@@ -92,8 +94,11 @@ walkthrough required for the usable-terminal milestone.
 
 ## Per-change review record
 
-Copy this into the linked issue and PR discussion as appropriate. Use `Refs`
-rather than automatic closing keywords until the owner confirms issue acceptance.
+For AI and other contributor submissions, copy this into the linked issue and
+PR discussion as appropriate. Use `Refs` rather than automatic closing keywords
+until the owner confirms issue acceptance. For the owner's direct commits, no PR
+or separate PR review record is required: record the commit SHA, verification
+and feature acceptance in the ledger or linked issue.
 
 ```text
 Track: main-human
@@ -121,8 +126,8 @@ Local PR 0 candidate prepared on 2026-09-12:
 | --- | --- |
 | Empty target anchor | `b59e6c1e73f6fd307bfe5cd92ca6ea8a6e5faf61` |
 | Candidate branch | `codex/human-bootstrap` |
-| Final candidate commit | `73bf1a5e2d12152f6e5fa7316f0885e624218589` |
-| Diff | 8 new files, 150 lines; no inherited application code |
+| Final candidate commit | `55559491366ba6fb6ba4dbe4ed36425179cc6122` |
+| Diff | 8 new files, 165 lines; no inherited application code |
 | Local environment | macOS; rustc 1.97.1, cargo 1.97.1 |
 | Formatting | `cargo fmt --all --check` passed |
 | Build | `cargo build --locked --offline` passed |
@@ -137,8 +142,13 @@ To read the entire first review locally from either worktree:
 
 ```sh
 git diff main-human..codex/human-bootstrap
-git show --stat 73bf1a5e2d12152f6e5fa7316f0885e624218589
+git show --stat 55559491366ba6fb6ba4dbe4ed36425179cc6122
 ```
+
+Build, formatting, Clippy and runtime results above were obtained on `73bf1a5`.
+The candidate `5555949` only updates the owner direct-commit policy in documentation
+and the PR template; its whitespace check passed, and executable/build inputs
+are unchanged. Owner review remains pending on this updated final revision.
 
 PR 0 intentionally has no PTY or behavior test suite. Its smoke check verifies
 only the placeholder contract and is not evidence of terminal functionality.
@@ -151,10 +161,11 @@ publishing is requested, publish the empty `main-human` anchor and bootstrap
 branch, create the `track:main-human` issue and PR, and link their actual URLs.
 The empty anchor gives GitHub a common ancestor for the bootstrap PR.
 
-Configure repository rules separately to require PRs and appropriate CI on
-`main-human`, and restrict direct updates. For an owner-authored PR, use the
-owner's explicit final-SHA discussion record as described in the policy; do not
-assume a self-approval review is available. Required checks must match the
+Configure repository rules separately to require PRs for AI and other contributor
+submissions, while allowing the owner's personal direct updates to `main-human`.
+Do not let AI use an owner bypass merely because it shares the owner's credentials.
+The owner's direct commits need no separate PR review record; feature acceptance
+still requires evidence. Required checks must match the
 workflows present on the human branch, not unrelated `main` fuzz targets.
 The bootstrap CI checks macOS and Linux on PRs and pushes to `main-human`;
 these checks support review but do not enforce or certify the owner's identity.
