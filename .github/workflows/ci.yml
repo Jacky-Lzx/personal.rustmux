@@ -11,6 +11,7 @@ on:
       - 'demos/**'
       - 'book.toml'
       - 'scripts/build-docs.sh'
+      - 'scripts/build-docs.py'
       - '.github/workflows/docs.yml'
   pull_request:
     paths-ignore:
@@ -20,6 +21,7 @@ on:
       - 'demos/**'
       - 'book.toml'
       - 'scripts/build-docs.sh'
+      - 'scripts/build-docs.py'
       - '.github/workflows/docs.yml'
 
 permissions:

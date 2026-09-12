@@ -1111,3 +1111,31 @@ kbd {
     display: none !important;
   }
 }
+
+/* Branch selection stays visible independently of the book title. */
+.track-picker {
+  display: flex;
+  align-items: center;
+  margin: 0 12px;
+  flex-shrink: 0;
+}
+.track-picker select {
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--table-border-color);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.track-picker select:focus-visible { outline: 2px solid var(--links); }
+.track-notice {
+  padding: 12px 16px;
+  border-left: 3px solid var(--links);
+  background: var(--quote-bg);
+}
+@media (max-width: 600px) {
+  .menu-title:has(+ .track-picker) { display: none; }
+  .track-picker { margin: 0 6px 0 auto; }
+}

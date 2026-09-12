@@ -12,7 +12,7 @@ cargo check --features benchmarks --bench image_preview --locked
 
 CI runs formatting, the complete test suite, and Clippy on macOS and Linux.
 It runs on pushes to `main` and pull requests. Changes confined to `docs/`,
-`README.md`, `CONTRIBUTING.md`, `demos/`, `book.toml`, the documentation build script, or the Pages
+`README.md`, `CONTRIBUTING.md`, `demos/`, `book.toml`, the documentation build scripts, or the Pages
 workflow skip Rust CI. Mixed code and documentation changes still run the full
 checks, including fuzz jobs. A new CI run cancels an unfinished run for the same
 branch or pull request; different pull requests run independently. Documentation
@@ -57,38 +57,66 @@ Fixtures are generated under `target/image-preview-bench-fixtures/` and are not 
 
 ## Build this manual
 
-The documentation uses [mdBook](https://rust-lang.github.io/mdBook/):
+Use mdBook 0.5.4 and Python 3.12 or newer. The unified build keeps `main` at the
+site root and places `main-human` under `main-human/`, with a branch selector.
+Each branch has its own content, search index and edit links. Shared presentation
+assets come from `main`.
+
+From the `main` checkout, build with the local `main-human` Git ref:
 
 ```sh
 ./scripts/build-docs.sh
-mdbook serve --open
+python3 -m http.server 8000 --directory dist
 ```
 
-The build script generates the documentation in `dist/`. `mdbook serve` opens it with live reload.
+For an unmerged documentation candidate or local human edits, pass its checkout:
+
+```sh
+./scripts/build-docs.sh --human-source ../Rustmux-human
+```
+
+Alternatively, use `--human-ref codex/human-docs` to build a committed candidate.
+Use `--output /tmp/rustmux-docs-preview` for an isolated preview directory if
+a separate `mdbook serve` process is rebuilding `dist/`. The script does not fetch Git refs; refresh the reference yourself when needed.
+It fails if human documentation is absent and leaves the previous artifact in
+place when either book fails to build. For a single-book editing preview,
+`mdbook serve --open` remains available, without the branch selector.
+
+The selector opens the same chapter on the other branch when available. If the
+chapter is absent, it opens that branch's home page with a notice. Search remains
+within the selected branch. The shared feature acceptance ledger stays on `main`.
 
 ## Publish to GitHub Pages
 
-The `Deploy documentation` workflow builds with mdBook 0.5.4 and publishes `dist/`.
-It runs when documentation, `book.toml`, the build script, or the workflow changes
-on `main`. It can also be started manually from the Actions tab on `main`.
+The `Deploy documentation` workflow on both branches checks out `main` and
+`main-human`, builds both books, and deploys one combined artifact. A documentation
+push to either branch triggers the workflow. All runs share one concurrency group;
+neither branch deploys a partial site that could remove the other branch's pages.
+Both source branch tips are resolved at checkout time, including on a manual run.
 
-For initial setup:
+For the first combined publication, merge the human documentation candidate into
+`main-human` and publish both branches' documentation changes before running the
+workflow. The workflow requires `book.toml` and `docs/` on both remote branches.
+Keep the small orchestration workflow identical on both branches; the build code
+and shared theme are maintained only on `main`.
 
-1. In the repository, open **Settings → Pages** and select **GitHub Actions** as
-   the build and deployment source.
-2. Push the workflow to `main`.
-3. Open **Actions → Deploy documentation** to monitor the run. If needed, choose
-   **Run workflow**, select `main`, and start it manually.
-4. After both jobs succeed, open the deployment URL or **Settings → Pages → Visit site**.
+In repository **Settings → Pages**, choose **GitHub Actions** as the source.
+Then use **Actions → Deploy documentation → Run workflow** on `main` (or
+`main-human`) to publish manually. Pages settings are separate from these files;
+local builds do not deploy or change repository settings.
 
-The default project URL is <https://jacky-lzx.github.io/Rustmux/>. Pages must be
-enabled before the workflow runs. No personal access token or custom secret is
-required; deployment uses the workflow's `GITHUB_TOKEN` and OIDC permissions.
+The default project URLs are:
 
-The workflow obtains the base path from GitHub Pages and overrides mdBook's
-`site-url` only during deployment, so local and Sites builds retain their existing
-root path. To check a project-path build locally:
+- `https://jacky-lzx.github.io/Rustmux/` for `main`;
+- `https://jacky-lzx.github.io/Rustmux/main-human/` for `main-human`.
+
+The workflow sets the Pages base path for both books. To validate the same
+subdirectory layout locally:
 
 ```sh
 MDBOOK_OUTPUT__HTML__SITE_URL=/Rustmux/ ./scripts/build-docs.sh
 ```
+
+Serve that artifact at `/Rustmux/` when previewing this configuration. Both local
+root builds and project-path builds retain the branch-specific navigation,
+assets, search and edit URLs. No additional hosting provider or token is needed.
