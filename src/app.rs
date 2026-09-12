@@ -309,6 +309,7 @@ struct SessionManagerState {
     sessions: Vec<SessionInfo>,
     selected: usize,
     rename_input: Option<String>,
+    create_input: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2355,12 +2356,23 @@ impl App {
             sessions,
             selected,
             rename_input: None,
+            create_input: None,
         });
         self.sync_session_manager();
         self.redraw()
     }
 
     fn handle_session_manager_key(&mut self, key: &DecodedKey) -> Result<bool> {
+        if key.event_type == 3 {
+            return Ok(true);
+        }
+        if self
+            .session_manager
+            .as_ref()
+            .is_some_and(|state| state.create_input.is_some())
+        {
+            return self.handle_session_create_key(key);
+        }
         if self
             .session_manager
             .as_ref()
@@ -2436,13 +2448,12 @@ impl App {
                     .as_ref()
                     .expect("session manager is open");
                 let matches = matching_session_info(&state.sessions, &state.query);
-                let target = matches
+                let Some(target) = matches
                     .get(state.selected)
                     .map(|session| session.name.clone())
-                    .unwrap_or_else(|| state.query.clone());
-                if target.is_empty() {
+                else {
                     return Ok(true);
-                }
+                };
                 validate_session_name(&target)?;
                 if target == self.session_name {
                     self.close_session_manager();
@@ -2451,6 +2462,14 @@ impl App {
                 }
                 self.request_session_switch(&target)?;
                 return Ok(false);
+            }
+            "create" => {
+                self.session_manager
+                    .as_mut()
+                    .expect("session manager is open")
+                    .create_input = Some(String::new());
+                self.sync_session_manager();
+                self.redraw()?;
             }
             "rename" => {
                 let Some(target) = self.selected_session_name() else {
@@ -2540,6 +2559,7 @@ impl App {
                 selected: state.selected,
                 current: self.session_name.clone(),
                 rename_input: state.rename_input.clone(),
+                create_input: state.create_input.clone(),
             }
         });
         self.renderer.set_session_manager(view);
@@ -2585,6 +2605,68 @@ impl App {
                 .flatten()
                 .is_some(),
         }
+    }
+
+    fn handle_session_create_key(&mut self, key: &DecodedKey) -> Result<bool> {
+        match self
+            .config
+            .session_manager_action(&key.name, true)
+            .unwrap_or("")
+        {
+            "cancel" => {
+                self.session_manager
+                    .as_mut()
+                    .expect("session manager is open")
+                    .create_input = None;
+            }
+            "open" => {
+                let name = self
+                    .session_manager
+                    .as_ref()
+                    .and_then(|state| state.create_input.clone())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    return Ok(true);
+                }
+                if let Err(error) = validate_session_name(&name) {
+                    self.notify(&error.to_string())?;
+                    return Ok(true);
+                }
+                let sessions = available_session_info(Some(self.local_session_info()))?;
+                if sessions.iter().any(|session| session.name == name) {
+                    self.notify(&format!("session '{name}' already exists"))?;
+                    return Ok(true);
+                }
+                self.request_session_switch(&name)?;
+                return Ok(false);
+            }
+            "backspace" => {
+                self.session_manager
+                    .as_mut()
+                    .and_then(|state| state.create_input.as_mut())
+                    .expect("create input exists")
+                    .pop();
+            }
+            _ => {
+                if let Some(text) = key.text()
+                    && text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                {
+                    let input = self
+                        .session_manager
+                        .as_mut()
+                        .and_then(|state| state.create_input.as_mut())
+                        .expect("create input exists");
+                    if input.len() + text.len() <= 64 {
+                        input.push_str(text);
+                    }
+                }
+            }
+        }
+        self.sync_session_manager();
+        self.redraw()?;
+        Ok(true)
     }
 
     fn handle_session_rename_key(&mut self, key: &DecodedKey) -> Result<bool> {

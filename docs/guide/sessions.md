@@ -24,7 +24,7 @@ rustmux ka -y
 
 The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` aliases `list-sessions`, `k` aliases `kill-session`, and `ka` aliases `kill-all-sessions`. Without `-y` or `--yes`, `kill-all-sessions` asks for confirmation. It stops running sessions but preserves saved snapshots. `rustmux attach -c work` creates the session when it does not exist. The earlier `new-session -s work`, `attach-session -t work`, and `kill-session -t work` forms remain supported.
 
-`rustmux a` (or `rustmux attach`) without a name opens the Session Manager when multiple running or saved sessions exist. It uses your configured navigation, search, and open keys; `Esc` cancels without attaching. With one session, it attaches directly. Explicit names bypass the picker. With no sessions, `rustmux a -c` creates `default`.
+`rustmux a` (or `rustmux attach`) without a name opens the Session Manager when multiple running or saved sessions exist. It uses your configured navigation, search, open, and create keys. Press `a` in browse mode to enter a new session name, then `Enter` to create and attach; `Esc` cancels name entry. Search results never create sessions. From browse mode, `Esc` cancels without attaching. With one session, it attaches directly. Explicit names bypass the picker. With no sessions, `rustmux a -c` creates `default`.
 
 `rustmux ls` displays running and saved sessions in an aligned table with layout counts (`t` for tabs, `p` for panes), connection status, creation time, and last connection time. The current session comes first, followed by attached sessions, then other sessions ordered by their last connection time. `ATTACHED` means a running session with a client, `DETACHED` means a running session without a client, and `SAVED` means only a saved snapshot remains. A `*` beside the name marks the current session. Attached sessions show `Now`. Colors follow the configured theme and are omitted when redirecting output or setting `NO_COLOR`.
 
@@ -45,12 +45,13 @@ Press `Ctrl-w` in normal mode, or `w` in session mode, to open the centered Sess
 - `j` / `k` (or `↓` / `↑`) selects a session.
 - `/` enters search mode. Type to filter sessions by a case-insensitive substring; `j` and `k` enter text in this mode. Use the arrow keys to select a search result.
 - `Tab` completes the selected name while searching.
-- `Enter` enters the selected session; with no match, it creates a session from the query.
+- `Enter` enters the selected session; with no match, it does nothing.
+- `a` opens a new-session name field in browse mode. Type a unique name and press `Enter` to create and enter the session. While searching or editing a name, `a` remains text.
 - `Ctrl-a` saves the current layout.
 - `Ctrl-r` renames a session.
 - `Ctrl-x` disconnects other clients from the selected session.
 - `Delete` stops the selected session and its processes and removes its saved snapshot, or removes the snapshot alone if the session is not running. It does not ask for confirmation.
-- `Esc` leaves search mode and restores the full list; press it again to close the manager. While renaming, it cancels the rename.
+- `Esc` leaves search mode and restores the full list; press it again to close the manager. While creating or renaming, it cancels the name entry.
 
 The list includes window and pane counts, connection state, creation time, and a `LAST CONNECTED` column showing `Now` for the current and attached sessions, or how long ago the last connection occurred for disconnected sessions. Time columns are hidden when space is limited; `—` means no connection time has been recorded.
 
@@ -60,6 +61,7 @@ All manager shortcuts can be customized in `config.toml`. Each action's array re
 
 ```toml
 [session_manager]
+create = ["a"]
 up = ["k", "up"]
 down = ["j", "down"]
 search = ["/"]

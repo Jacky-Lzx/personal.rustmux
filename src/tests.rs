@@ -1847,6 +1847,7 @@ fn session_manager_renders_search_results_and_actions() {
         selected: 0,
         current: "personal".to_owned(),
         rename_input: None,
+        create_input: None,
     }));
 
     let frame = renderer.render(&windows, 0, (60, 12), "normal", None, &[]);
@@ -1862,7 +1863,8 @@ fn session_manager_renders_search_results_and_actions() {
     assert!(frame.contains("2t · 3p"));
     assert!(frame.contains("[SAVED]"));
     assert!(frame.contains("<Enter>"));
-    assert!(frame.contains("Open/Create"));
+    assert!(frame.contains("Open"));
+    assert!(!frame.contains("Open/Create"));
     assert!(!frame.contains('├'));
     assert!(!frame.contains('┤'));
     assert!(frame.contains("\x1b[?25l"));
@@ -1934,12 +1936,14 @@ fn session_manager_hides_search_input_until_searching() {
         selected: 0,
         current: "other".to_owned(),
         rename_input: None,
+        create_input: None,
     }));
     let frame = renderer.render(&windows, 0, (100, 24), "normal", None, &[]);
     let frame = String::from_utf8(frame).unwrap();
     assert!(!frame.contains("Search: "));
     assert!(!frame.contains("Session: "));
     assert!(frame.contains("<Ctrl f>"));
+    assert!(frame.contains("<a>"));
     assert!(frame.contains("first"));
     let windows = vec![test_window(1, "fish", 36, 213)];
     let frame = renderer.render(&windows, 0, (215, 40), "normal", None, &[]);
@@ -1969,6 +1973,7 @@ fn session_manager_renders_rename_input() {
         selected: 0,
         current: "work".to_owned(),
         rename_input: Some("renamed".to_owned()),
+        create_input: None,
     }));
 
     let frame = renderer.render(&windows, 0, (60, 12), "normal", None, &[]);
@@ -2529,4 +2534,39 @@ fn colored_scrollback_restoration_accepts_only_sgr_and_keeps_the_live_screen_pla
         terminal.screen().cell(0, 0).unwrap().fgcolor(),
         vt100::Color::Idx(1)
     );
+}
+
+#[test]
+fn session_manager_creation_has_a_separate_prompt_and_configured_hint() {
+    let windows = vec![test_window(1, "fish", 24, 120)];
+    let mut renderer = Renderer::default();
+    let mut view = SessionManagerView {
+        searching: true,
+        keys: Config::test_defaults().session_manager_keys(),
+        query: "missing".to_owned(),
+        sessions: Vec::new(),
+        selected: 0,
+        current: "work".to_owned(),
+        rename_input: None,
+        create_input: None,
+    };
+    view.keys.insert("create".to_owned(), vec!["n".to_owned()]);
+    renderer.set_session_manager(Some(view.clone()));
+    let frame = renderer.render(&windows, 0, (120, 24), "normal", None, &[]);
+    let frame = String::from_utf8_lossy(&frame);
+    assert!(frame.contains("No matching sessions"));
+    assert!(!frame.contains("Enter to create"));
+    assert!(!frame.contains("<n>"));
+    view.searching = false;
+    renderer.set_session_manager(Some(view.clone()));
+    let frame = renderer.render(&windows, 0, (120, 24), "normal", None, &[]);
+    assert!(String::from_utf8_lossy(&frame).contains("<n>"));
+    view.create_input = Some("new-name".to_owned());
+    renderer.set_session_manager(Some(view));
+    let frame = renderer.render(&windows, 0, (120, 24), "normal", None, &[]);
+    let frame = String::from_utf8_lossy(&frame);
+    assert!(frame.contains("New session: "));
+    assert!(frame.contains("new-name"));
+    assert!(frame.contains("Create"));
+    assert!(!frame.contains("Search: "));
 }

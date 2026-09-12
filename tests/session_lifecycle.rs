@@ -1055,3 +1055,63 @@ fn snacks_graphics_are_reuploaded_before_placements_on_reattach() {
         assert!(upload_at < placement_at);
     }
 }
+
+#[test]
+fn session_manager_creates_only_from_explicit_name_entry_and_reloads_its_key() {
+    use std::sync::{Arc, Mutex};
+    let server = Server::new("[session_manager]\ncreate=['a']\n");
+    let screen = Arc::new(Mutex::new(vt100::Parser::new(24, 200, 0)));
+    let wire = Arc::new(Mutex::new(Vec::new()));
+    let parsed = screen.clone();
+    let recorded = wire.clone();
+    let mut client = UnixStream::connect(&server.socket).unwrap();
+    client
+        .write_all(&[b'R', 0, 200, 0, 24, 0, 0, 0, 0])
+        .unwrap();
+    let mut reader = client.try_clone().unwrap();
+    thread::spawn(move || {
+        let mut bytes = [0; 8192];
+        while let Ok(count) = reader.read(&mut bytes) {
+            if count == 0 {
+                break;
+            }
+            parsed.lock().unwrap().process(&bytes[..count]);
+            recorded.lock().unwrap().extend_from_slice(&bytes[..count]);
+        }
+    });
+    let contents = || screen.lock().unwrap().screen().contents();
+    let switched =
+        || String::from_utf8_lossy(&wire.lock().unwrap()).contains("rustmux-switch-session=");
+    input(&mut client, b"\x02\x17/missing\r");
+    eventually(|| contents().contains("No matching sessions"));
+    // The next key must still edit the search, not reach a detached shell.
+    input(&mut client, b"a");
+    eventually(|| contents().contains("Search: missinga_"));
+    assert!(!switched());
+    input(&mut client, b"\x1b");
+    eventually(|| !contents().contains("Search: "));
+    input(&mut client, b"a\r");
+    eventually(|| contents().contains("New session: _"));
+    assert!(!switched());
+    input(&mut client, b"work\r");
+    eventually(|| contents().contains("already exists"));
+    assert!(!switched());
+    input(&mut client, b"\x1b");
+    eventually(|| !contents().contains("New session: "));
+    fs::write(
+        server.root.join("config/rustmux/config.toml"),
+        "[session_manager]\ncreate=['n']\n",
+    )
+    .unwrap();
+    eventually(|| contents().contains("<n> New"));
+    input(&mut client, b"a/");
+    eventually(|| contents().contains("Search: _"));
+    input(&mut client, b"\x1b");
+    eventually(|| !contents().contains("Search: "));
+    // Printable action keys remain text, including Kitty encoded input. A
+    // release event must not append a duplicate character to the new name.
+    input(&mut client, b"n\x1b[97u\x1b[97;1:3unew\x7f\r");
+    eventually(|| {
+        String::from_utf8_lossy(&wire.lock().unwrap()).contains("rustmux-switch-session=ane\x07")
+    });
+}

@@ -22,6 +22,7 @@ pub(super) struct SessionManagerView {
     pub(super) selected: usize,
     pub(super) current: String,
     pub(super) rename_input: Option<String>,
+    pub(super) create_input: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1713,11 +1714,23 @@ pub(super) fn render_session_picker(
     theme: &Theme,
     size: (u16, u16),
     manager: &SessionManagerView,
+    error: Option<&str>,
 ) -> Vec<u8> {
     let mut output = Vec::new();
     write_rgb_style(&mut output, theme.foreground, Some(theme.background), false);
     output.extend_from_slice(b"\x1b[2J\x1b[H\x1b[?25l");
     draw_session_manager_view(&mut output, theme, size, (1, 1), manager, true);
+    if let Some(error) = error {
+        let (column, row, columns, rows) = session_manager_rect(size);
+        if columns >= 4 && rows >= 3 {
+            let width = usize::from(columns - 2);
+            let (message, used) = truncate_to_display_width(error, width);
+            let _ = write!(output, "\x1b[{};{}H", row + rows - 1, column + 2);
+            write_rgb_style(&mut output, theme.orange, Some(theme.background), false);
+            output.extend_from_slice(message.as_bytes());
+            output.extend(std::iter::repeat_n(b' ', width - used));
+        }
+    }
     output
 }
 
@@ -1818,8 +1831,10 @@ fn draw_session_manager_view(
             })
             .unwrap_or_default()
     };
-    if manager.searching || manager.rename_input.is_some() {
-        let (query_label, query_value) = if let Some(name) = &manager.rename_input {
+    if manager.searching || manager.rename_input.is_some() || manager.create_input.is_some() {
+        let (query_label, query_value) = if let Some(name) = &manager.create_input {
+            ("New session: ", name.as_str())
+        } else if let Some(name) = &manager.rename_input {
             ("Rename: ", name.as_str())
         } else {
             ("Search: ", manager.query.as_str())
@@ -2110,10 +2125,8 @@ fn draw_session_manager_view(
     if manager.sessions.is_empty() {
         let message = if manager.query.is_empty() {
             "No sessions available".to_owned()
-        } else if picker {
-            "No matching sessions".to_owned()
         } else {
-            format!("No matches · Enter to create ‘{}’", manager.query)
+            "No matching sessions".to_owned()
         };
         let (message, _) = truncate_to_display_width(&message, body_width);
         let _ = write!(output, "\x1b[{};{}H", origin_row + 4, origin_column + 2);
@@ -2121,19 +2134,27 @@ fn draw_session_manager_view(
         output.extend_from_slice(message.as_bytes());
     }
 
-    let editing = manager.rename_input.is_some();
+    let editing = manager.rename_input.is_some() || manager.create_input.is_some();
     let first_actions = if editing {
         vec![
-            ("open", "Rename"),
+            (
+                "open",
+                if manager.create_input.is_some() {
+                    "Create"
+                } else {
+                    "Rename"
+                },
+            ),
             ("cancel", "Cancel"),
             ("backspace", "Erase"),
         ]
     } else {
-        vec![
-            ("open", if picker { "Attach" } else { "Open/Create" }),
-            ("rename", "Rename"),
-            ("delete", "Delete"),
-        ]
+        let mut actions = vec![("open", if picker { "Attach" } else { "Open" })];
+        if !manager.searching {
+            actions.push(("create", "New"));
+        }
+        actions.extend([("rename", "Rename"), ("delete", "Delete")]);
+        actions
     };
     let second_actions = if editing {
         vec![]

@@ -86,6 +86,7 @@ exclude_applications = ["yazi", "nvim", "lazygit"]
 up = ["k", "up"]
 down = ["j", "down"]
 search = ["/"]
+create = ["a"]
 complete = ["tab"]
 open = ["enter"]
 rename = ["Ctrl r"]
@@ -545,6 +546,7 @@ impl Config {
                 action.as_str(),
                 "up" | "down"
                     | "search"
+                    | "create"
                     | "complete"
                     | "open"
                     | "rename"
@@ -1204,6 +1206,8 @@ mod tests {
         assert_eq!(config.session_manager_action("j", false), Some("down"));
         assert_eq!(config.session_manager_action("k", false), Some("up"));
         assert_eq!(config.session_manager_action("/", false), Some("search"));
+        assert_eq!(config.session_manager_action("a", false), Some("create"));
+        assert_eq!(config.session_manager_action("a", true), None);
         assert_eq!(config.session_manager_action("j", true), None);
         assert_eq!(config.session_manager_action("k", true), None);
         assert_eq!(config.session_manager_action("down", true), Some("down"));
@@ -1223,6 +1227,7 @@ mod tests {
 down = ["n"]
 up = ["p"]
 search = ["Ctrl f"]
+create = ["Ctrl n"]
 delete = []
 "#,
                 )
@@ -1236,6 +1241,15 @@ delete = []
             config.session_manager_action("ctrl f", false),
             Some("search")
         );
+        assert_eq!(config.session_manager_action("a", false), None);
+        assert_eq!(
+            config.session_manager_action("ctrl n", false),
+            Some("create")
+        );
+        config
+            .apply_user(toml::from_str("[session_manager]\ncreate = []").unwrap())
+            .unwrap();
+        assert_eq!(config.session_manager_action("ctrl n", false), None);
         assert_eq!(config.session_manager_action("delete", false), None);
         assert!(
             config
