@@ -18,6 +18,11 @@ checks, including fuzz jobs. A new CI run cancels an unfinished run for the same
 branch or pull request; different pull requests run independently. Documentation
 deployment uses a separate concurrency group and is not canceled by CI.
 
+To run CI manually, open **Actions → CI → Run workflow**, select the branch,
+and click **Run workflow**. Manual runs execute all check and fuzz jobs regardless
+of changed paths. The selected branch must contain the manual trigger; the
+workflow must also be present on the default branch for the button to appear.
+
 ## Fuzz testing
 
 [Nightly Rust](https://rust-lang.github.io/rustup/concepts/channels.html) compiles every [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html) target. Linux CI also runs short smoke tests.
