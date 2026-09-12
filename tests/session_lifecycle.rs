@@ -428,6 +428,27 @@ fn pane_moves_preserve_shell_state_and_saved_layout() {
 }
 
 #[test]
+fn list_sessions_shows_live_and_saved_session_details() {
+    let mut server = Server::new("autosave_interval_seconds = 0\n");
+    assert!(server.cli(&["save-session", "-s", "work"]).status.success());
+    let output = server.cli(&["ls"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("LAST CONNECTED"));
+    assert!(text.contains("DETACHED"));
+    assert!(text.contains("1t · 1p"));
+    assert!(!text.contains("STOPPED"));
+    assert!(!text.contains('\x1b'));
+    server.stop(false);
+    let output = server.cli(&["ls"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("work"));
+    assert!(text.contains("SAVED"));
+    assert!(!text.contains("DETACHED"));
+}
+
+#[test]
 fn connection_time_survives_shutdown_and_updates_without_autosave() {
     let mut server = Server::new("autosave_interval_seconds = 0\n");
     let metadata = server.snapshot().with_extension("connected");

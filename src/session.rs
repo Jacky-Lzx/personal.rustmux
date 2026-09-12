@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -677,9 +677,22 @@ pub(super) struct SessionInfo {
     pub(super) tabs: usize,
     pub(super) panes: usize,
     pub(super) connected: bool,
+    pub(super) running: bool,
     pub(super) created_at: u64,
     pub(super) last_connected_at: u64,
     pub(super) saved: bool,
+}
+
+impl SessionInfo {
+    pub(super) fn status(&self) -> &'static str {
+        if self.connected {
+            "ATTACHED"
+        } else if self.running {
+            "DETACHED"
+        } else {
+            "SAVED"
+        }
+    }
 }
 
 fn control_session(name: &str, request: &[u8]) -> Result<Vec<u8>> {
@@ -768,6 +781,7 @@ pub(super) fn available_session_info(local: Option<SessionInfo>) -> Result<Vec<S
                         value.tabs.iter().map(|tab| tab.panes.len()).sum()
                     })
                 }),
+            running: fields.len() >= 4,
             connected: fields.get(2).is_some_and(|value| value == "1"),
             created_at: fields
                 .get(3)
@@ -801,14 +815,27 @@ pub(super) fn rename_session(name: &str, new_name: &str) -> Result<()> {
 }
 
 pub(super) fn list_sessions() -> Result<()> {
-    let names = available_sessions()?;
-    if names.is_empty() {
-        println!("no sessions");
-    } else {
-        for name in names {
-            println!("{name}");
-        }
-    }
+    let mut sessions = available_session_info(None)?;
+    let current = env::var_os(super::RUSTMUX_ENV)
+        .and_then(|path| {
+            PathBuf::from(path)
+                .file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    sort_session_info(&mut sessions, &current);
+    let theme = Config::load()
+        .map(|config| config.theme)
+        .unwrap_or_default();
+    let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    print!(
+        "{}",
+        crate::listing::format_sessions(&sessions, &current, now, &theme, color)
+    );
     Ok(())
 }
 

@@ -1970,14 +1970,13 @@ fn draw_session_manager_view(
         } else {
             theme.background
         };
-        let (state, state_color) = if current {
-            ("[CURRENT]", theme.accent)
-        } else if session.connected {
-            ("[ATTACHED]", theme.orange)
-        } else if session.saved {
-            ("[SAVED]", theme.purple)
-        } else {
-            ("[DETACHED]", theme.border)
+        let (state, state_color) = match session.status() {
+            "ATTACHED" => (
+                "[ATTACHED]",
+                if current { theme.accent } else { theme.orange },
+            ),
+            "DETACHED" => ("[DETACHED]", theme.border),
+            _ => ("[SAVED]", theme.purple),
         };
         let layout = if layout_width >= 17 {
             format!("{} tabs · {} panes", session.tabs, session.panes)
@@ -2000,7 +1999,11 @@ fn draw_session_manager_view(
         );
         write_session_manager_field(
             output,
-            &session.name,
+            &if current {
+                format!("{} *", session.name)
+            } else {
+                session.name.clone()
+            },
             name_width,
             if current { theme.accent } else { theme.teal },
             background,

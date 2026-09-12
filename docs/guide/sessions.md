@@ -26,6 +26,8 @@ The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` alia
 
 `rustmux a` (or `rustmux attach`) without a name opens the Session Manager when multiple running or saved sessions exist. It uses your configured navigation, search, and open keys; `Esc` cancels without attaching. With one session, it attaches directly. Explicit names bypass the picker. With no sessions, `rustmux a -c` creates `default`.
 
+`rustmux ls` displays running and saved sessions in an aligned table with layout counts (`t` for tabs, `p` for panes), connection status, creation time, and last connection time. The current session comes first, followed by attached sessions, then other sessions ordered by their last connection time. `ATTACHED` means a running session with a client, `DETACHED` means a running session without a client, and `SAVED` means only a saved snapshot remains. A `*` beside the name marks the current session. Attached sessions show `Now`. Colors follow the configured theme and are omitted when redirecting output or setting `NO_COLOR`.
+
 Session names contain 1–64 ASCII letters, digits, hyphens, or underscores.
 
 Press <kbd>Ctrl-b</kbd>, <kbd>Ctrl-o</kbd>, <kbd>d</kbd> inside Rustmux to detach. The server and its programs keep running.
@@ -50,7 +52,7 @@ Press `Ctrl-w` in normal mode, or `w` in session mode, to open the centered Sess
 - `Delete` stops the selected session and its processes and removes its saved snapshot, or removes the snapshot alone if the session is not running. It does not ask for confirmation.
 - `Esc` leaves search mode and restores the full list; press it again to close the manager. While renaming, it cancels the rename.
 
-The list includes window and pane counts, connection state, saved state, creation time, and a `LAST CONNECTED` column showing `Now` for the current and attached sessions, or how long ago the last connection occurred for disconnected sessions. Time columns are hidden when space is limited; `—` means no connection time has been recorded.
+The list includes window and pane counts, connection state, creation time, and a `LAST CONNECTED` column showing `Now` for the current and attached sessions, or how long ago the last connection occurred for disconnected sessions. Time columns are hidden when space is limited; `—` means no connection time has been recorded.
 
 Connection times are recorded on each successful attachment, independently of automatic layout saving, and survive server restarts. Renaming a session carries its connection time with it; deleting a session removes it. Existing sessions gain a time record on their next connection using the updated server.
 

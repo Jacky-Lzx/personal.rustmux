@@ -2563,6 +2563,7 @@ impl App {
                 .filter(|window| !window.floating)
                 .count(),
             connected: self.client.is_some(),
+            running: true,
             created_at: self.created_at,
             last_connected_at: self.last_connected_at,
             saved: load_session_snapshot(&self.session_name)

@@ -4,6 +4,7 @@ mod config;
 mod control;
 mod input;
 mod layout;
+mod listing;
 mod persistence;
 mod picker;
 mod project;
