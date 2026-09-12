@@ -5,6 +5,7 @@ mod control;
 mod input;
 mod layout;
 mod persistence;
+mod picker;
 mod project;
 mod render;
 mod scrollback;
@@ -103,7 +104,9 @@ pub fn run() -> Result<()> {
             arguments.detached,
             arguments.layout.as_deref(),
         ),
-        Some(Command::Attach(arguments)) => attach_or_create(arguments.name(), arguments.create),
+        Some(Command::Attach(arguments)) => {
+            session::attach(arguments.explicit_name(), arguments.create)
+        }
         Some(Command::ListSessions) => list_sessions(),
         Some(Command::Control(command)) => control::run(command),
         Some(Command::KillSession(arguments)) => kill_session(arguments.name()),

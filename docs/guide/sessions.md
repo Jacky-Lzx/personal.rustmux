@@ -6,7 +6,10 @@
 # Create or attach to a named session
 rustmux -s work
 
-# Reattach
+# Choose a session to attach when multiple sessions exist
+rustmux a
+
+# Reattach to a specific session
 rustmux attach work
 
 # List sessions
@@ -20,6 +23,8 @@ rustmux ka -y
 ```
 
 The short forms follow Zellij's CLI conventions: `a` aliases `attach`, `ls` aliases `list-sessions`, `k` aliases `kill-session`, and `ka` aliases `kill-all-sessions`. Without `-y` or `--yes`, `kill-all-sessions` asks for confirmation. It stops running sessions but preserves saved snapshots. `rustmux attach -c work` creates the session when it does not exist. The earlier `new-session -s work`, `attach-session -t work`, and `kill-session -t work` forms remain supported.
+
+`rustmux a` (or `rustmux attach`) without a name opens the Session Manager when multiple running or saved sessions exist. It uses your configured navigation, search, and open keys; `Esc` cancels without attaching. With one session, it attaches directly. Explicit names bypass the picker. With no sessions, `rustmux a -c` creates `default`.
 
 Session names contain 1–64 ASCII letters, digits, hyphens, or underscores.
 

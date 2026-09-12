@@ -1649,13 +1649,42 @@ fn status_click_at(snapshot: &FrameSnapshot, column: u16) -> Option<StatusClick>
 }
 
 fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
-    let theme = &snapshot.theme;
     let Some(manager) = &snapshot.session_manager else {
         return;
     };
-    let (canvas_columns, canvas_rows) = snapshot.content_size;
-    let (box_column, box_row, columns, rows) = session_manager_rect(snapshot.content_size);
-    let (canvas_origin_column, canvas_origin_row) = snapshot.content_origin;
+    draw_session_manager_view(
+        output,
+        &snapshot.theme,
+        snapshot.content_size,
+        snapshot.content_origin,
+        manager,
+        false,
+    );
+}
+
+pub(super) fn render_session_picker(
+    theme: &Theme,
+    size: (u16, u16),
+    manager: &SessionManagerView,
+) -> Vec<u8> {
+    let mut output = Vec::new();
+    write_rgb_style(&mut output, theme.foreground, Some(theme.background), false);
+    output.extend_from_slice(b"\x1b[2J\x1b[H\x1b[?25l");
+    draw_session_manager_view(&mut output, theme, size, (1, 1), manager, true);
+    output
+}
+
+fn draw_session_manager_view(
+    output: &mut Vec<u8>,
+    theme: &Theme,
+    size: (u16, u16),
+    origin: (u16, u16),
+    manager: &SessionManagerView,
+    picker: bool,
+) {
+    let (canvas_columns, canvas_rows) = size;
+    let (box_column, box_row, columns, rows) = session_manager_rect(size);
+    let (canvas_origin_column, canvas_origin_row) = origin;
     let origin_column = canvas_origin_column + box_column;
     let origin_row = canvas_origin_row + box_row;
     if canvas_columns == 0 || canvas_rows == 0 || columns == 0 || rows == 0 {
@@ -2031,6 +2060,8 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     if manager.sessions.is_empty() {
         let message = if manager.query.is_empty() {
             "No sessions available".to_owned()
+        } else if picker {
+            "No matching sessions".to_owned()
         } else {
             format!("No matches · Enter to create ‘{}’", manager.query)
         };
@@ -2049,7 +2080,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         ]
     } else {
         vec![
-            ("open", "Open/Create"),
+            ("open", if picker { "Attach" } else { "Open/Create" }),
             ("rename", "Rename"),
             ("delete", "Delete"),
         ]

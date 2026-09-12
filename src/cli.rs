@@ -120,11 +120,8 @@ pub(super) struct AttachArgs {
 }
 
 impl AttachArgs {
-    pub(super) fn name(&self) -> &str {
-        self.name
-            .as_deref()
-            .or(self.target.as_deref())
-            .unwrap_or("default")
+    pub(super) fn explicit_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.target.as_deref())
     }
 }
 
@@ -202,12 +199,22 @@ mod tests {
     }
 
     #[test]
+    fn attach_without_name_keeps_target_unspecified() {
+        for command in ["a", "attach", "attach-session"] {
+            let Some(Command::Attach(arguments)) = parse(&["rustmux", command]).command else {
+                panic!("expected attach command");
+            };
+            assert_eq!(arguments.explicit_name(), None);
+        }
+    }
+
+    #[test]
     fn parses_attach_alias_with_positional_name_and_create() {
         let cli = parse(&["rustmux", "a", "work", "--create"]);
         let Some(Command::Attach(arguments)) = cli.command else {
             panic!("expected attach command");
         };
-        assert_eq!(arguments.name(), "work");
+        assert_eq!(arguments.explicit_name(), Some("work"));
         assert!(arguments.create);
     }
 
@@ -243,7 +250,7 @@ mod tests {
         else {
             panic!("expected attach command");
         };
-        assert_eq!(arguments.name(), "work");
+        assert_eq!(arguments.explicit_name(), Some("work"));
     }
 
     #[test]

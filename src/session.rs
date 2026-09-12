@@ -563,6 +563,23 @@ fn warn_session_busy(name: &str) {
     );
 }
 
+pub(super) fn attach(name: Option<&str>, create: bool) -> Result<()> {
+    if let Some(name) = name {
+        return attach_or_create(name, create);
+    }
+    let sessions = available_session_info(None)?;
+    match sessions.as_slice() {
+        [] => attach_or_create("default", create),
+        [session] => attach_or_create(&session.name, create || session.saved),
+        _ => {
+            if let Some(name) = crate::picker::choose_session(sessions)? {
+                attach_or_create(&name, true)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 pub(super) fn attach_or_create(name: &str, create: bool) -> Result<()> {
     Config::load().map_err(|error| format!("configuration error: {error}"))?;
     let mut current_name = name.to_owned();
