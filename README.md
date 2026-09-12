@@ -111,8 +111,8 @@ for measurements and their limits.
 ## Development tracks
 
 AI helped turn Rustmux from an idea into a usable tool. The project keeps room
-for that exploration while building a version the owner has personally reviewed
-and understood.
+for that exploration while building a version developed through the owner's
+personal review and ongoing learning.
 
 |                              | `main`                                                    | `main-human`                                 |
 | ---------------------------- | --------------------------------------------------------- | -------------------------------------------- |

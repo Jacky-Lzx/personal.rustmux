@@ -67,7 +67,7 @@
 - Zellij-inspired terminal multiplexing.
 - Persistent sessions, flexible panes.
 - Kitty-native, built with Yazi in mind.
-- Mostly AI-generated, but with a commitment to understand every line.
+- Mostly AI-generated, with an ongoing effort to better understand and improve the code.
 
 The [development tracks and human review policy](reference/development-tracks.md)
 describe how `main` and `main-human` differ, how issues and PRs are reviewed,
@@ -114,7 +114,7 @@ It gave the project its first momentum, helping me get the basic functionality w
 There is something deeply encouraging about that moment: a tool you had only imagined begins to respond beneath your hands, and the distance between wanting to make it and being able to begin suddenly feels smaller.
 
 But I want my part in this project to amount to more than passing requests to AI and accepting whatever comes back.
-The early foundations came together quickly with its help; my commitment is to review and understand every line of code that ultimately belongs here.
+The early foundations came together quickly with its help; I aim to deepen my understanding of the code through ongoing review and improvement.
 That means taking the time to trace a behavior, question a decision, and learn enough to recognize when a plausible solution is the wrong one.
 I want to be able to explain why the code is there, what it promises, and where it might fail.
 AI made it easier to begin. Making this a project I understand and can stand behind is the work I am choosing to do.
