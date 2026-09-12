@@ -352,6 +352,57 @@ fn sgr_mouse_decoder_recognizes_wheel_and_selection_events() {
 }
 
 #[test]
+fn sgr_mouse_decoder_rejects_overflow_without_forwarding_a_wrapped_position() {
+    let crash = include_bytes!("../tests/fixtures/sgr-mouse-overflow.bin");
+    assert_eq!(decode_sgr_mouse(crash), None);
+    assert_eq!(
+        sgr_mouse_at(crash, MousePosition { column: 2, row: 3 }),
+        None
+    );
+
+    for field in 0..3 {
+        for invalid in [
+            "65536",
+            "65540",
+            "999999999999999999999999999999999999",
+            "",
+            "-1",
+            "1x",
+        ] {
+            let mut fields = ["0", "10", "5"];
+            fields[field] = invalid;
+            for terminator in ['M', 'm'] {
+                let sequence = format!("\x1b[<{}{terminator}", fields.join(";"));
+                assert_eq!(decode_sgr_mouse(sequence.as_bytes()), None, "{sequence:?}");
+                assert_eq!(
+                    sgr_mouse_at(sequence.as_bytes(), MousePosition { column: 2, row: 3 }),
+                    None
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn sgr_mouse_decoder_preserves_maximum_representable_coordinates() {
+    let sequence = b"\x1b[<0;65535;65535M";
+    assert_eq!(
+        decode_sgr_mouse(sequence),
+        Some((
+            MouseAction::SelectStart(MousePosition {
+                column: u16::MAX,
+                row: u16::MAX
+            }),
+            sequence.len(),
+        ))
+    );
+    assert_eq!(
+        sgr_mouse_at(sequence, MousePosition { column: 2, row: 3 }),
+        Some(b"\x1b[<0;3;4M".to_vec())
+    );
+}
+
+#[test]
 fn selected_text_spans_rows_and_ignores_terminal_padding() {
     let mut window = test_window(7, "fish", 3, 18);
     window

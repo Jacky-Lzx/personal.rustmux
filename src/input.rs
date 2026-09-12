@@ -303,10 +303,16 @@ pub(super) fn decode_sgr_mouse(bytes: &[u8]) -> Option<(MouseAction, usize)> {
     let final_index = final_offset + 3;
     let mut fields = bytes[3..final_index].split(|byte| *byte == b';');
     let parse_number = |digits: &[u8]| {
+        if digits.is_empty() {
+            return None;
+        }
         digits.iter().try_fold(0_u16, |value, digit| {
-            digit
-                .is_ascii_digit()
-                .then(|| value.saturating_mul(10) + u16::from(digit - b'0'))
+            if !digit.is_ascii_digit() {
+                return None;
+            }
+            // Reject oversized fields rather than wrapping or clamping them
+            // into a different button or position in the multiplexer.
+            value.checked_mul(10)?.checked_add(u16::from(digit - b'0'))
         })
     };
     let button = parse_number(fields.next()?)?;
