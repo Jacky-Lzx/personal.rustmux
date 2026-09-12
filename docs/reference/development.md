@@ -6,7 +6,7 @@
 cargo fmt --all --check
 cargo fmt --manifest-path fuzz/Cargo.toml --all --check
 cargo test --all-targets --locked
-cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo check --features benchmarks --bench image_preview --locked
 ```
 

@@ -139,6 +139,7 @@ pub fn render(data: &[u8]) {
         spawn_directory: None,
         startup_command: None,
         terminal,
+        history_cache: crate::persistence::HistoryCache::default(),
         cursor_style: CursorStyleTracker::default(),
         input_modes: InputModeTracker::default(),
         terminal_osc: TerminalOscTracker::default(),

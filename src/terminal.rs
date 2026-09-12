@@ -658,7 +658,9 @@ fn hex_decode(value: &str) -> Option<Vec<u8>> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
         .collect()
 }
@@ -1486,7 +1488,7 @@ impl TerminalOscTracker {
     }
 
     fn apply_palette(&mut self, fields: Vec<&str>, output: &mut TerminalOscOutput) {
-        for pair in fields.chunks_exact(2) {
+        for pair in fields.as_chunks::<2>().0 {
             let Ok(index) = pair[0].parse::<usize>() else {
                 continue;
             };
