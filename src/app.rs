@@ -315,6 +315,13 @@ enum MouseDrag {
     },
 }
 
+pub(super) fn default_session_selection(sessions: &[SessionInfo], current: &str) -> usize {
+    sessions
+        .iter()
+        .position(|session| !session.connected && session.name != current)
+        .unwrap_or(0)
+}
+
 pub(super) fn matching_session_info(sessions: &[SessionInfo], query: &str) -> Vec<SessionInfo> {
     let query = query.to_ascii_lowercase();
     sessions
@@ -342,6 +349,7 @@ pub(super) struct App {
     session_name: String,
     socket_path: PathBuf,
     created_at: u64,
+    last_connected_at: u64,
     terminal_size: (u16, u16),
     terminal_pixels: (u16, u16),
     terminal_identity: String,
@@ -395,6 +403,7 @@ impl App {
             renderer,
             session_name: session_name.to_owned(),
             socket_path,
+            last_connected_at: crate::session::last_connected_at(session_name),
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1146,6 +1155,15 @@ impl App {
         // may then return EAGAIN, which must not be mistaken for a disconnect.
         stream.set_nonblocking(false)?;
         self.client = Some(stream);
+        self.last_connected_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if let Err(error) =
+            crate::session::record_connection(&self.session_name, self.last_connected_at)
+        {
+            let _ = self.notify(&format!("could not save connection time: {error}"));
+        }
         self.outer_dnd_window = None;
         self.outer_keyboard_flags = None;
         self.outer_pointer_shape = None;
@@ -1207,7 +1225,11 @@ impl App {
                     .filter(|window| !window.floating)
                     .count();
                 let connected = u8::from(self.client.is_some());
-                writeln!(stream, "{tabs}\t{panes}\t{connected}\t{}", self.created_at)?;
+                writeln!(
+                    stream,
+                    "{tabs}\t{panes}\t{connected}\t{}\t{}",
+                    self.created_at, self.last_connected_at
+                )?;
                 Ok(true)
             }
             CLIENT_DISCONNECT => {
@@ -2312,11 +2334,12 @@ impl App {
 
     fn open_session_manager(&mut self) -> Result<()> {
         let sessions = available_session_info(Some(self.local_session_info()))?;
+        let selected = default_session_selection(&sessions, &self.session_name);
         self.session_manager = Some(SessionManagerState {
             searching: false,
             query: String::new(),
             sessions,
-            selected: 0,
+            selected,
             rename_input: None,
         });
         self.sync_session_manager();
@@ -2517,9 +2540,14 @@ impl App {
 
     fn refresh_session_manager(&mut self) -> Result<()> {
         let sessions = available_session_info(Some(self.local_session_info()))?;
+        let selected_name = self.selected_session_name();
         if let Some(state) = self.session_manager.as_mut() {
             state.sessions = sessions;
-            state.selected = state.selected.min(state.sessions.len().saturating_sub(1));
+            let matches = matching_session_info(&state.sessions, &state.query);
+            state.selected = matches
+                .iter()
+                .position(|session| Some(&session.name) == selected_name.as_ref())
+                .unwrap_or_else(|| default_session_selection(&matches, &self.session_name));
         }
         self.sync_session_manager();
         Ok(())
@@ -2536,6 +2564,7 @@ impl App {
                 .count(),
             connected: self.client.is_some(),
             created_at: self.created_at,
+            last_connected_at: self.last_connected_at,
             saved: load_session_snapshot(&self.session_name)
                 .ok()
                 .flatten()

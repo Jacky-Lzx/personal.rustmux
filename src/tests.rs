@@ -1714,6 +1714,7 @@ fn session_manager_searches_case_insensitively() {
         panes: 1,
         connected: false,
         created_at: 1,
+        last_connected_at: 1,
         saved: false,
     });
     assert_eq!(matching_session_info(&sessions, "son")[0].name, "Personal");
@@ -1736,6 +1737,7 @@ fn session_manager_renders_search_results_and_actions() {
             panes: 3,
             connected: false,
             created_at: 1,
+            last_connected_at: 1,
             saved: true,
         }],
         selected: 0,
@@ -1763,6 +1765,48 @@ fn session_manager_renders_search_results_and_actions() {
 }
 
 #[test]
+fn session_manager_sorts_by_connection_and_selects_recent_detached_session() {
+    let make = |name: &str, connected, last_connected_at| SessionInfo {
+        name: name.to_owned(),
+        tabs: 1,
+        panes: 1,
+        connected,
+        created_at: 0,
+        last_connected_at,
+        saved: false,
+    };
+    let mut sessions = vec![
+        make("unknown", false, 0),
+        make("recent", false, 30),
+        make("current", true, 10),
+        make("attached", true, 20),
+        make("older", false, 15),
+        make("attached-recent", true, 40),
+    ];
+    crate::session::sort_session_info(&mut sessions, "current");
+    assert_eq!(
+        sessions.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        [
+            "current",
+            "attached-recent",
+            "attached",
+            "recent",
+            "older",
+            "unknown"
+        ]
+    );
+    assert_eq!(
+        crate::app::default_session_selection(&sessions, "current"),
+        3
+    );
+    assert_eq!(
+        crate::app::default_session_selection(&sessions[..3], "current"),
+        0
+    );
+    assert_eq!(crate::app::default_session_selection(&[], "current"), 0);
+}
+
+#[test]
 fn session_manager_hides_search_input_until_searching() {
     let windows = vec![test_window(1, "fish", 20, 98)];
     let mut renderer = Renderer::default();
@@ -1778,6 +1822,7 @@ fn session_manager_hides_search_input_until_searching() {
             panes: 1,
             connected: false,
             created_at: 1,
+            last_connected_at: 1,
             saved: false,
         }],
         selected: 0,
@@ -1790,6 +1835,11 @@ fn session_manager_hides_search_input_until_searching() {
     assert!(!frame.contains("Session: "));
     assert!(frame.contains("<Ctrl f>"));
     assert!(frame.contains("first"));
+    let windows = vec![test_window(1, "fish", 36, 213)];
+    let frame = renderer.render(&windows, 0, (215, 40), "normal", None, &[]);
+    let frame = String::from_utf8(frame).unwrap();
+    assert!(frame.contains("LAST CONNECTED"));
+    assert!(frame.contains("CREATED"));
 }
 
 #[test]
@@ -1806,6 +1856,7 @@ fn session_manager_renders_rename_input() {
             panes: 1,
             connected: true,
             created_at: 1,
+            last_connected_at: 1,
             saved: false,
         }],
         selected: 0,

@@ -428,6 +428,34 @@ fn pane_moves_preserve_shell_state_and_saved_layout() {
 }
 
 #[test]
+fn connection_time_survives_shutdown_and_updates_without_autosave() {
+    let mut server = Server::new("autosave_interval_seconds = 0\n");
+    let metadata = server.snapshot().with_extension("connected");
+    assert!(!metadata.exists());
+    let client = server.attach();
+    eventually(|| metadata.exists());
+    let first: u64 = fs::read_to_string(&metadata).unwrap().parse().unwrap();
+    assert!(first > 0);
+    assert_eq!(
+        server.status().unwrap().trim().split('\t').nth(4).unwrap(),
+        first.to_string()
+    );
+    assert!(server.cli(&["save-session", "-s", "work"]).status.success());
+    server.stop(false);
+    drop(client);
+    assert!(server.snapshot().exists());
+    assert_eq!(fs::read_to_string(&metadata).unwrap(), first.to_string());
+    // Simulate older persisted metadata, then reconnect with autosave disabled.
+    fs::write(&metadata, "1").unwrap();
+    server.start();
+    let _client = server.attach();
+    eventually(|| fs::read_to_string(&metadata).unwrap() != "1");
+    server.stop(true);
+    assert!(!metadata.exists());
+    assert!(!server.snapshot().exists());
+}
+
+#[test]
 fn kill_all_sessions_stops_attached_server() {
     let mut server = Server::new("autosave_interval_seconds = 0\n");
     let _client = server.attach();
@@ -812,6 +840,10 @@ fn outstanding_manual_save_is_flushed_on_shutdown_and_cannot_recreate_deleted_sn
 #[test]
 fn queued_save_is_finished_before_renaming_a_session() {
     let mut server = Server::new("save_scrollback = true\n");
+    let _client = server.attach();
+    let metadata = server.snapshot().with_extension("connected");
+    eventually(|| metadata.exists());
+    let connection_time = fs::read_to_string(&metadata).unwrap();
     let _save = queue_save(&server);
     let mut stream = UnixStream::connect(&server.socket).unwrap();
     stream
@@ -822,6 +854,11 @@ fn queued_save_is_finished_before_renaming_a_session() {
     stream.read_to_end(&mut response).unwrap();
     assert_eq!(response, b"OK");
     server.socket.set_file_name("renamed.sock");
+    assert!(!metadata.exists());
+    assert_eq!(
+        fs::read_to_string(metadata.with_file_name("renamed.connected")).unwrap(),
+        connection_time
+    );
     server.stop(false);
     assert!(!server.snapshot().exists());
     assert!(

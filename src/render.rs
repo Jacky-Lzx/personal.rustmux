@@ -1837,11 +1837,13 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     output.extend_from_slice("─".repeat(body_width).as_bytes());
 
     let marker_width = 2;
-    let created_width = if body_width >= 65 { 15 } else { 0 };
+    let created_width = if body_width >= 85 { 17 } else { 0 };
+    let connected_width = if body_width >= 55 { 16 } else { 0 };
     let layout_width = if body_width >= 44 { 17 } else { 12 };
     let status_width = if body_width >= 30 { 11 } else { 0 };
-    let available_name_width =
-        body_width.saturating_sub(marker_width + layout_width + status_width + created_width);
+    let available_name_width = body_width.saturating_sub(
+        marker_width + layout_width + status_width + created_width + connected_width,
+    );
     let preferred_name_width = manager
         .sessions
         .iter()
@@ -1852,8 +1854,9 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         .saturating_add(3)
         .min(28);
     let name_width = preferred_name_width.min(available_name_width);
-    let trailing_width = body_width
-        .saturating_sub(marker_width + name_width + layout_width + status_width + created_width);
+    let trailing_width = body_width.saturating_sub(
+        marker_width + name_width + layout_width + status_width + created_width + connected_width,
+    );
 
     let _ = write!(output, "\x1b[{};{}H", origin_row + 3, origin_column + 2);
     write_session_manager_field(
@@ -1900,6 +1903,16 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             true,
         );
     }
+    if connected_width > 0 {
+        write_session_manager_field(
+            output,
+            "LAST CONNECTED",
+            connected_width,
+            theme.muted,
+            theme.background,
+            true,
+        );
+    }
     write_session_manager_field(
         output,
         "",
@@ -1931,7 +1944,7 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
         let (state, state_color) = if current {
             ("[CURRENT]", theme.accent)
         } else if session.connected {
-            ("[ATTACH]", theme.orange)
+            ("[ATTACHED]", theme.orange)
         } else if session.saved {
             ("[SAVED]", theme.purple)
         } else {
@@ -1979,7 +1992,27 @@ fn draw_session_manager(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
             write_session_manager_field(
                 output,
                 &session_created(session.created_at),
-                created_width,
+                created_width - 2,
+                theme.muted,
+                background,
+                false,
+            );
+            output.extend_from_slice(b"  ");
+        }
+        if connected_width > 0 {
+            let last_connected = if current || session.connected {
+                "Now".to_owned()
+            } else if session.last_connected_at == 0 {
+                "—".to_owned()
+            } else {
+                session_created(session.last_connected_at)
+                    .trim_start_matches("created ")
+                    .to_owned()
+            };
+            write_session_manager_field(
+                output,
+                &last_connected,
+                connected_width,
                 theme.muted,
                 background,
                 false,

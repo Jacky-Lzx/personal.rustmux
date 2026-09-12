@@ -33,7 +33,8 @@ Rustmux sessions cannot be nested. Starting or attaching to Rustmux from a shell
 
 Press `Ctrl-w` in normal mode, or `w` in session mode, to open the centered Session Manager.
 
-- The first session is selected when the manager opens; the search field stays hidden.
+- The current session stays at the top, followed by other connected sessions, then disconnected sessions. Each group is ordered by last connection time, newest first.
+- The most recently connected session that is currently disconnected is selected when the manager opens. If none exists, the current session is selected. The search field stays hidden.
 - `j` / `k` (or `↓` / `↑`) selects a session.
 - `/` enters search mode. Type to filter sessions by a case-insensitive substring; `j` and `k` enter text in this mode. Use the arrow keys to select a search result.
 - `Tab` completes the selected name while searching.
@@ -44,7 +45,9 @@ Press `Ctrl-w` in normal mode, or `w` in session mode, to open the centered Sess
 - `Delete` stops the selected session and its processes and removes its saved snapshot, or removes the snapshot alone if the session is not running. It does not ask for confirmation.
 - `Esc` leaves search mode and restores the full list; press it again to close the manager. While renaming, it cancels the rename.
 
-The list includes window and pane counts, connection state, saved state, and creation time.
+The list includes window and pane counts, connection state, saved state, creation time, and a `LAST CONNECTED` column showing `Now` for the current and attached sessions, or how long ago the last connection occurred for disconnected sessions. Time columns are hidden when space is limited; `—` means no connection time has been recorded.
+
+Connection times are recorded on each successful attachment, independently of automatic layout saving, and survive server restarts. Renaming a session carries its connection time with it; deleting a session removes it. Existing sessions gain a time record on their next connection using the updated server.
 
 All manager shortcuts can be customized in `config.toml`. Each action's array replaces its default keys; use `[]` to disable an action. Omitted actions keep their defaults, independently of the top-level `clear_defaults` setting. Keys must not be assigned to multiple manager actions. The displayed hints follow the configured keys.
 

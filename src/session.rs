@@ -229,8 +229,43 @@ pub(super) fn load_session_snapshot(name: &str) -> Result<Option<SessionSnapshot
     Ok(Some(snapshot))
 }
 
+// Connection metadata is independent of layout/history saving, so reconnecting
+// updates recency even when autosave is disabled.
+pub(super) fn last_connected_at(name: &str) -> u64 {
+    snapshot_path(name)
+        .ok()
+        .and_then(|path| fs::read_to_string(path.with_extension("connected")).ok())
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+pub(super) fn record_connection(name: &str, timestamp: u64) -> Result<()> {
+    let path = snapshot_path(name)?.with_extension("connected");
+    fs::create_dir_all(snapshot_dir())?;
+    fs::set_permissions(snapshot_dir(), fs::Permissions::from_mode(0o700))?;
+    let temporary = path.with_extension("connected.tmp");
+    fs::write(&temporary, timestamp.to_string())?;
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
+pub(super) fn sort_session_info(sessions: &mut [SessionInfo], current: &str) {
+    sessions.sort_by(|a, b| {
+        (b.name == current)
+            .cmp(&(a.name == current))
+            .then_with(|| b.connected.cmp(&a.connected))
+            .then_with(|| b.last_connected_at.cmp(&a.last_connected_at))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
 pub(super) fn delete_session_snapshot(name: &str) -> Result<()> {
     let path = snapshot_path(name)?;
+    match fs::remove_file(path.with_extension("connected")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -265,14 +300,17 @@ fn available_snapshots() -> Result<Vec<String>> {
 
 pub(super) fn rename_session_snapshot(old_name: &str, new_name: &str) -> Result<()> {
     let old_path = snapshot_path(old_name)?;
-    if !old_path.exists() {
-        return Ok(());
-    }
     let new_path = snapshot_path(new_name)?;
     if new_path.exists() {
         return Err(format!("saved session '{new_name}' already exists").into());
     }
-    fs::rename(old_path, new_path)?;
+    if old_path.exists() {
+        fs::rename(&old_path, &new_path)?;
+    }
+    let metadata = old_path.with_extension("connected");
+    if metadata.exists() {
+        fs::rename(metadata, new_path.with_extension("connected"))?;
+    }
     Ok(())
 }
 
@@ -623,6 +661,7 @@ pub(super) struct SessionInfo {
     pub(super) panes: usize,
     pub(super) connected: bool,
     pub(super) created_at: u64,
+    pub(super) last_connected_at: u64,
     pub(super) saved: bool,
 }
 
@@ -665,6 +704,10 @@ fn send_control_request(mut stream: UnixStream, request: &[u8]) -> Result<()> {
 }
 
 pub(super) fn available_session_info(local: Option<SessionInfo>) -> Result<Vec<SessionInfo>> {
+    let current = local
+        .as_ref()
+        .map(|info| info.name.clone())
+        .unwrap_or_default();
     let mut sessions = Vec::new();
     let live = available_sessions()?;
     let saved = available_snapshots()?;
@@ -689,7 +732,12 @@ pub(super) fn available_session_info(local: Option<SessionInfo>) -> Result<Vec<S
             .collect::<Vec<_>>();
         let snapshot = load_session_snapshot(&name).ok().flatten();
         let is_saved = saved.contains(&name);
+        let last_connected_at = fields
+            .get(4)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| last_connected_at(&name));
         sessions.push(SessionInfo {
+            last_connected_at,
             name,
             tabs: fields
                 .first()
@@ -711,6 +759,7 @@ pub(super) fn available_session_info(local: Option<SessionInfo>) -> Result<Vec<S
             saved: is_saved,
         });
     }
+    sort_session_info(&mut sessions, &current);
     Ok(sessions)
 }
 
