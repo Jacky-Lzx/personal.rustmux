@@ -54,3 +54,30 @@ mdbook serve --open
 ```
 
 The build script generates the documentation in `dist/`. `mdbook serve` opens it with live reload.
+
+## Publish to GitHub Pages
+
+The `Deploy documentation` workflow builds with mdBook 0.5.4 and publishes `dist/`.
+It runs when documentation, `book.toml`, the build script, or the workflow changes
+on `main`. It can also be started manually from the Actions tab on `main`.
+
+For initial setup:
+
+1. In the repository, open **Settings → Pages** and select **GitHub Actions** as
+   the build and deployment source.
+2. Push the workflow to `main`.
+3. Open **Actions → Deploy documentation** to monitor the run. If needed, choose
+   **Run workflow**, select `main`, and start it manually.
+4. After both jobs succeed, open the deployment URL or **Settings → Pages → Visit site**.
+
+The default project URL is <https://jacky-lzx.github.io/Rustmux/>. Pages must be
+enabled before the workflow runs. No personal access token or custom secret is
+required; deployment uses the workflow's `GITHUB_TOKEN` and OIDC permissions.
+
+The workflow obtains the base path from GitHub Pages and overrides mdBook's
+`site-url` only during deployment, so local and Sites builds retain their existing
+root path. To check a project-path build locally:
+
+```sh
+MDBOOK_OUTPUT__HTML__SITE_URL=/Rustmux/ ./scripts/build-docs.sh
+```
