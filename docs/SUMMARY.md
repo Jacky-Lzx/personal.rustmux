@@ -28,4 +28,5 @@
 - [Troubleshooting](./reference/troubleshooting.md)
 - [Development and Testing](./reference/development.md)
 - [Development Tracks and Human Review](./reference/development-tracks.md)
+- [Human Review Baseline and First Milestone](./reference/human-review-plan.md)
 - [Autosave Performance](./reference/autosave-performance.md)

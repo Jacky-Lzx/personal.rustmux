@@ -75,12 +75,12 @@ check alone does not establish compliance with this policy.
 
 <label for="human-review-progress"><strong>Progress: not yet measured</strong></label>
 <progress id="human-review-progress" aria-describedby="human-review-progress-note" style="display: block; width: 100%; max-width: 32rem; margin: 0.75rem 0;"></progress>
-<p id="human-review-progress-note">The feature baseline and acceptance ledger have not been established. No percentage is reported, and no existing implementation is assumed to have passed the owner's review.</p>
+<p id="human-review-progress-note">A fixed reference and draft acceptance ledger are prepared; owner agreement on the feature checklist is pending. No percentage is reported, and no existing implementation is assumed to have passed the owner's review.</p>
 
 | Tracking field | Current record |
 | --- | --- |
-| Reference `main` commit | To be selected by the owner |
-| Agreed feature checklist | Not yet established |
+| Reference `main` commit | `e7fe6a1219754c383eb4fc7e40d30f2232def43f` |
+| Agreed feature checklist | [Draft prepared; owner agreement pending](human-review-plan.md) |
 | Features recorded as accepted | None recorded yet |
 | Total features in this baseline | Not yet established |
 | Coverage percentage | Not yet available |
@@ -116,3 +116,6 @@ linking to implementation and review evidence from `main-human`.
 A suggested first milestone is a usable single-pane terminal: start a shell,
 forward input, render output, resize, and exit correctly. It is a starting point
 for the owner's checklist, not an already approved baseline.
+
+See the [baseline ledger and first milestone plan](human-review-plan.md) for
+the proposed checklist, empty branch anchor, bootstrap review, and evidence template.
