@@ -30,7 +30,9 @@ use crate::layout::{
     pane_resize_handle, rect_in_direction, remove_pane, resize_pane, resize_pane_to, split_pane,
     swap_panes, tiled_content_rect_for, validate_terminal_size, window_winsize_for,
 };
-use crate::persistence::{SaveCompletion, SaveRequest, SnapshotWriter};
+use crate::persistence::{
+    HistoryCache, PreparedSnapshot, SaveCompletion, SaveRequest, SnapshotWriter,
+};
 use crate::render::{HelpView, Renderer, SessionManagerView, render_base_index};
 use crate::session::{
     ScrollbackFormat, SessionInfo, SessionSnapshot, SnapshotFloating, SnapshotPane, SnapshotTab,
@@ -68,6 +70,7 @@ pub(super) struct Window {
     pub(super) spawn_directory: Option<PathBuf>,
     pub(super) startup_command: Option<String>,
     pub(super) terminal: vt100::Parser<TerminalMetadata>,
+    pub(super) history_cache: HistoryCache,
     pub(super) cursor_style: CursorStyleTracker,
     pub(super) input_modes: InputModeTracker,
     pub(super) terminal_osc: TerminalOscTracker,
@@ -363,7 +366,7 @@ pub(super) struct App {
     mouse_drag: Option<MouseDrag>,
     status_mouse_down: bool,
     last_autosave_check: Instant,
-    last_saved_snapshot: Option<Arc<SessionSnapshot>>,
+    last_saved_snapshot: Option<Arc<PreparedSnapshot>>,
     snapshot_writer: SnapshotWriter,
     client: Option<UnixStream>,
     outer_dnd_window: Option<usize>,
@@ -568,7 +571,7 @@ impl App {
         }
     }
 
-    fn session_snapshot(&self) -> Result<SessionSnapshot> {
+    fn session_snapshot(&mut self) -> Result<PreparedSnapshot> {
         let active_pane = if self.windows[self.active].floating {
             self.windows[self.active]
                 .return_to_window
@@ -591,13 +594,7 @@ impl App {
                     .filter_map(|id| self.windows.iter().find(|window| window.id == id))
                     .map(|window| SnapshotPane {
                         scrollback_format: self.saved_scrollback_format(),
-                        scrollback: self.config.save_scrollback.then(|| {
-                            snapshot_scrollback(
-                                window.terminal.screen(),
-                                self.config.scrollback_lines(),
-                                self.config.save_scrollback_colors,
-                            )
-                        }),
+                        scrollback: None,
                         command: window.startup_command.clone(),
                         id: window.id,
                         cwd: self.window_directory(window),
@@ -632,13 +629,7 @@ impl App {
             .find(|window| window.floating)
             .map(|window| SnapshotFloating {
                 scrollback_format: self.saved_scrollback_format(),
-                scrollback: self.config.save_scrollback.then(|| {
-                    snapshot_scrollback(
-                        window.terminal.screen(),
-                        self.config.scrollback_lines(),
-                        self.config.save_scrollback_colors,
-                    )
-                }),
+                scrollback: None,
                 cwd: self.window_directory(window),
                 visible: self.windows[self.active].id == window.id,
                 return_to: window
@@ -646,7 +637,20 @@ impl App {
                     .filter(|id| saved_ids.contains(id))
                     .or(Some(active_pane)),
             });
-        Ok(SessionSnapshot::new(tabs, floating, active_pane))
+        let mut snapshot = PreparedSnapshot::new(SessionSnapshot::new(tabs, floating, active_pane));
+        if self.config.save_scrollback {
+            for window in &mut self.windows {
+                if window.floating || saved_ids.contains(&window.id) {
+                    let history = window.history_cache.capture(
+                        window.terminal.screen(),
+                        self.config.scrollback_lines(),
+                        self.config.save_scrollback_colors,
+                    );
+                    snapshot.add_history((!window.floating).then_some(window.id), history);
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     fn queue_session_save(&mut self, notify: bool, reply: Option<UnixStream>) -> Result<()> {
@@ -893,6 +897,7 @@ impl App {
                         self.config.scrollback_lines(),
                         TerminalMetadata::default(),
                     ),
+                    history_cache: HistoryCache::default(),
                     cursor_style: CursorStyleTracker::default(),
                     input_modes: InputModeTracker::default(),
                     terminal_osc: TerminalOscTracker::default(),
@@ -3283,6 +3288,9 @@ impl App {
             }
         }
         let terminal_changed = !ipc.terminal.is_empty();
+        if terminal_changed {
+            self.windows[index].history_cache.invalidate();
+        }
         let previous_keyboard_flags = self.windows[index].input_modes.keyboard_flags();
         let previous_rich_paste = self.windows[index].input_modes.rich_clipboard_paste();
         let mode_responses = self.windows[index].input_modes.process(&ipc.terminal);
@@ -4091,14 +4099,23 @@ fn screen_history_lines(screen: &mut vt100::Screen) -> Vec<String> {
     lines
 }
 
+#[cfg(any(test, feature = "benchmarks"))]
 pub(super) fn snapshot_scrollback(
     screen: &vt100::Screen,
     limit: usize,
     colored: bool,
 ) -> Vec<String> {
-    // Inspect a copy so saving does not alter scroll position or the live TUI.
+    snapshot_owned_scrollback(screen.clone(), limit, colored)
+}
+
+pub(super) fn snapshot_owned_scrollback(
+    screen: vt100::Screen,
+    limit: usize,
+    colored: bool,
+) -> Vec<String> {
+    // The save worker owns this frozen screen; never mutate the live terminal.
     let mut parser = vt100::Parser::new(1, 1, 0);
-    *parser.screen_mut() = screen.clone();
+    *parser.screen_mut() = screen;
     // Select the primary buffer without resetting it or replaying application output.
     parser.process(b"\x1b[?47l");
     let screen = parser.screen_mut();
@@ -4427,6 +4444,9 @@ fn resize_window(
     if unsafe { nix::libc::ioctl(window.master.as_raw_fd(), nix::libc::TIOCSWINSZ, &winsize) } == -1
     {
         return Err(io::Error::last_os_error().into());
+    }
+    if window.terminal.screen().size() != (rows, columns) {
+        window.history_cache.invalidate();
     }
     window.terminal.screen_mut().set_size(rows, columns);
     window.hyperlinks.resize(rows, columns);

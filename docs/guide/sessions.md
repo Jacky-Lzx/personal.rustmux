@@ -79,7 +79,11 @@ backspace = ["backspace"]
 
 Automatic saving is disabled by default (`autosave_interval_seconds = 0`). Set a positive interval, such as `30`, to save changed layouts periodically and when detaching or stopping a running server. Manual saving remains available through `Ctrl-a` in the Session Manager. Closing every pane retains the last saved snapshot; deleting a session removes its snapshot without recreating it during shutdown.
 
-Snapshot capture and comparison happen in the terminal event loop; TOML encoding and file writes run on a background thread. One write runs at a time, and pending saves are combined into the latest snapshot. The Session Manager confirms success after the write completes, and `rustmux save-session` waits for that result while terminal input continues. Normal shutdown, session renaming, and deletion wait for outstanding writes to finish so they cannot restore an old filename or recreate a deleted snapshot. Capturing large histories still takes time in the event loop.
+Layout capture and comparison happen in the terminal event loop. Each pane caches its saved history: unchanged panes reuse it without copying or scanning their terminal buffers. New terminal output or a size change invalidates that pane; changing the saved history limit or color option also requires a fresh capture. Changed panes copy an immutable terminal screen in the event loop, then a background thread extracts history, formats colors, encodes TOML, and writes the file.
+
+One write runs at a time, and pending saves are combined into the latest snapshot. The Session Manager confirms success after the write completes, and `rustmux save-session` waits for that result while terminal input continues. Normal shutdown, session renaming, and deletion wait for outstanding writes to finish so they cannot restore an old filename or recreate a deleted snapshot.
+
+Copying changed terminal screens still takes time in the event loop, but history extraction and formatting do not. Output invalidation is conservative: terminal control sequences can trigger a new capture even when the resulting saved text is identical. Saves still write complete, compatible TOML snapshots; the incremental work is per-pane capture and history reuse.
 
 Snapshots are stored under:
 
@@ -101,7 +105,7 @@ autosave_interval_seconds = 30 # Optional; keep 0 for manual saving only.
 
 With `save_scrollback` enabled, manual and automatic saves include the most recent rows from each pane's main terminal buffer, including visible text and floating-terminal history. Up to `scrollback_lines` rows are retained per pane. Full-screen applications' alternate buffers, images, and terminal modes are not saved.
 
-History is plain text by default. Set `save_scrollback_colors = true` to retain indexed and RGB foreground/background colors, bold, dim, italic, underline, and inverse styles. Consecutive cells with the same style share [ANSI SGR sequences](https://www.invisible-island.net/xterm/ctlseqs/ctlseqs.html). Default and indexed colors use the palette available when restored; custom OSC palette changes are not saved. Color formatting is captured with the snapshot; TOML encoding and writes continue to run in the background.
+History is plain text by default. Set `save_scrollback_colors = true` to retain indexed and RGB foreground/background colors, bold, dim, italic, underline, and inverse styles. Consecutive cells with the same style share [ANSI SGR sequences](https://www.invisible-island.net/xterm/ctlseqs/ctlseqs.html). Default and indexed colors use the palette available when restored; custom OSC palette changes are not saved. The snapshot freezes terminal colors at capture time; history extraction, color formatting, TOML encoding, and writes run in the background.
 
 The color option supports hot reload and affects future saves. Each snapshot records its own format, so existing colored snapshots restore with colors even if the option is subsequently disabled. Old plain-text snapshots remain readable. Restoration accepts only text and SGR styling, and resets styles before starting the fresh live screen.
 

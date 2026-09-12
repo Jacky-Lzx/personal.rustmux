@@ -66,6 +66,7 @@ fn test_window(id: usize, name: &str, rows: u16, columns: u16) -> Window {
             SCROLLBACK_LINES,
             TerminalMetadata::default(),
         ),
+        history_cache: crate::persistence::HistoryCache::default(),
         cursor_style: CursorStyleTracker::default(),
         input_modes: InputModeTracker::default(),
         terminal_osc: TerminalOscTracker::default(),

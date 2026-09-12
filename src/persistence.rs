@@ -1,27 +1,139 @@
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use crate::session::{SessionSnapshot, save_session_snapshot};
+
+// A cache belongs to the pane, so moving a pane preserves it and closing a
+// pane releases it. Invalidation never walks or drops the cached history.
+#[derive(Default)]
+pub(super) struct HistoryCache {
+    dirty: bool,
+    captured: Option<Arc<HistoryCapture>>,
+}
+
+impl HistoryCache {
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
+    pub fn capture(
+        &mut self,
+        screen: &vt100::Screen,
+        limit: usize,
+        colored: bool,
+    ) -> Arc<HistoryCapture> {
+        if self.dirty
+            || self
+                .captured
+                .as_ref()
+                .is_none_or(|capture| capture.limit != limit || capture.colored != colored)
+        {
+            self.captured = Some(Arc::new(HistoryCapture {
+                screen: Mutex::new(Some(screen.clone())),
+                lines: OnceLock::new(),
+                limit,
+                colored,
+            }));
+            self.dirty = false;
+        }
+        self.captured.as_ref().unwrap().clone()
+    }
+}
+
+pub(super) struct HistoryCapture {
+    screen: Mutex<Option<vt100::Screen>>,
+    lines: OnceLock<Vec<String>>,
+    limit: usize,
+    colored: bool,
+}
+
+impl HistoryCapture {
+    // Called only by the save worker (or benchmarks/tests), never to compare
+    // snapshots on the event loop. Release the frozen screen after formatting.
+    fn lines(&self) -> &Vec<String> {
+        self.lines.get_or_init(|| {
+            let screen = self.screen.lock().unwrap().take().unwrap();
+            crate::app::snapshot_owned_scrollback(screen, self.limit, self.colored)
+        })
+    }
+}
+
+pub(super) struct PreparedSnapshot {
+    pub layout: SessionSnapshot,
+    // None denotes the floating pane; other entries use stable live pane IDs.
+    histories: Vec<(Option<usize>, Arc<HistoryCapture>)>,
+}
+
+impl PreparedSnapshot {
+    pub fn new(layout: SessionSnapshot) -> Self {
+        Self {
+            layout,
+            histories: Vec::new(),
+        }
+    }
+
+    pub fn add_history(&mut self, pane: Option<usize>, history: Arc<HistoryCapture>) {
+        self.histories.push((pane, history));
+    }
+
+    pub fn materialize(&self) -> SessionSnapshot {
+        let mut snapshot = self.layout.clone();
+        for (id, history) in &self.histories {
+            let destination = match id {
+                Some(id) => {
+                    &mut snapshot
+                        .tabs
+                        .iter_mut()
+                        .flat_map(|tab| &mut tab.panes)
+                        .find(|pane| pane.id == *id)
+                        .expect("captured pane exists")
+                        .scrollback
+                }
+                None => {
+                    &mut snapshot
+                        .floating
+                        .as_mut()
+                        .expect("captured floating pane exists")
+                        .scrollback
+                }
+            };
+            *destination = Some(history.lines().clone());
+        }
+        snapshot
+    }
+}
+
+impl PartialEq for PreparedSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.layout == other.layout
+            && self.histories.len() == other.histories.len()
+            && self.histories.iter().zip(&other.histories).all(
+                |((id, history), (other_id, other_history))| {
+                    id == other_id && Arc::ptr_eq(history, other_history)
+                },
+            )
+    }
+}
 
 type SaveResult = Result<(), String>;
 type SaveFn = Arc<dyn Fn(&str, &SessionSnapshot) -> SaveResult + Send + Sync>;
 
 pub(super) struct SaveRequest {
     pub name: String,
-    pub snapshot: Arc<SessionSnapshot>,
+    pub snapshot: Arc<PreparedSnapshot>,
     pub notify: bool,
     pub replies: Vec<UnixStream>,
 }
 
 pub(super) struct SaveCompletion {
-    pub snapshot: Arc<SessionSnapshot>,
+    pub snapshot: Arc<PreparedSnapshot>,
     pub notify: bool,
     pub result: SaveResult,
 }
 
 struct ActiveSave {
-    snapshot: Arc<SessionSnapshot>,
+    snapshot: Arc<PreparedSnapshot>,
     notify: bool,
     thread: JoinHandle<SaveResult>,
 }
@@ -45,7 +157,7 @@ impl Default for SnapshotWriter {
 }
 
 impl SnapshotWriter {
-    pub fn latest_snapshot(&self) -> Option<&SessionSnapshot> {
+    pub fn latest_snapshot(&self) -> Option<&PreparedSnapshot> {
         self.pending
             .as_ref()
             .map(|job| job.snapshot.as_ref())
@@ -78,7 +190,7 @@ impl SnapshotWriter {
         // Only immutable snapshot data crosses the thread boundary. PTYs and
         // terminal parsers remain owned by the event loop.
         let thread = thread::spawn(move || {
-            let result = save(&request.name, &request.snapshot);
+            let result = save(&request.name, &request.snapshot.materialize());
             let response = crate::control::Response {
                 ok: result.is_ok(),
                 output: result.as_ref().err().cloned().unwrap_or_default(),
@@ -141,10 +253,147 @@ mod tests {
     use std::sync::{Mutex, mpsc};
     use std::time::Duration;
 
+    #[test]
+    fn history_capture_is_lazy_reusable_and_immutable_after_output() {
+        let mut terminal = vt100::Parser::new(3, 40, 20);
+        terminal.process(b"old\r\nkeep one\r\nkeep two\r\nkeep three");
+        let mut cache = HistoryCache::default();
+        let first = cache.capture(terminal.screen(), 3, false);
+        assert!(first.lines.get().is_none());
+        // Browsing history is not a change to the saved primary buffer.
+        terminal.screen_mut().set_scrollback(1);
+        assert!(Arc::ptr_eq(
+            &first,
+            &cache.capture(terminal.screen(), 3, false)
+        ));
+        terminal.screen_mut().set_scrollback(0);
+        terminal.process(b"\r\nnew output");
+        cache.invalidate();
+        let second = cache.capture(terminal.screen(), 3, false);
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(first.lines(), &["keep one", "keep two", "keep three"]);
+        assert_eq!(second.lines(), &["keep two", "keep three", "new output"]);
+        assert!(first.screen.lock().unwrap().is_none());
+        assert!(second.screen.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn history_capture_respects_format_limit_and_primary_screen() {
+        let mut terminal = vt100::Parser::new(3, 40, 20);
+        terminal.process(b"old\r\n\x1b[31mred\x1b[0m\r\nlast");
+        terminal.process(b"\x1b[?1049h\x1b[2Jtemporary TUI");
+        let before = terminal.screen().state_formatted();
+        let mut cache = HistoryCache::default();
+        let plain = cache.capture(terminal.screen(), 3, false);
+        let colored = cache.capture(terminal.screen(), 3, true);
+        let limited = cache.capture(terminal.screen(), 1, true);
+        assert_eq!(plain.lines(), &["old", "red", "last"]);
+        let mut restored = vt100::Parser::new(3, 40, 0);
+        restored.process(colored.lines()[1].as_bytes());
+        assert_eq!(restored.screen().contents(), "red");
+        assert_eq!(
+            restored.screen().cell(0, 0).unwrap().fgcolor(),
+            vt100::Color::Idx(1)
+        );
+        assert_eq!(limited.lines(), &["last"]);
+        assert!(!Arc::ptr_eq(&plain, &colored));
+        assert!(!Arc::ptr_eq(&colored, &limited));
+        assert_eq!(terminal.screen().state_formatted(), before);
+    }
+
+    #[test]
+    fn unchanged_panes_are_reused_without_formatting_during_comparison() {
+        let terminal = vt100::Parser::new(3, 40, 20);
+        let mut left = HistoryCache::default();
+        let mut right = HistoryCache::default();
+        let mut before = PreparedSnapshot::new(SessionSnapshot::new(Vec::new(), None, 1));
+        before.add_history(Some(1), left.capture(terminal.screen(), 10, false));
+        before.add_history(None, right.capture(terminal.screen(), 10, false));
+        let mut after = PreparedSnapshot::new(before.layout.clone());
+        after.add_history(Some(1), left.capture(terminal.screen(), 10, false));
+        after.add_history(None, right.capture(terminal.screen(), 10, false));
+        assert!(before == after);
+        left.invalidate();
+        after.histories[0].1 = left.capture(terminal.screen(), 10, false);
+        assert!(before != after);
+        assert!(Arc::ptr_eq(&before.histories[1].1, &after.histories[1].1));
+        assert!(
+            before
+                .histories
+                .iter()
+                .chain(&after.histories)
+                .all(|(_, h)| h.lines.get().is_none())
+        );
+        after.histories[0].1 = before.histories[0].1.clone();
+        after.layout.active_pane = 2;
+        assert!(before != after);
+    }
+
+    #[test]
+    fn worker_materializes_frozen_history_and_reports_write_failure() {
+        use crate::session::{ScrollbackFormat, SnapshotFloating};
+        let mut terminal = vt100::Parser::new(3, 40, 20);
+        terminal.process(b"captured output");
+        let mut cache = HistoryCache::default();
+        let history = cache.capture(terminal.screen(), 10, false);
+        let mut snapshot = PreparedSnapshot::new(SessionSnapshot::new(
+            Vec::new(),
+            Some(SnapshotFloating {
+                scrollback_format: ScrollbackFormat::Plain,
+                scrollback: None,
+                cwd: None,
+                visible: true,
+                return_to: None,
+            }),
+            1,
+        ));
+        snapshot.add_history(None, history.clone());
+        let snapshot = Arc::new(snapshot);
+        terminal.process(b" changed later");
+        cache.invalidate();
+        assert!(history.lines.get().is_none());
+        let caller = thread::current().id();
+        let mut writer = SnapshotWriter {
+            active: None,
+            pending: None,
+            save: Arc::new(move |_, snapshot| {
+                assert_ne!(thread::current().id(), caller);
+                assert_eq!(
+                    snapshot
+                        .floating
+                        .as_ref()
+                        .unwrap()
+                        .scrollback
+                        .as_ref()
+                        .unwrap(),
+                    &["captured output"]
+                );
+                Err("disk full".to_owned())
+            }),
+        };
+        for _ in 0..2 {
+            writer
+                .submit(SaveRequest {
+                    name: "test".to_owned(),
+                    snapshot: snapshot.clone(),
+                    notify: false,
+                    replies: Vec::new(),
+                })
+                .unwrap();
+            assert_eq!(writer.flush()[0].result, Err("disk full".to_owned()));
+        }
+        assert!(history.lines.get().is_some());
+        assert!(history.screen.lock().unwrap().is_none());
+    }
+
     fn request(id: usize) -> SaveRequest {
         SaveRequest {
             name: "test".to_owned(),
-            snapshot: Arc::new(SessionSnapshot::new(Vec::new(), None, id)),
+            snapshot: Arc::new(PreparedSnapshot::new(SessionSnapshot::new(
+                Vec::new(),
+                None,
+                id,
+            ))),
             notify: false,
             replies: Vec::new(),
         }
@@ -180,13 +429,13 @@ mod tests {
         pending.replies.push(reply);
         writer.submit(pending).unwrap();
         writer.submit(request(3)).unwrap();
-        assert_eq!(writer.latest_snapshot().unwrap().active_pane, 3);
+        assert_eq!(writer.latest_snapshot().unwrap().layout.active_pane, 3);
         release_tx.send(()).unwrap();
         release_tx.send(()).unwrap();
         let completed = writer.flush();
         assert_eq!(completed.len(), 2);
-        assert_eq!(completed[0].snapshot.active_pane, 1);
-        assert_eq!(completed[1].snapshot.active_pane, 3);
+        assert_eq!(completed[0].snapshot.layout.active_pane, 1);
+        assert_eq!(completed[1].snapshot.layout.active_pane, 3);
         assert!(completed[1].notify);
         assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 3);
         let response: crate::control::Response =

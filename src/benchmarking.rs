@@ -100,6 +100,7 @@ impl ImagePreviewRunner {
                     1_000,
                     TerminalMetadata::default(),
                 ),
+                history_cache: crate::persistence::HistoryCache::default(),
                 cursor_style: CursorStyleTracker::default(),
                 input_modes: InputModeTracker::default(),
                 terminal_osc: TerminalOscTracker::default(),
@@ -185,6 +186,8 @@ impl Default for ImagePreviewRunner {
 
 /// Measurements of the production history capture and background save paths.
 pub struct SessionSaveSample {
+    pub baseline_capture_ms: f64,
+    pub one_changed_ms: f64,
     pub capture_ms: f64,
     pub unchanged_ms: f64,
     pub encode_ms: f64,
@@ -193,6 +196,7 @@ pub struct SessionSaveSample {
 }
 
 pub struct SessionSaveRunner {
+    caches: Vec<crate::persistence::HistoryCache>,
     terminals: Vec<vt100::Parser<TerminalMetadata>>,
     lines: usize,
     save_history: bool,
@@ -222,6 +226,7 @@ impl SessionSaveRunner {
             terminals.push(terminal);
         }
         Self {
+            caches: (0..panes).map(|_| Default::default()).collect(),
             terminals,
             lines,
             save_history,
@@ -230,7 +235,7 @@ impl SessionSaveRunner {
         }
     }
 
-    fn snapshot(&self) -> crate::session::SessionSnapshot {
+    fn snapshot(&self, history: bool) -> crate::session::SessionSnapshot {
         use crate::session::{ScrollbackFormat, SessionSnapshot, SnapshotPane, SnapshotTab};
         let tabs = self
             .terminals
@@ -251,7 +256,7 @@ impl SessionSaveRunner {
                         } else {
                             ScrollbackFormat::Plain
                         },
-                        scrollback: self.save_history.then(|| {
+                        scrollback: (history && self.save_history).then(|| {
                             crate::app::snapshot_scrollback(
                                 terminal.screen(),
                                 self.lines,
@@ -265,33 +270,48 @@ impl SessionSaveRunner {
         SessionSnapshot::new(tabs, None, 1)
     }
 
+    fn prepare(&mut self) -> crate::persistence::PreparedSnapshot {
+        let mut snapshot = crate::persistence::PreparedSnapshot::new(self.snapshot(false));
+        if self.save_history {
+            for (index, (terminal, cache)) in
+                self.terminals.iter().zip(&mut self.caches).enumerate()
+            {
+                snapshot.add_history(
+                    Some(index + 1),
+                    cache.capture(terminal.screen(), self.lines, self.colored),
+                );
+            }
+        }
+        snapshot
+    }
+
     pub fn measure(&mut self) -> SessionSaveSample {
         use std::hint::black_box;
         use std::sync::Arc;
         use std::time::Instant;
         self.sequence += 1;
-        for terminal in &mut self.terminals {
+        for (terminal, cache) in self.terminals.iter_mut().zip(&mut self.caches) {
             terminal.process(format!("update {}\r\n", self.sequence).as_bytes());
+            cache.invalidate();
         }
+        // Retain the old synchronous extraction as a same-run comparison.
         let started = Instant::now();
-        let snapshot = Arc::new(self.snapshot());
+        let baseline = self.snapshot(true);
+        let baseline_capture_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let snapshot = Arc::new(self.prepare());
         let capture_ms = started.elapsed().as_secs_f64() * 1000.0;
         let started = Instant::now();
-        let candidate = self.snapshot();
+        let candidate = self.prepare();
         assert!(black_box(&candidate) == snapshot.as_ref());
         drop(candidate);
         let unchanged_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let started = Instant::now();
-        let encoded = toml::to_string_pretty(snapshot.as_ref()).unwrap();
-        let encode_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let bytes = encoded.len();
-        drop(encoded);
         let mut writer = crate::persistence::SnapshotWriter::default();
         let started = Instant::now();
         writer
             .submit(crate::persistence::SaveRequest {
                 name: "save-benchmark".to_owned(),
-                snapshot,
+                snapshot: snapshot.clone(),
                 notify: false,
                 replies: Vec::new(),
             })
@@ -300,7 +320,22 @@ impl SessionSaveRunner {
             completion.result.unwrap();
         }
         let background_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let materialized = snapshot.materialize();
+        assert_eq!(materialized, baseline);
+        let started = Instant::now();
+        let encoded = toml::to_string_pretty(&materialized).unwrap();
+        let encode_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let bytes = encoded.len();
+        self.terminals[0].process(b"single pane update\r\n");
+        self.caches[0].invalidate();
+        let started = Instant::now();
+        let one_changed = self.prepare();
+        let one_changed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        // Format outside the measured capture, as the real save worker does.
+        black_box(one_changed.materialize());
         SessionSaveSample {
+            baseline_capture_ms,
+            one_changed_ms,
             capture_ms,
             unchanged_ms,
             encode_ms,

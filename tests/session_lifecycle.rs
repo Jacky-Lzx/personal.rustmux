@@ -829,6 +829,42 @@ fn autosave_records_new_output_and_restores_floating_history() {
     );
 }
 
+#[test]
+fn cached_scrollback_tracks_resize_without_new_pty_output() {
+    let server = Server::new("save_scrollback = true\nscrollback_lines = 100\n");
+    let mut client = server.attach();
+    // exec removes the shell prompt and sleep produces no redraw on SIGWINCH.
+    input(&mut client, br#"exec /bin/sh -c 'printf "\033[2J\033[Habcdefghijklmnopqrstuvwxyz0123456789"; exec sleep 60'
+"#);
+    let capture = || {
+        let output = server.cli(&["capture-pane", "-s", "work", "--history"]);
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    eventually(|| {
+        let output = server.cli(&["capture-pane", "-s", "work"]);
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).trim_end()
+                == "abcdefghijklmnopqrstuvwxyz0123456789"
+    });
+    let save = || {
+        assert!(server.cli(&["save-session", "-s", "work"]).status.success());
+        let snapshot: toml::Value =
+            toml::from_str(&fs::read_to_string(server.snapshot()).unwrap()).unwrap();
+        snapshot["tabs"][0]["panes"][0]["scrollback"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let before = save();
+    client.write_all(&[b'R', 0, 24, 0, 24, 0, 0, 0, 0]).unwrap();
+    eventually(|| capture().trim_end_matches('\n') != before);
+    assert_eq!(save(), capture().trim_end_matches('\n'));
+}
+
 // Submit a save without waiting for its response, then use a status request as
 // an event-loop barrier. This exercises shutdown/rename with a queued save.
 fn queue_save(server: &Server) -> UnixStream {

@@ -15,7 +15,7 @@ fn main() {
         .unwrap_or(15)
         .max(3);
     println!(
-        "case,panes,lines_per_pane,density,capture_p50_ms,capture_p95_ms,unchanged_p50_ms,unchanged_p95_ms,encode_p50_ms,background_p50_ms,background_p95_ms,file_bytes"
+        "case,panes,lines_per_pane,density,capture_p50_ms,capture_p95_ms,unchanged_p50_ms,unchanged_p95_ms,encode_p50_ms,background_p50_ms,background_p95_ms,file_bytes,baseline_capture_p50_ms,one_changed_p50_ms"
     );
     for (name, panes, lines, density, history, colors) in [
         ("layout", 1, 5000, 0, false, false),
@@ -36,12 +36,14 @@ fn main() {
         let mut runner = SessionSaveRunner::new(panes, lines, density, history, colors);
         runner.measure(); // warm caches and allocator
         let samples: Vec<_> = (0..iterations).map(|_| runner.measure()).collect();
+        let mut baseline: Vec<_> = samples.iter().map(|s| s.baseline_capture_ms).collect();
+        let mut one_changed: Vec<_> = samples.iter().map(|s| s.one_changed_ms).collect();
         let mut capture: Vec<_> = samples.iter().map(|s| s.capture_ms).collect();
         let mut unchanged: Vec<_> = samples.iter().map(|s| s.unchanged_ms).collect();
         let mut encode: Vec<_> = samples.iter().map(|s| s.encode_ms).collect();
         let mut background: Vec<_> = samples.iter().map(|s| s.background_ms).collect();
         println!(
-            "{name},{panes},{lines},{density},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{}",
+            "{name},{panes},{lines},{density},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{:.3},{:.3}",
             percentile(&mut capture, 0.5),
             percentile(&mut capture, 0.95),
             percentile(&mut unchanged, 0.5),
@@ -49,7 +51,9 @@ fn main() {
             percentile(&mut encode, 0.5),
             percentile(&mut background, 0.5),
             percentile(&mut background, 0.95),
-            samples[0].bytes
+            samples[0].bytes,
+            percentile(&mut baseline, 0.5),
+            percentile(&mut one_changed, 0.5)
         );
     }
 }
