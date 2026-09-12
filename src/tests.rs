@@ -733,6 +733,39 @@ fn compact_layout_reclaims_status_row_and_shows_mode_at_top_right() {
 }
 
 #[test]
+fn scroll_mode_recolors_outer_border_and_restores_it_incrementally() {
+    let mut windows = vec![test_window(1, "fish", 10, 18)];
+    let mut renderer = Renderer::default();
+    let mut screen = vt100::Parser::new(14, 20, 0);
+    screen.process(&renderer.render(&windows, 0, (20, 14), "locked", None, &[]));
+    let theme = crate::theme::Theme::default();
+    for scrolling in [true, false] {
+        windows[0].history_mode = scrolling;
+        let output = renderer.render(
+            &windows,
+            0,
+            (20, 14),
+            if scrolling { "scroll" } else { "locked" },
+            None,
+            &[],
+        );
+        assert!(!output.windows(4).any(|part| part == b"\x1b[2J"));
+        screen.process(&output);
+        let (r, g, b) = if scrolling {
+            theme.orange
+        } else {
+            theme.accent
+        };
+        for (row, column) in [(1, 0), (2, 0), (2, 19), (12, 0)] {
+            assert_eq!(
+                screen.screen().cell(row, column).unwrap().fgcolor(),
+                vt100::Color::Rgb(r, g, b)
+            );
+        }
+    }
+}
+
+#[test]
 fn history_mode_renders_offset_without_clearing_the_screen() {
     let mut window = test_window(1, "fish", 3, 18);
     window.terminal.process(b"one\r\ntwo\r\nthree\r\nfour");
@@ -1116,7 +1149,7 @@ fn tiled_panes_are_composited_inside_one_tab() {
         height: 14,
     };
     right.terminal.process(b"right pane");
-    let windows = vec![left, right];
+    let mut windows = vec![left, right];
 
     let snapshot = FrameSnapshot::capture(&windows, 0, (40, 15), "locked", None, None);
     let frame = String::from_utf8(render_frame(&windows, 0, &snapshot, &[])).unwrap();
@@ -1131,6 +1164,21 @@ fn tiled_panes_are_composited_inside_one_tab() {
     assert!(!snapshot.outer_border);
     assert_eq!(snapshot.content_size, (40, 13));
     assert_eq!(snapshot.content_origin, (1, 2));
+    windows[0].history_mode = true;
+    let snapshot = FrameSnapshot::capture(&windows, 0, (40, 15), "scroll", None, None);
+    let mut screen = vt100::Parser::new(15, 40, 0);
+    screen.process(&render_frame(&windows, 0, &snapshot, &[]));
+    let theme = crate::theme::Theme::default();
+    let (r, g, b) = theme.orange;
+    assert_eq!(
+        screen.screen().cell(1, 0).unwrap().fgcolor(),
+        vt100::Color::Rgb(r, g, b)
+    );
+    let (r, g, b) = theme.border;
+    assert_eq!(
+        screen.screen().cell(1, 20).unwrap().fgcolor(),
+        vt100::Color::Rgb(r, g, b)
+    );
 }
 
 #[test]

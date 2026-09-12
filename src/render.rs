@@ -310,7 +310,7 @@ impl Renderer {
             let _ = write!(output, "\x1b[1;1H");
             draw_window_bar(&mut output, windows, active, terminal_size.0, &current);
         }
-        if title_changed && current.outer_border {
+        if (title_changed || history_changed) && current.outer_border {
             let _ = write!(output, "\x1b[2;1H");
             draw_terminal_border(
                 &current.theme,
@@ -318,7 +318,37 @@ impl Renderer {
                 &current.terminal_title,
                 terminal_size.0,
                 !windows[active].floating,
+                windows[render_base_index(windows, active)].history_mode,
             );
+        }
+        if history_changed && current.outer_border {
+            let color = pane_border_color(
+                &current.theme,
+                !windows[active].floating,
+                windows[render_base_index(windows, active)].history_mode,
+            );
+            for row in 0..current.content_size.1 {
+                for column in [1, terminal_size.0] {
+                    let _ = write!(
+                        output,
+                        "\x1b[{};{}H",
+                        row + current.content_origin.1,
+                        column
+                    );
+                    write_rgb_style(&mut output, color, None, false);
+                    output.extend_from_slice("│".as_bytes());
+                }
+            }
+            if !current.compact && terminal_size.1 > 2 {
+                let _ = write!(output, "\x1b[{};1H", terminal_size.1 - 1);
+                draw_bottom_border(
+                    &current.theme,
+                    &mut output,
+                    terminal_size.0,
+                    !windows[active].floating,
+                    windows[render_base_index(windows, active)].history_mode,
+                );
+            }
         }
         if (status_changed || mode_changed || history_changed)
             && !current.compact
@@ -666,7 +696,9 @@ fn overlay_pane_cells(
 ) {
     let (columns, rows) = canvas_size;
     let rect = window.pane_rect;
-    let border_style = if active {
+    let border_style = if window.history_mode {
+        CellStyle::bell_border(theme)
+    } else if active {
         CellStyle::active_border(theme)
     } else if window.bell_pending {
         CellStyle::bell_border(theme)
@@ -791,7 +823,11 @@ fn overlay_floating_cells(
         };
     let border_cell = |contents: char| CellSnapshot {
         contents: contents.to_string(),
-        style: CellStyle::active_border(theme),
+        style: if window.history_mode {
+            CellStyle::bell_border(theme)
+        } else {
+            CellStyle::active_border(theme)
+        },
         wide_continuation: false,
         hyperlink: None,
     };
@@ -819,7 +855,11 @@ fn overlay_floating_cells(
     let title_cells = styled_text_cells(
         &title,
         usize::from(layout.width.saturating_sub(2)),
-        CellStyle::active_border(theme),
+        if window.history_mode {
+            CellStyle::bell_border(theme)
+        } else {
+            CellStyle::active_border(theme)
+        },
     );
     for (offset, cell) in title_cells.into_iter().enumerate() {
         replace(cells, 0, offset as u16 + 1, cell);
@@ -1039,6 +1079,7 @@ pub(super) fn render_frame(
             &snapshot.terminal_title,
             width,
             !windows[active].floating,
+            windows[render_base_index(windows, active)].history_mode,
         );
     }
 
@@ -1056,11 +1097,11 @@ pub(super) fn render_frame(
         if snapshot.outer_border {
             write_rgb_style(
                 &mut output,
-                if windows[active].floating {
-                    theme.border
-                } else {
-                    theme.accent
-                },
+                pane_border_color(
+                    theme,
+                    !windows[active].floating,
+                    windows[render_base_index(windows, active)].history_mode,
+                ),
                 None,
                 false,
             );
@@ -1095,11 +1136,11 @@ pub(super) fn render_frame(
         if snapshot.outer_border {
             write_rgb_style(
                 &mut output,
-                if windows[active].floating {
-                    theme.border
-                } else {
-                    theme.accent
-                },
+                pane_border_color(
+                    theme,
+                    !windows[active].floating,
+                    windows[render_base_index(windows, active)].history_mode,
+                ),
                 None,
                 false,
             );
@@ -1120,7 +1161,13 @@ pub(super) fn render_frame(
     if !snapshot.compact && height > 1 {
         if snapshot.outer_border && height > 2 {
             let _ = write!(output, "\x1b[{};1H", height - 1);
-            draw_bottom_border(theme, &mut output, width, !windows[active].floating);
+            draw_bottom_border(
+                theme,
+                &mut output,
+                width,
+                !windows[active].floating,
+                windows[render_base_index(windows, active)].history_mode,
+            );
         }
         draw_bottom_status(&mut output, snapshot);
     }
@@ -2385,12 +2432,23 @@ fn draw_bottom_status(output: &mut Vec<u8>, snapshot: &FrameSnapshot) {
     output.extend_from_slice(b"\x1b[0m");
 }
 
+fn pane_border_color(theme: &Theme, active: bool, scrolling: bool) -> Rgb {
+    if scrolling {
+        theme.orange
+    } else if active {
+        theme.accent
+    } else {
+        theme.border
+    }
+}
+
 fn draw_terminal_border(
     theme: &Theme,
     output: &mut Vec<u8>,
     title: &str,
     width: u16,
     active: bool,
+    scrolling: bool,
 ) {
     if width == 0 {
         return;
@@ -2398,7 +2456,7 @@ fn draw_terminal_border(
     output.extend_from_slice(b"\x1b[0;49m\x1b[2K");
     write_rgb_style(
         output,
-        if active { theme.accent } else { theme.border },
+        pane_border_color(theme, active, scrolling),
         None,
         false,
     );
@@ -2415,13 +2473,19 @@ fn draw_terminal_border(
     }
 }
 
-fn draw_bottom_border(theme: &Theme, output: &mut Vec<u8>, width: u16, active: bool) {
+fn draw_bottom_border(
+    theme: &Theme,
+    output: &mut Vec<u8>,
+    width: u16,
+    active: bool,
+    scrolling: bool,
+) {
     if width == 0 {
         return;
     }
     write_rgb_style(
         output,
-        if active { theme.accent } else { theme.border },
+        pane_border_color(theme, active, scrolling),
         None,
         false,
     );
