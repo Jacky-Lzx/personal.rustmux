@@ -85,10 +85,13 @@ check alone does not establish compliance with this policy.
 
 <label for="human-review-progress"><strong>Progress: not yet measured</strong></label>
 <progress id="human-review-progress" aria-describedby="human-review-progress-note" style="display: block; width: 100%; max-width: 32rem; margin: 0.75rem 0;"></progress>
-<p id="human-review-progress-note">A fixed reference and draft acceptance ledger are prepared; owner agreement on the feature checklist is pending. No percentage is reported, and no existing implementation is assumed to have passed the owner's review.</p>
+<p id="human-review-progress-note">Implementation snapshot updated on 2026-09-13: main-human provides a single-shell terminal with parsed rendering, resize and an expanding control-sequence subset. Owner agreement on the acceptance checklist is pending; implementation progress does not establish accepted coverage.</p>
 
 | Tracking field | Current record |
 | --- | --- |
+| Snapshot date | 2026-09-13 |
+| Local `main-human` implementation | `c5bd994` — soft terminal reset |
+| Implementation record | [Committed capabilities, test sources and remaining gaps](human-review-plan.md#implementation-snapshot--2026-09-13) |
 | Reference `main` commit | `e7fe6a1219754c383eb4fc7e40d30f2232def43f` |
 | Agreed feature checklist | [Draft prepared; owner agreement pending](human-review-plan.md) |
 | Features recorded as accepted | None recorded yet |
@@ -123,9 +126,14 @@ but must not infer approval from authorship, test results, or an AI review.
 Keep this shared progress page on `main` alongside the published documentation,
 linking to implementation and review evidence from `main-human`.
 
-A suggested first milestone is a usable single-pane terminal: start a shell,
-forward input, render output, resize, and exit correctly. It is a starting point
-for the owner's checklist, not an already approved baseline.
+The first milestone has progressed from a bootstrap skeleton to a single-shell
+CLI with PTY lifecycle, input forwarding, parsed rendering, resize and terminal
+restoration. Terminal control support now includes scrolling and editing, cursor
+and mode state, tab stops, status replies, DEC graphics, and full/soft reset.
+Bracketed-paste negotiation is still on a candidate branch; editor compatibility
+and milestone acceptance are not recorded. Windows, splits, persistent sessions
+and Kitty extensions remain unimplemented on this snapshot of `main-human`.
 
 See the [baseline ledger and first milestone plan](human-review-plan.md) for
-the proposed checklist, empty branch anchor, bootstrap review, and evidence template.
+the proposed checklist, current implementation snapshot, historical bootstrap
+record, and evidence template.

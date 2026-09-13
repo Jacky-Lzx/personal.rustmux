@@ -127,6 +127,11 @@ requirement; human-only authorship is not.**
 
 [Read the review policy and progress record →](docs/reference/development-tracks.md)
 
+As of 2026-09-13, local `main-human` at `c5bd994` provides a single-shell
+terminal with parsed rendering, resize, cursor and editing controls, and terminal
+resets. Splits and persistent sessions are still pending. See the progress
+record above for implementation evidence and remaining verification.
+
 Feature coverage will count functionality that is implemented, verified, and
 accepted by the owner against an agreed `main` baseline. That baseline has not
 been established yet, so no completion percentage is claimed.

@@ -1,4 +1,4 @@
-# Human Review Baseline and First Milestone
+# Human Review Baseline and Implementation Progress
 
 ## Baseline and review status
 
@@ -6,18 +6,51 @@ Prepared on 2026-09-12. The implementation reference is `main` commit
 `e7fe6a1219754c383eb4fc7e40d30f2232def43f` (`feat: add explicit session creation shortcuts`).
 This is a fixed reference, not a claim that its implementation has been reviewed.
 The checklist below is a **proposal awaiting the owner's agreement**. There are
-no accepted features and no agreed coverage denominator yet. Later additions to
+no features recorded as accepted and no agreed coverage denominator yet. Later additions to
 `main` belong in a separate backlog until the owner chooses a new baseline.
 
-The existing checkout remains on `main`. A sibling worktree, `Rustmux-human`,
-holds `codex/human-bootstrap`; its PR target will be `main-human`.
-`main-human` starts at an empty root commit used only as a branch anchor. It
-contains no application, CI, or documentation and represents no accepted work.
-AI and other contributors submit content, including this AI-prepared skeleton,
-through an owner-reviewed PR. The owner may personally commit directly without
-a PR; Git author metadata alone does not qualify an AI submission for that exception.
-The two tracks intentionally have independent histories; do not merge all of
-`main` into `main-human`. Feature branches share ancestry with `main-human`.
+## Implementation snapshot — 2026-09-13
+
+The local `main-human` branch is at `c5bd994` (`feat: support soft terminal
+reset`). It now contains a working single-shell CLI, terminal model, parser,
+renderer, tests, CI and branch-specific documentation. The two tracks retain
+independent histories; do not merge all of `main` into `main-human`.
+
+This snapshot describes committed implementation and available test coverage.
+It does not establish owner feature acceptance or certify a full-screen editor
+walkthrough. The acceptance checklist and denominator remain proposals.
+
+| Area | Implementation commits on `main-human` | Available verification sources |
+| --- | --- | --- |
+| Bootstrap and documentation | `5d3102e`, `fbaf76d` | Cargo setup, CI workflows and the branch's `docs/` |
+| PTY shell lifecycle (H01) | `ff58361` | `tests/pty_lifecycle.rs`: controlling terminal, startup failure, child exit and cleanup |
+| Input loop, resize and cleanup (H02, H04) | `66ded2e`, `acc3c53` | `tests/terminal_loop.py`, `tests/terminal_loop.rs` and `src/terminal.rs` unit tests |
+| Screen model, cursor/erase, styles and Unicode (H03) | `b63dd6c`, `8932c11`, `0a1aef9`, `2440f6c` | Screen/parser unit tests, `tests/text_style.rs`, `tests/unicode_screen.rs` |
+| Alternate screen, grid resize, rendering and CLI integration (H03, H04) | `da9c631`, `fdfa974`, `283fd74`, `26acf59` | `tests/alternate_screen.rs`, `tests/screen_resize.rs`, `tests/render.rs`, nested-PTY harness |
+| Saved cursor and visibility (H03, part of H28) | `e2ba001` | `tests/cursor.rs` |
+| Scrolling regions, line and character editing (H03) | `710ef10`, `65f6be4`, `5ac7534` | `tests/scroll_region.rs`, `tests/line_edit.rs`, `tests/character_edit.rs` |
+| Origin, insert and automatic wrap modes (H03) | `589bef8`, `ffb0893`, `3efa096` | `tests/origin_mode.rs`, `tests/insert_mode.rs`, `tests/auto_wrap.rs` |
+| Configurable tab stops and terminal status replies (H03) | `f3ada98`, `fef097c` | `tests/tab_stops.rs`, `tests/status_replies.rs` |
+| DEC special graphics, full reset and soft reset (H03) | `6cdbda5`, `6d2e0ac`, `c5bd994` | `tests/character_sets.rs`, `tests/terminal_reset.rs`, `tests/soft_reset.rs` |
+
+Verification sources above identify existing checks, **not a fresh test-run
+result**. This documentation update inspected the committed implementation and
+test sources; it did not rerun the terminal suite or a live editor walkthrough.
+Review the exact snapshot locally with `git show c5bd994` and read its
+usage documentation with `git show c5bd994:docs/index.md`.
+The local combined documentation build uses `main-human` by default.
+
+The implementation still has one shell and no windows, splits, persistent
+sessions, scrollback or Kitty extensions. Input bytes are forwarded, but
+bracketed-paste mode negotiation is not part of this snapshot:
+`3769e30` on `codex/human-bracketed-paste` is a separate candidate, not yet in
+`main-human`. Full-screen editor compatibility remains to be verified.
+
+At inspection time, local `origin/main-human` pointed to `e2ba001`, 11 commits
+behind local `main-human`. This is a cached remote-tracking ref, not a live
+remote check. The hosted documentation may therefore differ from this local
+snapshot; Pages builds the published branches. No push or deployment is implied
+by this update.
 
 ## Proposed feature ledger
 
@@ -27,18 +60,19 @@ reviewed and verified in a reasonably small change. The reference column points
 to documentation at the fixed baseline; consult that revision when behavior on
 `main` changes. The verification column specifies planned checks, not results.
 
-For every row, the issue, PR/final SHA, verification evidence, and owner acceptance
-record are **not recorded** unless explicitly filled in below. Local preparation
+Implementation commits and test sources for active rows are listed in the
+snapshot above. Issue/PR links, executed verification results and owner acceptance
+are **not recorded** unless explicitly supplied. Local preparation
 is not an issue or PR. Update those fields as work proceeds, and preserve the
 final reviewed SHA when linking to a discussion. Accepted counts follow the
 [track policy](development-tracks.md#human-reviewed-feature-coverage).
 
 | ID | Behavior / acceptance boundary | Planned verification | Baseline reference | Status |
 | --- | --- | --- | --- | --- |
-| H01 | Start an interactive shell on a PTY; report startup failure and reclaim resources | PTY integration: valid/invalid shell, child exit and descriptor cleanup | `src/shell.rs`, `src/terminal.rs` | not started |
-| H02 | Forward ordinary input, UTF-8, control keys and bracketed paste without corruption | Byte fixtures plus interactive shell and Ctrl-C | `src/input.rs` | not started |
-| H03 | Render text, cursor, styles, wide characters and alternate screen | Terminal fixtures plus a full-screen editor | `src/terminal.rs`, `src/render.rs` | not started |
-| H04 | Propagate resize and restore the outer terminal on exit or recoverable failure | Repeated resize, shell exit, injected I/O failure; compare terminal settings | `src/app.rs` | not started |
+| H01 | Start an interactive shell on a PTY; report startup failure and reclaim resources | PTY integration: valid/invalid shell, child exit and descriptor cleanup | `src/shell.rs`, `src/terminal.rs` | implemented; acceptance not recorded |
+| H02 | Forward ordinary input, UTF-8, control keys and bracketed paste without corruption | Byte fixtures plus interactive shell and Ctrl-C | `src/input.rs` | in progress; paste mode pending |
+| H03 | Render text, cursor, styles, wide characters and alternate screen | Terminal fixtures plus a full-screen editor | `src/terminal.rs`, `src/render.rs` | in progress; editor verification pending |
+| H04 | Propagate resize and restore the outer terminal on exit or recoverable failure | Repeated resize, shell exit, injected I/O failure; compare terminal settings | `src/app.rs` | implemented; acceptance not recorded |
 | H05 | Create, switch, rename and close windows with the documented focus behavior | Interactive workflow and model assertions | `docs/guide/windows-panes.md` | not started |
 | H06 | Split, close and zoom panes; reject impossible layouts without mutation | Layout tests and interactive splits | `docs/guide/windows-panes.md` | not started |
 | H07 | Move focus directionally, resize and swap panes | Uneven-layout tests and keyboard/mouse walkthrough | `docs/guide/windows-panes.md` | not started |
@@ -62,7 +96,7 @@ final reviewed SHA when linking to a discussion. Accepted counts follow the
 | H25 | Preserve Kitty graphics and placeholders across redraws and session switches | Chunk fixtures, fuzzing and actual Yazi preview walkthrough | `docs/guide/kitty-yazi.md` | not started |
 | H26 | Route drag-and-drop requests and translate coordinates | Protocol fixtures and actual GUI/pane transfers | `docs/guide/kitty-yazi.md` | not started |
 | H27 | Route rich clipboard and file transfer responses to their originating pane | Concurrent request IDs and multi-pane integration | `docs/guide/kitty-yazi.md` | not started |
-| H28 | Preserve hyperlinks, colors, cursor shape and per-pane protocol state | Focus/screen switches and terminal query fixtures | `docs/reference/terminal-compatibility.md` | not started |
+| H28 | Preserve hyperlinks, colors, cursor shape and per-pane protocol state | Focus/screen switches and terminal query fixtures | `docs/reference/terminal-compatibility.md` | in progress; cursor/style subset only |
 | H29 | Deliver configured notifications and maintain bell/unread state | Filter/threshold tests and live focus/notification checks | `docs/configuration/notifications.md` | not started |
 
 These 29 proposed rows are a planning inventory, **not an agreed total**. In
@@ -71,6 +105,11 @@ splitting before the denominator is frozen. Performance checks accompany the
 relevant feature; passing a benchmark alone does not establish acceptance.
 
 ## Milestone 1: a usable single-pane terminal
+
+The original review breakdown below remains a planning reference. Bootstrap,
+PTY lifecycle, input/rendering integration and resize/cleanup code are now on
+`main-human`; the snapshot above records their commits. H02/H03 still have
+compatibility and verification gaps, and milestone acceptance is not recorded.
 
 Work sequentially, with one coherent review at a time. The PR numbers below
 are local sequence names, not GitHub PR numbers. No session daemon, persistence,
@@ -118,9 +157,11 @@ of the new final SHA. Authorship, an instruction to start implementation and
 passing CI are not acceptance. Merge only after the owner's explicit review,
 and close an issue only after the owner confirms its acceptance or disposition.
 
-## Bootstrap verification record
+## Historical bootstrap verification record
 
-Local PR 0 candidate prepared on 2026-09-12:
+Local PR 0 candidate prepared on 2026-09-12. This historical candidate was
+superseded by bootstrap commit `5d3102e` on `main-human`; the results below
+apply only to the earlier candidate, not the current implementation:
 
 | Field | Record |
 | --- | --- |
@@ -138,10 +179,10 @@ Local PR 0 candidate prepared on 2026-09-12:
 | GitHub issue / PR | Not created |
 | Owner review / acceptance | Pending; no merge or accepted feature recorded |
 
-To read the entire first review locally from either worktree:
+To read the historical candidate locally from either worktree:
 
 ```sh
-git diff main-human..codex/human-bootstrap
+git diff b59e6c1 9eec31a
 git show --stat 9eec31aa22b0995a8a4fdac745482fa3d2a2fab0
 ```
 
@@ -153,24 +194,20 @@ executable/build inputs are unchanged. Owner review remains pending on this upda
 PR 0 intentionally has no PTY or behavior test suite. Its smoke check verifies
 only the placeholder contract and is not evidence of terminal functionality.
 
-## Remote setup and continuation
+## Continuation and publication
 
-This preparation creates local branches and commits only. No GitHub issue, PR,
-label, repository rule or remote branch is implied by a local record. When
-publishing is requested, publish the empty `main-human` anchor and bootstrap
-branch, create the `track:main-human` issue and PR, and link their actual URLs.
-The empty anchor gives GitHub a common ancestor for the bootstrap PR.
+Keep this ledger and the shared progress page on `main`. Update implementation
+commits as work reaches `main-human`; add verification results and explicit
+owner acceptance separately. Features on candidate branches do not count as
+implemented on the target branch.
 
-Configure repository rules separately to require PRs for AI and other contributor
-submissions, while allowing the owner's personal direct updates to `main-human`.
-Do not let AI use an owner bypass merely because it shares the owner's credentials.
-The owner's direct commits need no separate PR review record; feature acceptance
-still requires evidence. Required checks must match the
-workflows present on the human branch, not unrelated `main` fuzz targets.
-The bootstrap CI checks macOS and Linux on PRs and pushes to `main-human`;
-these checks support review but do not enforce or certify the owner's identity.
+The combined Pages workflow builds the published `main` and `main-human`
+branches. Publish the relevant branch changes before expecting the hosted
+books to match a local build; see [Development and Testing](development.md)
+for build and deployment details. Local branch state does not confirm remote
+rules, PR reviews, hosted CI results or owner acceptance.
 
-Keep this ledger and the shared progress page on `main`. After each accepted
-feature, update its evidence here and the progress record together. The first
-review task is PR 0's complete diff against the empty anchor; its acceptance
-adds infrastructure, not an accepted terminal feature.
+Repository rules should require PRs for AI and other contributor submissions
+while allowing the owner's personal direct updates. AI must not use an owner
+bypass merely because it shares the owner's credentials. Required checks must
+match the human branch's workflows, not unrelated `main` fuzz targets.
