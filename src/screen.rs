@@ -5,6 +5,19 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::style::{Cell, Style};
 
+/// DECSCUSR shapes; blinking is delegated to the outer terminal.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CursorShape {
+    #[default]
+    BlinkingBlock = 1,
+    SteadyBlock = 2,
+    BlinkingUnderline = 3,
+    SteadyUnderline = 4,
+    BlinkingBar = 5,
+    SteadyBar = 6,
+}
+
 /// Inclusive erase range relative to the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EraseMode {
@@ -64,6 +77,7 @@ pub struct Screen {
     saved_cursor: Option<SavedCursor>,
     inactive_saved_cursor: Option<SavedCursor>,
     cursor_visible: bool,
+    cursor_shape: CursorShape,
     insert_mode: bool,
     bracketed_paste: bool,
     application_cursor_keys: bool,
@@ -112,6 +126,7 @@ impl Screen {
             saved_cursor: None,
             inactive_saved_cursor: None,
             cursor_visible: true,
+            cursor_shape: CursorShape::default(),
             insert_mode: false,
             bracketed_paste: false,
             application_cursor_keys: false,
@@ -138,6 +153,7 @@ impl Screen {
         self.saved_cursor = None;
         self.inactive_saved_cursor = None;
         self.cursor_visible = true;
+        self.cursor_shape = CursorShape::default();
         self.insert_mode = false;
         self.application_cursor_keys = false;
         self.application_keypad = false;
@@ -160,6 +176,7 @@ impl Screen {
     /// active grid and tab stops. Autowrap follows the XTerm default (enabled).
     pub fn soft_reset(&mut self) {
         self.cursor_visible = true;
+        self.cursor_shape = CursorShape::default();
         self.insert_mode = false;
         self.application_cursor_keys = false;
         self.application_keypad = false;
@@ -195,6 +212,7 @@ impl Screen {
         // Cell suffixes are moved, not cloned, so copying the overlap cannot allocate.
         let mut resized = Self::new(rows, columns)?;
         resized.cursor_visible = self.cursor_visible;
+        resized.cursor_shape = self.cursor_shape;
         resized.insert_mode = self.insert_mode;
         resized.bracketed_paste = self.bracketed_paste;
         resized.application_cursor_keys = self.application_cursor_keys;
@@ -308,6 +326,15 @@ impl Screen {
     /// Visibility is a global terminal mode, independent of saved cursor state.
     pub fn set_cursor_visible(&mut self, visible: bool) {
         self.cursor_visible = visible;
+    }
+
+    pub fn cursor_shape(&self) -> CursorShape {
+        self.cursor_shape
+    }
+
+    /// Shape is global and independent of visibility and saved cursor positions.
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) {
+        self.cursor_shape = shape;
     }
 
     pub fn application_keypad(&self) -> bool {
