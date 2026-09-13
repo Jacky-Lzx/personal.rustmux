@@ -18,6 +18,17 @@ pub enum CursorShape {
     SteadyBar = 6,
 }
 
+/// Mutually exclusive mouse tracking modes. Encoding is configured separately.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum MouseTracking {
+    #[default]
+    Off = 0,
+    Button = 1000,
+    Drag = 1002,
+    Any = 1003,
+}
+
 /// Inclusive erase range relative to the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EraseMode {
@@ -81,6 +92,8 @@ pub struct Screen {
     insert_mode: bool,
     bracketed_paste: bool,
     focus_reporting: bool,
+    mouse_tracking: MouseTracking,
+    sgr_mouse: bool,
     application_cursor_keys: bool,
     application_keypad: bool,
     tab_stops: Vec<bool>,
@@ -131,6 +144,8 @@ impl Screen {
             insert_mode: false,
             bracketed_paste: false,
             focus_reporting: false,
+            mouse_tracking: MouseTracking::Off,
+            sgr_mouse: false,
             application_cursor_keys: false,
             application_keypad: false,
             tab_stops,
@@ -161,6 +176,8 @@ impl Screen {
         self.application_keypad = false;
         self.bracketed_paste = false;
         self.focus_reporting = false;
+        self.mouse_tracking = MouseTracking::Off;
+        self.sgr_mouse = false;
         for (column, stop) in self.tab_stops.iter_mut().enumerate() {
             *stop = column != 0 && column % 8 == 0;
         }
@@ -219,6 +236,8 @@ impl Screen {
         resized.insert_mode = self.insert_mode;
         resized.bracketed_paste = self.bracketed_paste;
         resized.focus_reporting = self.focus_reporting;
+        resized.mouse_tracking = self.mouse_tracking;
+        resized.sgr_mouse = self.sgr_mouse;
         resized.application_cursor_keys = self.application_cursor_keys;
         resized.application_keypad = self.application_keypad;
         resized.origin_mode = self.origin_mode;
@@ -357,6 +376,23 @@ impl Screen {
     /// DECCKM is global input state, independent of either grid's saved cursor.
     pub fn set_application_cursor_keys(&mut self, enabled: bool) {
         self.application_cursor_keys = enabled;
+    }
+
+    pub fn mouse_tracking(&self) -> MouseTracking {
+        self.mouse_tracking
+    }
+
+    pub fn set_mouse_tracking(&mut self, tracking: MouseTracking) {
+        self.mouse_tracking = tracking;
+    }
+
+    pub fn sgr_mouse(&self) -> bool {
+        self.sgr_mouse
+    }
+
+    /// Encoding alone does not enable mouse event reporting.
+    pub fn set_sgr_mouse(&mut self, enabled: bool) {
+        self.sgr_mouse = enabled;
     }
 
     pub fn focus_reporting(&self) -> bool {
