@@ -13,6 +13,31 @@ pub enum EraseMode {
     All,
 }
 
+/// G0/G1 designations and the currently invoked set. Non-ASCII text is unchanged.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CharacterSets {
+    graphics: [bool; 2],
+    active: usize,
+}
+
+impl CharacterSets {
+    fn translate(self, character: char) -> char {
+        if !self.graphics[self.active] {
+            return character;
+        }
+        // DEC Special Graphics 0x5f..=0x7e, represented by Unicode glyphs.
+        // Control pictures here are visible symbols, not executable controls.
+        const GRAPHICS: [char; 32] = [
+            ' ', '◆', '▒', '␉', '␌', '␍', '␊', '°', '±', '␤', '␋', '┘', '┐', '┌', '└', '┼', '⎺',
+            '⎻', '─', '⎼', '⎽', '├', '┤', '┴', '┬', '│', '≤', '≥', 'π', '≠', '£', '·',
+        ];
+        match character {
+            '_'..='~' => GRAPHICS[character as usize - '_' as usize],
+            _ => character,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SavedCursor {
     row: usize,
@@ -21,6 +46,7 @@ struct SavedCursor {
     wrap_pending: bool,
     origin_mode: bool,
     auto_wrap: bool,
+    character_sets: CharacterSets,
 }
 
 /// Screen state with zero-based coordinates and per-grid vertical scrolling margins.
@@ -48,6 +74,7 @@ pub struct Screen {
     wrap_pending: bool,
     origin_mode: bool,
     auto_wrap: bool,
+    character_sets: CharacterSets,
 }
 
 impl Screen {
@@ -92,6 +119,7 @@ impl Screen {
             wrap_pending: false,
             origin_mode: false,
             auto_wrap: true,
+            character_sets: CharacterSets::default(),
         })
     }
 
@@ -111,6 +139,7 @@ impl Screen {
         resized.insert_mode = self.insert_mode;
         resized.origin_mode = self.origin_mode;
         resized.auto_wrap = self.auto_wrap;
+        resized.character_sets = self.character_sets;
         let retained_columns = self.columns.min(columns);
         resized.tab_stops[..retained_columns].copy_from_slice(&self.tab_stops[..retained_columns]);
         let clamp = |saved: SavedCursor| SavedCursor {
@@ -184,6 +213,7 @@ impl Screen {
             wrap_pending: self.wrap_pending,
             origin_mode: self.origin_mode,
             auto_wrap: self.auto_wrap,
+            character_sets: self.character_sets,
         });
         std::mem::swap(&mut self.cells, &mut self.inactive_cells);
         std::mem::swap(&mut self.scroll_region, &mut self.inactive_scroll_region);
@@ -237,6 +267,7 @@ impl Screen {
             wrap_pending: self.wrap_pending,
             origin_mode: self.origin_mode,
             auto_wrap: self.auto_wrap,
+            character_sets: self.character_sets,
         });
     }
 
@@ -251,6 +282,7 @@ impl Screen {
     fn apply_saved_cursor(&mut self, saved: SavedCursor) {
         self.origin_mode = saved.origin_mode;
         self.auto_wrap = saved.auto_wrap;
+        self.character_sets = saved.character_sets;
         self.move_to(saved.row, saved.column);
         self.style = saved.style;
         // A changed margin can clamp the saved row. Do not restore delayed
@@ -350,12 +382,22 @@ impl Screen {
         Ok(())
     }
 
-    /// Write one decoded scalar using non-CJK Unicode character widths.
+    /// Designate G0 (false) or G1 (true), without changing the invoked set.
+    pub(crate) fn designate_character_set(&mut self, g1: bool, graphics: bool) {
+        self.character_sets.graphics[usize::from(g1)] = graphics;
+    }
+
+    pub(crate) fn select_character_set(&mut self, g1: bool) {
+        self.character_sets.active = usize::from(g1);
+    }
+
+    /// Translate the invoked character set and write using non-CJK Unicode widths.
     /// Controls are ignored. This does not implement grapheme-cluster shaping.
     pub fn print(&mut self, mut character: char) {
         if character.is_control() {
             return;
         }
+        character = self.character_sets.translate(character);
         let Some(mut width) = character.width() else {
             return;
         };
